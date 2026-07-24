@@ -4,7 +4,11 @@
 
 Transform Unity Editor into a programmable automation element for CI/CD pipelines and development workflows. The package exposes a running Unity Editor (or development Player) over a local HTTP API so external tools, scripts, or agents can execute commands remotely.
 
-Unity Pipeline supports Unity 2022.3 LTS and newer. Input simulation is available when the Input System package is installed and enabled; otherwise its commands return an unavailable result without preventing the package from loading.
+## Compatibility focus
+
+This repository maintains Unity Pipeline compatibility for Unity 2022.3 LTS and newer, so projects that cannot yet move to Unity 6 can keep using the same Editor automation, runtime command, and Mono hot-reload workflows. Unity 6-specific APIs retain compatible fallbacks for Unity 2022.3.
+
+Input simulation is optional: it is available when the Input System package is installed and enabled; otherwise its commands return a structured unavailable result without preventing the package from loading. Hot reload remains supported on Mono only and is not available for IL2CPP builds.
 
 ## Install the Unity CLI
 
