@@ -1,8 +1,8 @@
 {
   "name": "com.unity.pipeline",
   "displayName": "Unity Pipeline",
-  "version": "0.3.1-exp.1",
-  "unity": "6000.0",
+  "version": "0.3.1-exp.4",
+  "unity": "2022.3",
   "category": "Pipeline",
   "description": "This package allows application (cli, agent or other) to connect to the editor or a running game and execute commands (build, run_tests, play/pause, hotreload)",
   "keywords": [

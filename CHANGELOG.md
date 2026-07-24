@@ -5,7 +5,19 @@ All notable changes to this package will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1-exp.4] - 2026-07-24
+
+- Use Unity 2022.3-compatible Editor plugin importer metadata for the bundled Roslyn assemblies.
+- Retain the Immutable and Metadata Roslyn dependencies while excluding the conflicting Unsafe plugin.
+
+## [0.3.1-exp.2] - 2026-07-23
+
+- Add Unity 2022.3 LTS compatibility.
+- Make Input System integration optional; input simulation reports an unavailable result when the package is not installed or enabled.
+- Use project-resolved System.* dependencies for Roslyn to avoid duplicate plugin assemblies.
+
 ## [0.3.1-exp.1] - 2026-07-16
+
 - Update docs
 
 ## [0.3.0-exp.1] - 2026-07-13

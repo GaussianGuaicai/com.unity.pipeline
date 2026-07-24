@@ -1,8 +1,10 @@
 # Unity Pipeline Package
 
-[![Unity Version](https://img.shields.io/badge/Unity-6.0%2B-blue.svg)](https://unity3d.com/unity/whats-new/2023.3.0)
+[![Unity Version](https://img.shields.io/badge/Unity-2022.3%2B-blue.svg)](https://unity.com/releases/editor/whats-new/2022.3.0)
 
 Transform Unity Editor into a programmable automation element for CI/CD pipelines and development workflows. The package exposes a running Unity Editor (or development Player) over a local HTTP API so external tools, scripts, or agents can execute commands remotely.
+
+Unity Pipeline supports Unity 2022.3 LTS and newer. Input simulation is available when the Input System package is installed and enabled; otherwise its commands return an unavailable result without preventing the package from loading.
 
 ## Install the Unity CLI
 

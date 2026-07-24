@@ -5,6 +5,7 @@ using Unity.Pipeline.Commands;
 using Unity.Pipeline.Editor;
 using Unity.Pipeline.Models;
 using Newtonsoft.Json.Linq;
+using UnityEngine;
 using UnityEngine.TestTools;
 using System.Text.RegularExpressions;
 
@@ -202,7 +203,7 @@ namespace Unity.Pipeline.Tests.Editor
             var response = await m_PipelineClient.PostJsonAsync("/api/exec", invalidRequest);
             var responseContent = response.RawResponse;
 
-            LogAssert.Expect(new Regex("^ExecuteCommandByName: No command named"));
+            LogAssert.Expect(LogType.Error, new Regex("^ExecuteCommandByName: No command named"));
 
             // Assert - Should return error
             Assert.IsFalse(response.IsSuccess, "Should return error for invalid command");
@@ -224,7 +225,7 @@ namespace Unity.Pipeline.Tests.Editor
             var response = await m_PipelineClient.PostJsonAsync("/api/exec", invalidRequest);
             var responseContent = response.RawResponse;
 
-            LogAssert.Expect("ExecuteCommandByName: Parameter validation failed: Required parameter 'message' is missing or empty");
+            LogAssert.Expect(LogType.Error, "ExecuteCommandByName: Parameter validation failed: Required parameter 'message' is missing or empty");
 
             // Assert - Should return validation error
             Assert.IsFalse(response.IsSuccess, "Should return error for missing required parameter");

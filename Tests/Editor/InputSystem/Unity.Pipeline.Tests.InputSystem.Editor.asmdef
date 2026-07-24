@@ -1,0 +1,33 @@
+{
+    "name": "Unity.Pipeline.Tests.InputSystem.Editor",
+    "rootNamespace": "Unity.Pipeline.Tests.Editor",
+    "references": [
+        "UnityEditor.TestRunner",
+        "Unity.Pipeline",
+        "UnityEngine.TestRunner",
+        "Unity.InputSystem",
+        "Unity.InputSystem.TestFramework"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [
+        "nunit.framework.dll"
+    ],
+    "autoReferenced": true,
+    "defineConstraints": [
+        "UNITY_INCLUDE_TESTS",
+        "PIPELINE_INPUT_SYSTEM"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.unity.inputsystem",
+            "expression": "1.0.0",
+            "define": "PIPELINE_INPUT_SYSTEM"
+        }
+    ],
+    "noEngineReferences": false
+}
