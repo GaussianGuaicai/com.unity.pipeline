@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Text.RegularExpressions;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -172,8 +173,15 @@ namespace Unity.Pipeline.Models
             if (s_Hex32.IsMatch(s))
                 return new ObjectRef { Guid = s };
 
-            // Starts with "/" or otherwise contains "/" (non-Assets paths handled above), and the
-            // bare-name fallback, all resolve as a scene hierarchy path.
+            // A relative string with a file extension (e.g. "Materials/Floor.mat", "Enemy.prefab") is
+            // most likely an authoring-root-relative asset path — route it to Path so the resolver can
+            // normalize it under the authoring root. A leading "/" always means a scene hierarchy path,
+            // and an extension-less string ("Player", "Root/Child") stays one. Dotted GameObject names
+            // ("Cube.001") land here too, but the resolver falls back to a hierarchy lookup for those.
+            if (!s.StartsWith("/", StringComparison.Ordinal) && Path.HasExtension(s))
+                return new ObjectRef { Path = s };
+
+            // Leading-"/" canonical paths and bare names resolve as a scene hierarchy path.
             return new ObjectRef { HierarchyPath = s };
         }
     }

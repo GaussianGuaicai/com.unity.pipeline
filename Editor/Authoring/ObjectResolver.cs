@@ -45,14 +45,41 @@ namespace Unity.Pipeline.Editor.Authoring
                 return false;
             }
 
-            // 2. Asset path.
+            // 2. Asset path. Explicit "Assets/"/"Packages/"-rooted paths load as-is; a bare relative
+            // path (e.g. "Materials/Floor.mat") is normalized under the authoring root first. If it
+            // does not resolve to an asset, fall back to a hierarchy lookup so dotted GameObject names
+            // (e.g. "Cube.001") still resolve, and report every strategy that was tried.
             if (!string.IsNullOrEmpty(handle.Path))
             {
-                obj = AssetDatabase.LoadMainAssetAtPath(handle.Path);
+                var raw = handle.Path;
+                var explicitlyRooted = IsExplicitlyRooted(raw);
+                var assetPath = raw;
+                if (!explicitlyRooted)
+                {
+                    var resolved = ProjectPaths.Resolve(raw, out _);
+                    if (!string.IsNullOrEmpty(resolved))
+                        assetPath = resolved;
+                }
+
+                obj = AssetDatabase.LoadMainAssetAtPath(assetPath);
                 if (obj != null)
                     return true;
 
-                error = $"No asset at path '{handle.Path}'.";
+                if (explicitlyRooted)
+                {
+                    error = $"No asset at path '{raw}'.";
+                    return false;
+                }
+
+                // A bare relative string may actually be a scene hierarchy path with a dotted name.
+                var go = FindByHierarchyPath(raw);
+                if (go != null)
+                {
+                    obj = go;
+                    return true;
+                }
+
+                error = $"Could not resolve '{raw}': no asset at '{assetPath}', no GameObject at hierarchy path '{raw}'.";
                 return false;
             }
 
@@ -161,6 +188,12 @@ namespace Unity.Pipeline.Editor.Authoring
 
             return result;
         }
+
+        /// <summary>True when a path is explicitly rooted at "Assets/" or "Packages/" (or is exactly one of those).</summary>
+        private static bool IsExplicitlyRooted(string path) =>
+            path == "Assets" || path == "Packages"
+            || path.StartsWith("Assets/", System.StringComparison.Ordinal)
+            || path.StartsWith("Packages/", System.StringComparison.Ordinal);
 
         private static GameObject FindByHierarchyPath(string path)
         {

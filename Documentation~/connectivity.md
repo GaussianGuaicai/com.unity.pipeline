@@ -158,8 +158,8 @@ Every request must authenticate with a bearer token:
 Authorization: Bearer <evalToken>
 ```
 
-- The server **generates the token at startup** (`SecurityTokenManager.GetOrCreateToken()` — 256 bits of CSPRNG output, base64-encoded, held in memory and regenerated after each domain reload).
-- The token is published in the descriptor's `evalToken` field.
+- The server **generates the token at startup** (`SecurityTokenManager.GetOrCreateToken()` — 256 bits of CSPRNG output, base64-encoded). In the Editor the token is persisted in `SessionState`, so it **survives domain reloads** within an editor session (recompiles, entering play mode) — long-lived clients (MCP sessions, IDE integrations) keep working instead of getting `401` after every reload. It is regenerated only when the Editor **restarts**, or on an explicit rotation (`SecurityTokenManager.ClearCache()` / `RotateToken()`). Player builds use a per-process token.
+- The token is published in the descriptor's `evalToken` field. The descriptor is **re-advertised with the live token on every heartbeat**, so the port file never advertises a token the server would reject (e.g. after a reload or rotation).
 - The server validates the bearer token on **every** request (before routing) using a constant-time comparison. A missing or wrong token returns `401 Unauthorized`.
 
 ## Discovering and calling an instance

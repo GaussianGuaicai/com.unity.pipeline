@@ -7,11 +7,6 @@ using Unity.Pipeline.Models;
 using UnityEditor;
 using UnityEngine;
 using Object = UnityEngine.Object;
-#if UNITY_6000_0_OR_NEWER
-using PhysicsMaterial = UnityEngine.PhysicsMaterial;
-#else
-using PhysicsMaterial = UnityEngine.PhysicMaterial;
-#endif
 
 namespace Unity.Pipeline.Editor.Commands.Assets
 {
