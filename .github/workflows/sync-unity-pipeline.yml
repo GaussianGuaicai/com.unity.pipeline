@@ -128,6 +128,7 @@ jobs:
           branch: automation/sync-unity-pipeline
           base: ${{ github.event.repository.default_branch }}
           delete-branch: true
+          reviewers: GaussianGuaicai
           commit-message: "chore: sync com.unity.pipeline ${{ steps.sync.outputs.version }}"
           title: "chore: sync com.unity.pipeline ${{ steps.sync.outputs.version }}"
           body: |
