@@ -1,0 +1,142 @@
+name: Sync Unity Pipeline Package
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sync-unity-pipeline
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync latest Unity package
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Resolve, validate, and synchronize latest package
+        id: sync
+        shell: bash
+        env:
+          REGISTRY_URL: https://packages.unity.com/com.unity.pipeline
+          PACKAGE_NAME: com.unity.pipeline
+        run: |
+          set -euo pipefail
+
+          metadata_path="$RUNNER_TEMP/package-metadata.json"
+          archive_path="$RUNNER_TEMP/package.tgz"
+          staging_path="$RUNNER_TEMP/package-staging"
+
+          curl --fail-with-body --location --retry 3 --retry-all-errors --connect-timeout 15 --max-time 120 \
+            --output "$metadata_path" \
+            "$REGISTRY_URL"
+
+          version="$(jq -er '."dist-tags".latest' "$metadata_path")"
+          tarball_url="$(jq -er --arg version "$version" '.versions[$version].dist.tarball' "$metadata_path")"
+          expected_sha1="$(jq -er --arg version "$version" '.versions[$version].dist.shasum' "$metadata_path")"
+
+          if [[ ! "$tarball_url" =~ ^https:// ]]; then
+            echo "Registry returned a non-HTTPS tarball URL: $tarball_url" >&2
+            exit 1
+          fi
+
+          if [[ ! "$expected_sha1" =~ ^[[:xdigit:]]{40}$ ]]; then
+            echo "Registry returned an invalid SHA-1 checksum." >&2
+            exit 1
+          fi
+
+          curl --fail-with-body --location --retry 3 --retry-all-errors --connect-timeout 15 --max-time 300 \
+            --output "$archive_path" \
+            "$tarball_url"
+          printf '%s  %s\n' "$expected_sha1" "$archive_path" | sha1sum --check --strict
+
+          while IFS= read -r archive_member; do
+            if [[ "$archive_member" != package && "$archive_member" != package/* ]] || \
+              [[ "/$archive_member/" == *"/../"* ]]; then
+              echo "Archive contains an unsafe member: $archive_member" >&2
+              exit 1
+            fi
+          done < <(tar --list --gzip --file "$archive_path")
+
+          mkdir -p "$staging_path"
+          tar --extract --gzip --file "$archive_path" --directory "$staging_path" \
+            --strip-components=1 --no-same-owner --no-same-permissions
+
+          for required_path in \
+            package.json \
+            Runtime/Unity.Pipeline.asmdef \
+            Editor/Unity.Pipeline.Editor.asmdef \
+            CodeGen/Unity.Pipeline.CodeGen.asmdef; do
+            if [[ ! -f "$staging_path/$required_path" ]]; then
+              echo "Extracted package is missing $required_path." >&2
+              exit 1
+            fi
+          done
+
+          extracted_name="$(jq -er '.name' "$staging_path/package.json")"
+          extracted_version="$(jq -er '.version' "$staging_path/package.json")"
+          if [[ "$extracted_name" != "$PACKAGE_NAME" || "$extracted_version" != "$version" ]]; then
+            echo "Extracted package identity does not match registry metadata." >&2
+            exit 1
+          fi
+
+          rsync --archive --delete \
+            --exclude='/.git/' \
+            --exclude='/.github/' \
+            --exclude='/AGENTS.md' \
+            --exclude='/AGENTS.md.meta' \
+            "$staging_path/" "$GITHUB_WORKSPACE/"
+
+          if rsync --archive --checksum --delete --dry-run \
+            --exclude='/.git/' \
+            --exclude='/.github/' \
+            --exclude='/AGENTS.md' \
+            --exclude='/AGENTS.md.meta' \
+            "$staging_path/" "$GITHUB_WORKSPACE/" | grep --quiet .; then
+            echo "Synchronization verification found remaining differences." >&2
+            exit 1
+          fi
+
+          git add --all
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "version=$version" >> "$GITHUB_OUTPUT"
+            echo "tarball_url=$tarball_url" >> "$GITHUB_OUTPUT"
+            echo "sha1=$expected_sha1" >> "$GITHUB_OUTPUT"
+            echo "Package is already synchronized at $version."
+            exit 0
+          fi
+
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tarball_url=$tarball_url" >> "$GITHUB_OUTPUT"
+          echo "sha1=$expected_sha1" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update synchronization pull request
+        if: steps.sync.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: automation/sync-unity-pipeline
+          base: ${{ github.event.repository.default_branch }}
+          delete-branch: true
+          commit-message: "chore: sync com.unity.pipeline ${{ steps.sync.outputs.version }}"
+          title: "chore: sync com.unity.pipeline ${{ steps.sync.outputs.version }}"
+          body: |
+            Automated synchronization from the official Unity Package Registry.
+
+            - Package: `com.unity.pipeline`
+            - Version: `${{ steps.sync.outputs.version }}`
+            - Registry: `https://packages.unity.com/com.unity.pipeline`
+            - Tarball: `${{ steps.sync.outputs.tarball_url }}`
+            - SHA-1 verified: `${{ steps.sync.outputs.sha1 }}`
+
+            The archive was downloaded over HTTPS, validated against registry metadata, checked for safe paths, and synchronized with Unity `.meta` files included.
