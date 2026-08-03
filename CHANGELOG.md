@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Persist the pipeline server auth token across editor domain reloads so long-lived clients (MCP/IDE) no longer get `401` after a recompile. (CLI-412)
 - `capture_game_view`/`capture_scene_view` with `save_path` now return a path-only result (no base64) so agent tool results stay small; pass `include_inline_image=true` for the old behavior. Add `max_resolution` to cap the inline image size. (AUTHAPI-8)
 - Object-reference string handles now accept authoring-root-relative asset paths (e.g. `Materials/Floor.mat`, not just `Assets/Materials/Floor.mat`): a relative string with a file extension is treated as an asset path and normalized under the authoring root, and a failed lookup now reports every strategy tried instead of a misleading hierarchy-path-only error. (AUTHAPI-9)
+- Preserve Unity 2022.3 LTS compatibility, including optional Input System integration and compatible PhysicsMaterial/material render queue APIs.
+- Use Unity 2022.3-compatible Editor importer metadata for the bundled Roslyn assemblies while excluding the conflicting Unsafe plugin.
 
 ## [0.3.1-exp.1] - 2026-07-16
 - Update docs

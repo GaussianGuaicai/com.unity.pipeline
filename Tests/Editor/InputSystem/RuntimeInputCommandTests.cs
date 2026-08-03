@@ -18,7 +18,6 @@ namespace Unity.Pipeline.Tests.Editor
         public void SimulateKey_Down_PressesKey()
         {
             var keyboard = InputSystem.AddDevice<Keyboard>();
-
             var result = RuntimeInputCommand.SimulateKey("A", "down");
 
             Assert.IsTrue(result.Success, result.Error);
@@ -29,7 +28,6 @@ namespace Unity.Pipeline.Tests.Editor
         public void SimulateKey_Up_ReleasesKey()
         {
             var keyboard = InputSystem.AddDevice<Keyboard>();
-
             RuntimeInputCommand.SimulateKey("A", "down");
             Assert.IsTrue(keyboard.aKey.isPressed);
 
@@ -43,7 +41,6 @@ namespace Unity.Pipeline.Tests.Editor
         public void SimulateKey_UnknownKey_Fails()
         {
             InputSystem.AddDevice<Keyboard>();
-
             var result = RuntimeInputCommand.SimulateKey("NotARealKey", "down");
 
             Assert.IsFalse(result.Success);
@@ -53,7 +50,6 @@ namespace Unity.Pipeline.Tests.Editor
         [Test]
         public void SimulateKey_NoKeyboard_Fails()
         {
-            // No keyboard device added in this isolated fixture state.
             var result = RuntimeInputCommand.SimulateKey("A", "down");
 
             Assert.IsFalse(result.Success);
@@ -64,7 +60,6 @@ namespace Unity.Pipeline.Tests.Editor
         public void SimulatePointer_Move_UpdatesPosition()
         {
             var mouse = InputSystem.AddDevice<Mouse>();
-
             var result = RuntimeInputCommand.SimulatePointer(123f, 456f, "move");
 
             Assert.IsTrue(result.Success, result.Error);
@@ -77,7 +72,6 @@ namespace Unity.Pipeline.Tests.Editor
         public void SimulatePointer_Down_PressesButtonAtPosition()
         {
             var mouse = InputSystem.AddDevice<Mouse>();
-
             var result = RuntimeInputCommand.SimulatePointer(10f, 20f, "down", "left");
 
             Assert.IsTrue(result.Success, result.Error);
