@@ -93,12 +93,12 @@ namespace Unity.Pipeline.Tests.Editor.Materials
 
         private static int GetRawRenderQueue(Material material)
         {
-    #if UNITY_6000_0_OR_NEWER
+#if UNITY_6000_0_OR_NEWER
             return material.rawRenderQueue;
-    #else
+#else
             var property = new SerializedObject(material).FindProperty("m_CustomRenderQueue");
             return property != null ? property.intValue : material.renderQueue;
-    #endif
+#endif
         }
 
         /// <summary>

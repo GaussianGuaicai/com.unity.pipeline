@@ -162,6 +162,11 @@ namespace Unity.Pipeline
                 // always called from the main thread).
                 m_Dispatcher.Initialize();
 
+                // Warm the token cache on the main thread before the listener accepts requests:
+                // per-request auth runs on background threads and the Editor token is SessionState-
+                // backed (main-thread-only). Re-runs after every domain reload via [InitializeOnLoad].
+                SecurityTokenManager.GetOrCreateToken();
+
                 // Mark running before opening the listener so HandleRequests' loop guard stays true
                 // as soon as it starts on the threadpool.
                 m_IsRunning = true;

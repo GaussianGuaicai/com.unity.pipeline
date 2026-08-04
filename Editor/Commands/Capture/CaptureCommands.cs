@@ -24,12 +24,14 @@ namespace Unity.Pipeline.Editor.Commands.Capture
     {
         private const int MaxDimension = 4096;
 
-        [CliCommand("capture_game_view", "Render a camera to a PNG and return it base64-encoded.")]
+        [CliCommand("capture_game_view", "Render a camera to a PNG. Returns it inline as base64, unless save_path is set (path-only result; pass include_inline_image=true to get both).")]
         public static CaptureResult CaptureGameView(
             [CliArg("width", "Output width in px (default 1280; capped 4096).")] int width = 1280,
             [CliArg("height", "Output height in px (default 720; capped 4096).")] int height = 720,
             [CliArg("camera", "Optional camera name; defaults to Camera.main, else the first enabled camera.")] string camera = null,
-            [CliArg("save_path", "Optional project-relative path to also write the PNG (e.g. Screenshots/foo.png).")] string savePath = null)
+            [CliArg("save_path", "Optional project-relative path to write the PNG (e.g. Screenshots/foo.png). When set, the result omits the inline base64 image unless include_inline_image=true.")] string savePath = null,
+            [CliArg("include_inline_image", "Also return the image inline as base64 when save_path is set (default false: path-only result). Only meaningful together with save_path.")] bool includeInlineImage = false,
+            [CliArg("max_resolution", "Cap on the inline image's longest edge (e.g. 512). Only applies when an inline image is returned (no save_path, or save_path + include_inline_image=true); the save_path file keeps the requested resolution.")] int maxResolution = 0)
         {
             GuardHasGpu();
 
@@ -37,29 +39,16 @@ namespace Unity.Pipeline.Editor.Commands.Capture
             if (cam == null)
                 throw new ArgumentException("No camera found to capture.");
 
-            var w = Mathf.Clamp(width, 1, MaxDimension);
-            var h = Mathf.Clamp(height, 1, MaxDimension);
-
-            var png = EncodeCameraToPng(cam, w, h);
-            var savedPath = WriteIfRequested(png, savePath);
-
-            return new CaptureResult
-            {
-                Width = w,
-                Height = h,
-                Encoding = "png",
-                Base64 = Convert.ToBase64String(png),
-                Bytes = png.Length,
-                Source = $"camera:{cam.name}",
-                SavedPath = savedPath
-            };
+            return Capture(cam, width, height, $"camera:{cam.name}", savePath, includeInlineImage, maxResolution);
         }
 
-        [CliCommand("capture_scene_view", "Render the active Scene View to a PNG (base64).")]
+        [CliCommand("capture_scene_view", "Render the active Scene View to a PNG. Returns it inline as base64, unless save_path is set (path-only result; pass include_inline_image=true to get both).")]
         public static CaptureResult CaptureSceneView(
             [CliArg("width", "Output width in px (default 1280; capped 4096).")] int width = 1280,
             [CliArg("height", "Output height in px (default 720; capped 4096).")] int height = 720,
-            [CliArg("save_path", "Optional project-relative path to also write the PNG (e.g. Screenshots/foo.png).")] string savePath = null)
+            [CliArg("save_path", "Optional project-relative path to write the PNG (e.g. Screenshots/foo.png). When set, the result omits the inline base64 image unless include_inline_image=true.")] string savePath = null,
+            [CliArg("include_inline_image", "Also return the image inline as base64 when save_path is set (default false: path-only result). Only meaningful together with save_path.")] bool includeInlineImage = false,
+            [CliArg("max_resolution", "Cap on the inline image's longest edge (e.g. 512). Only applies when an inline image is returned (no save_path, or save_path + include_inline_image=true); the save_path file keeps the requested resolution.")] int maxResolution = 0)
         {
             GuardHasGpu();
 
@@ -67,22 +56,72 @@ namespace Unity.Pipeline.Editor.Commands.Capture
             if (sv == null || sv.camera == null)
                 throw new ArgumentException("No active Scene View to capture.");
 
+            return Capture(sv.camera, width, height, "sceneView", savePath, includeInlineImage, maxResolution);
+        }
+
+        /// <summary>
+        /// Shared capture core. Renders at the requested (clamped) size and writes the file when
+        /// <paramref name="savePath"/> is set. The image is inlined as base64 only when there is no
+        /// file, or on <paramref name="includeInlineImage"/> — a save_path result is otherwise
+        /// path-only, so agent tool results stay small (AUTHAPI-8). <paramref name="maxResolution"/>
+        /// caps the inline image's longest edge (no-op when no inline image is returned); the saved
+        /// file keeps the requested resolution.
+        /// </summary>
+        private static CaptureResult Capture(Camera cam, int width, int height, string source,
+            string savePath, bool includeInlineImage, int maxResolution)
+        {
             var w = Mathf.Clamp(width, 1, MaxDimension);
             var h = Mathf.Clamp(height, 1, MaxDimension);
 
-            var png = EncodeCameraToPng(sv.camera, w, h);
+            var wantsFile = !string.IsNullOrEmpty(savePath);
+            var wantsInline = !wantsFile || includeInlineImage;
+
+            // Without a file the inline image is the only artifact: the cap applies to the render itself.
+            if (!wantsFile && maxResolution > 0)
+                (w, h) = ClampToLongEdge(w, h, maxResolution);
+
+            var png = EncodeCameraToPng(cam, w, h);
             var savedPath = WriteIfRequested(png, savePath);
+
+            string base64 = null;
+            int? inlineW = null, inlineH = null;
+            if (wantsInline)
+            {
+                var inlinePng = png;
+                if (wantsFile && maxResolution > 0 && maxResolution < Mathf.Max(w, h))
+                {
+                    // Re-render small for the inline copy; the file already has the full resolution.
+                    var (iw, ih) = ClampToLongEdge(w, h, maxResolution);
+                    inlinePng = EncodeCameraToPng(cam, iw, ih);
+                    inlineW = iw;
+                    inlineH = ih;
+                }
+                base64 = Convert.ToBase64String(inlinePng);
+            }
 
             return new CaptureResult
             {
                 Width = w,
                 Height = h,
                 Encoding = "png",
-                Base64 = Convert.ToBase64String(png),
+                Base64 = base64,
                 Bytes = png.Length,
-                Source = "sceneView",
-                SavedPath = savedPath
+                Source = source,
+                SavedPath = savedPath,
+                InlineWidth = inlineW,
+                InlineHeight = inlineH
             };
+        }
+
+        /// <summary>Scale (w, h) down so the longest edge is at most <paramref name="maxEdge"/>, preserving aspect.</summary>
+        private static (int w, int h) ClampToLongEdge(int w, int h, int maxEdge)
+        {
+            var longest = Mathf.Max(w, h);
+            if (maxEdge <= 0 || longest <= maxEdge)
+                return (w, h);
+
+            var scale = (float)maxEdge / longest;
+            return (Mathf.Max(1, Mathf.RoundToInt(w * scale)), Mathf.Max(1, Mathf.RoundToInt(h * scale)));
         }
 
         /// <summary>Throw when no GPU is available (batchmode/headless), where a render would be blank.</summary>
@@ -177,8 +216,9 @@ namespace Unity.Pipeline.Editor.Commands.Capture
     }
 
     /// <summary>
-    /// Result of a capture command: the PNG payload (base64), its dimensions, the source it was
-    /// rendered from, and the project-relative path it was written to (null when not saved).
+    /// Result of a capture command: the rendered dimensions, the source, the project-relative path
+    /// the PNG was written to (null when not saved), and the base64 payload — omitted from the JSON
+    /// when a save_path result is path-only (AUTHAPI-8).
     /// </summary>
     [Serializable]
     public class CaptureResult
@@ -195,8 +235,8 @@ namespace Unity.Pipeline.Editor.Commands.Capture
         [JsonProperty("encoding")]
         public string Encoding { get; set; }
 
-        /// <summary>Base64-encoded PNG bytes.</summary>
-        [JsonProperty("base64")]
+        /// <summary>Base64-encoded PNG bytes; null (omitted) when save_path is set without include_inline_image.</summary>
+        [JsonProperty("base64", NullValueHandling = NullValueHandling.Ignore)]
         public string Base64 { get; set; }
 
         /// <summary>Length of the raw PNG byte array.</summary>
@@ -210,5 +250,13 @@ namespace Unity.Pipeline.Editor.Commands.Capture
         /// <summary>Project-relative path the PNG was also written to, or null.</summary>
         [JsonProperty("savedPath")]
         public string SavedPath { get; set; }
+
+        /// <summary>Inline image width when max_resolution downscaled it below the saved file's; omitted otherwise.</summary>
+        [JsonProperty("inlineWidth", NullValueHandling = NullValueHandling.Ignore)]
+        public int? InlineWidth { get; set; }
+
+        /// <summary>Inline image height when max_resolution downscaled it below the saved file's; omitted otherwise.</summary>
+        [JsonProperty("inlineHeight", NullValueHandling = NullValueHandling.Ignore)]
+        public int? InlineHeight { get; set; }
     }
 }

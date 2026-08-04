@@ -3,25 +3,31 @@
 Commands that render a camera, the Scene View, or a UI Toolkit element to a PNG and return it base64-encoded so an agent can "see" the editor (or a running player) without a display.
 
 ### `capture_game_view`
-Render a camera to a PNG and return it base64-encoded.
+Render a camera to a PNG. Returns it inline as base64, unless `save_path` is set — then the result is **path-only** (no base64) so agent tool results stay small; pass `include_inline_image=true` to get both.
+
+Parameter interactions: `include_inline_image` is only meaningful together with `save_path` (without one, the inline image is always returned). `max_resolution` only applies when an inline image is actually returned — i.e. no `save_path`, or `save_path` + `include_inline_image=true`; it has **no effect** when `save_path` is set without `include_inline_image=true`.
 
 | Parameter | Required | Default | Description |
 |-----------|----------|---------|-------------|
 | `width` | no | `1280` | Output width in px (default 1280; capped 4096). |
 | `height` | no | `720` | Output height in px (default 720; capped 4096). |
 | `camera` | no | `–` | Optional camera name; defaults to Camera.main, else the first enabled camera. |
-| `save_path` | no | `–` | Optional project-relative path to also write the PNG (e.g. Screenshots/foo.png). |
+| `save_path` | no | `–` | Optional project-relative path to write the PNG (e.g. Screenshots/foo.png). When set, the result omits the inline base64 image unless `include_inline_image=true`. |
+| `include_inline_image` | no | `false` | Also return the image inline as base64 when `save_path` is set. |
+| `max_resolution` | no | `0` | Cap on the inline image's longest edge (e.g. 512), preserving aspect ratio. No effect when `save_path` is set without `include_inline_image=true`. The `save_path` file keeps the requested resolution; a downscaled inline copy is reported via `inlineWidth`/`inlineHeight`. |
 
 **Returns:** `CaptureResult`
 
 ### `capture_scene_view`
-Render the active Scene View to a PNG (base64).
+Render the active Scene View to a PNG. Same result contract and parameter interactions as `capture_game_view`: inline base64, or path-only when `save_path` is set (opt back in with `include_inline_image=true`; `max_resolution` has no effect when `save_path` is set without it).
 
 | Parameter | Required | Default | Description |
 |-----------|----------|---------|-------------|
 | `width` | no | `1280` | Output width in px (default 1280; capped 4096). |
 | `height` | no | `720` | Output height in px (default 720; capped 4096). |
-| `save_path` | no | `–` | Optional project-relative path to also write the PNG (e.g. Screenshots/foo.png). |
+| `save_path` | no | `–` | Optional project-relative path to write the PNG (e.g. Screenshots/foo.png). When set, the result omits the inline base64 image unless `include_inline_image=true`. |
+| `include_inline_image` | no | `false` | Also return the image inline as base64 when `save_path` is set. |
+| `max_resolution` | no | `0` | Cap on the inline image's longest edge (e.g. 512), preserving aspect ratio. No effect when `save_path` is set without `include_inline_image=true`. The `save_path` file keeps the requested resolution; a downscaled inline copy is reported via `inlineWidth`/`inlineHeight`. |
 
 **Returns:** `CaptureResult`
 

@@ -4,6 +4,7 @@
     "references": [
         "UnityEditor.TestRunner",
         "Unity.Pipeline",
+        "Unity.Pipeline.InputSystem",
         "UnityEngine.TestRunner",
         "Unity.InputSystem",
         "Unity.InputSystem.TestFramework"

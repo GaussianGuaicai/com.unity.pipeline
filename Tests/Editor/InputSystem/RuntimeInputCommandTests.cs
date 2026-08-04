@@ -1,16 +1,23 @@
+#if ENABLE_INPUT_SYSTEM
 using NUnit.Framework;
 using Unity.Pipeline.Runtime.Commands;
+using UnityEngine;
 using UnityEngine.InputSystem;
 
 namespace Unity.Pipeline.Tests.Editor
 {
+    /// <summary>
+    /// Tests for <see cref="RuntimeInputCommand"/> input injection. Inherits <see cref="InputTestFixture"/>,
+    /// which saves the real input state on setup and restores it on teardown, so adding virtual devices and
+    /// pumping the Input System here never leaks into the editor session. Only compiled when the Input System
+    /// is present and active (ENABLE_INPUT_SYSTEM) — the same guard the command uses.
+    /// </summary>
     public class RuntimeInputCommandTests : InputTestFixture
     {
         [Test]
         public void SimulateKey_Down_PressesKey()
         {
             var keyboard = InputSystem.AddDevice<Keyboard>();
-
             var result = RuntimeInputCommand.SimulateKey("A", "down");
 
             Assert.IsTrue(result.Success, result.Error);
@@ -21,7 +28,6 @@ namespace Unity.Pipeline.Tests.Editor
         public void SimulateKey_Up_ReleasesKey()
         {
             var keyboard = InputSystem.AddDevice<Keyboard>();
-
             RuntimeInputCommand.SimulateKey("A", "down");
             Assert.IsTrue(keyboard.aKey.isPressed);
 
@@ -35,7 +41,6 @@ namespace Unity.Pipeline.Tests.Editor
         public void SimulateKey_UnknownKey_Fails()
         {
             InputSystem.AddDevice<Keyboard>();
-
             var result = RuntimeInputCommand.SimulateKey("NotARealKey", "down");
 
             Assert.IsFalse(result.Success);
@@ -55,20 +60,18 @@ namespace Unity.Pipeline.Tests.Editor
         public void SimulatePointer_Move_UpdatesPosition()
         {
             var mouse = InputSystem.AddDevice<Mouse>();
-
             var result = RuntimeInputCommand.SimulatePointer(123f, 456f, "move");
 
             Assert.IsTrue(result.Success, result.Error);
-            var position = mouse.position.ReadValue();
-            Assert.AreEqual(123f, position.x, 0.5f);
-            Assert.AreEqual(456f, position.y, 0.5f);
+            var pos = mouse.position.ReadValue();
+            Assert.AreEqual(123f, pos.x, 0.5f);
+            Assert.AreEqual(456f, pos.y, 0.5f);
         }
 
         [Test]
         public void SimulatePointer_Down_PressesButtonAtPosition()
         {
             var mouse = InputSystem.AddDevice<Mouse>();
-
             var result = RuntimeInputCommand.SimulatePointer(10f, 20f, "down", "left");
 
             Assert.IsTrue(result.Success, result.Error);
@@ -76,3 +79,4 @@ namespace Unity.Pipeline.Tests.Editor
         }
     }
 }
+#endif

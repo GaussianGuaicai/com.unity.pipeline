@@ -16,7 +16,7 @@ namespace Unity.Pipeline.Editor
     public class EditorPipelineManager : ScriptableObject
     {
         [Tooltip("HTTP port for the editor server. 0 = auto-assign from the 7800-7849 range. Applies on next start.")]
-        [SerializeField, Range(0, 65535)] private int m_Port = 0;
+        [SerializeField] private ushort m_Port = 0;
 
         [Tooltip("Start the server automatically when the editor loads. Applies on next editor load.")]
         [SerializeField] private bool m_AutoStart = true;
@@ -25,8 +25,8 @@ namespace Unity.Pipeline.Editor
                  "Keeps auto-tick on so the editor keeps ticking while unfocused (required for the watchdog).")]
         [SerializeField] private bool m_WatchdogEnabled = true;
 
-        [Tooltip("How often the watchdog checks the listener, in seconds.")]
-        [SerializeField, Range(1, 60)] private int m_WatchdogIntervalSeconds = 5;
+        [Tooltip("How often the watchdog checks the listener, between 1 and 60 seconds.")]
+        [SerializeField] private int m_WatchdogIntervalSeconds = 5;
 
         [Tooltip("Log every command request/response (raw JSON) handled by the editor server to " +
                  "<project>/Logs/pipeline.log. Editor only; applies live.")]
@@ -64,6 +64,11 @@ namespace Unity.Pipeline.Editor
                 return null;
             return AssetDatabase.LoadAssetAtPath<EditorPipelineManager>(
                 AssetDatabase.GUIDToAssetPath(guids[0]));
+        }
+
+        private void OnValidate()
+        {
+            m_WatchdogIntervalSeconds = Mathf.Clamp(m_WatchdogIntervalSeconds, 1, 60);
         }
     }
 }

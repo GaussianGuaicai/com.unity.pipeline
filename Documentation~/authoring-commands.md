@@ -122,6 +122,12 @@ public static Renderer ResolveRenderer(ObjectRef target)
 Resolve **outside** any undo scope / before mutating, so a bad handle fails before your command
 changes anything (see `create_gameobject`, which resolves its `parent` before entering the scope).
 
+When the handle is a plain string (the usual agent input), a value with a file extension and no
+leading `/` — e.g. `"Materials/Floor.mat"` — is taken as an asset path and normalized under the
+authoring root, so the `Assets/` prefix is optional (mirroring path-taking commands). A leading `/`
+or an extension-less value stays a `hierarchyPath`; a dotted scene name like `"Cube.001"` still
+resolves because the `path` branch falls back to a hierarchy lookup.
+
 ## Returning objects: `AuthoringResult`
 
 Any command that creates or modifies an object should return its identity so the agent can reference

@@ -22,7 +22,28 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Check for an active synchronization pull request
+        id: active-pr
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          count="$(gh pr list \
+            --head automation/sync-unity-pipeline \
+            --state open \
+            --json number \
+            --jq 'length')"
+          if [[ "$count" -gt 0 ]]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "An active synchronization pull request already exists; preserving its review branch."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Resolve, validate, and synchronize latest package
+        if: steps.active-pr.outputs.exists != 'true'
         id: sync
         shell: bash
         env:
@@ -42,6 +63,14 @@ jobs:
           version="$(jq -er '."dist-tags".latest' "$metadata_path")"
           tarball_url="$(jq -er --arg version "$version" '.versions[$version].dist.tarball' "$metadata_path")"
           expected_sha1="$(jq -er --arg version "$version" '.versions[$version].dist.shasum' "$metadata_path")"
+
+          current_version="$(jq -er '.version' "$GITHUB_WORKSPACE/package.json")"
+          if [[ "$current_version" == "$version" ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "version=$version" >> "$GITHUB_OUTPUT"
+            echo "Package version $version is already synchronized; preserving compatibility patches."
+            exit 0
+          fi
 
           if [[ ! "$tarball_url" =~ ^https:// ]]; then
             echo "Registry returned a non-HTTPS tarball URL: $tarball_url" >&2

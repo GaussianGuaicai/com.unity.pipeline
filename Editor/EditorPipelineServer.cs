@@ -1,5 +1,6 @@
 using System;
 using Unity.Pipeline.Models;
+using Unity.Pipeline.Security;
 using UnityEngine;
 
 namespace Unity.Pipeline.Editor
@@ -65,6 +66,9 @@ namespace Unity.Pipeline.Editor
             // Update heartbeat in instance descriptor
             if (m_InstanceDescriptor != null)
             {
+                // Keep the port file's token current for discovery only — GetToken() validates the
+                // live token, so this just catches up to a rotation on the next heartbeat.
+                m_InstanceDescriptor.EvalToken = SecurityTokenManager.GetOrCreateToken();
                 m_InstanceDescriptor.LastHeartbeat = DateTime.UtcNow;
                 try
                 {
@@ -89,7 +93,9 @@ namespace Unity.Pipeline.Editor
 
         protected override string GetToken()
         {
-            return m_InstanceDescriptor.EvalToken;
+            // Validate the live token so a rotation/revocation takes effect on the next request (not
+            // the next heartbeat). The descriptor's EvalToken is discovery-only.
+            return SecurityTokenManager.GetOrCreateToken();
         }
     }
 }

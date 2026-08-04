@@ -84,15 +84,15 @@ namespace Unity.Pipeline.Editor.Commands.Materials
             return result;
         }
 
-            private static int GetRawRenderQueue(Material material)
-            {
-        #if UNITY_6000_0_OR_NEWER
-                return material.rawRenderQueue;
-        #else
-                var property = new SerializedObject(material).FindProperty("m_CustomRenderQueue");
-                return property != null ? property.intValue : material.renderQueue;
-        #endif
-            }
+        private static int GetRawRenderQueue(Material material)
+        {
+#if UNITY_6000_0_OR_NEWER
+            return material.rawRenderQueue;
+#else
+            var property = new SerializedObject(material).FindProperty("m_CustomRenderQueue");
+            return property != null ? property.intValue : material.renderQueue;
+#endif
+        }
 
         [CliCommand("set_material_properties",
             "Set shader properties on a material (Float/Range/Int=number; Color=[r,g,b,a] or \"#RRGGBBAA\" hex; Vector=[x,y,z,w]; Texture=an object reference or null to clear), optionally reassign the shader, set the render queue, and toggle keywords. Unknown names / type mismatches are reported in unknown[].")]
