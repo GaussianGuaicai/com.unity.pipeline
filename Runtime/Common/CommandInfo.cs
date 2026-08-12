@@ -33,6 +33,18 @@ namespace Unity.Pipeline.Commands
         public bool RuntimeOnly { get; }
 
         /// <summary>
+        /// Hierarchical tags used to group and browse commands (path-style, '/'-separated).
+        /// Empty for untagged commands; never null.
+        /// </summary>
+        public IReadOnlyList<string> Tags { get; }
+
+        /// <summary>
+        /// Name of the assembly this command originates from, used to group and filter
+        /// commands by contributing package/source.
+        /// </summary>
+        public string Package { get; }
+
+        /// <summary>
         /// Method that implements this command.
         /// </summary>
         public MethodInfo Method { get; } // TODO Maybe look at generating a dynamic Delegate to increase performance of the command call.
@@ -46,7 +58,8 @@ namespace Unity.Pipeline.Commands
         /// Create command information from discovery.
         /// </summary>
         public CommandInfo(string name, string description, bool mainThreadRequired,
-            MethodInfo method, IReadOnlyList<CommandParameterInfo> parameters, bool runtimeOnly = false)
+            MethodInfo method, IReadOnlyList<CommandParameterInfo> parameters, bool runtimeOnly = false,
+            IReadOnlyList<string> tags = null, string package = null)
         {
             Name = name ?? throw new ArgumentNullException(nameof(name));
             Description = description ?? throw new ArgumentNullException(nameof(description));
@@ -54,6 +67,8 @@ namespace Unity.Pipeline.Commands
             Parameters = parameters ?? throw new ArgumentNullException(nameof(parameters));
             MainThreadRequired = mainThreadRequired;
             RuntimeOnly = runtimeOnly;
+            Tags = tags ?? Array.Empty<string>();
+            Package = package;
         }
 
         public override string ToString()

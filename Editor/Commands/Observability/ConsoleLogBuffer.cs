@@ -34,8 +34,9 @@ namespace Unity.Pipeline.Editor.Commands.Observability
     /// <summary>
     /// Captures Editor console output into a bounded, thread-safe ring buffer so it can be read back
     /// structurally over the pipeline (CLI-198). Subscribes to
-    /// <see cref="Application.logMessageReceivedThreaded"/> on load — the threaded variant is used
-    /// because Unity may raise log callbacks off the main thread, and the handler is fully lock-guarded.
+    /// <see cref="Application.logMessageReceivedThreaded"/> on load and re-subscribes on every
+    /// play-mode transition — the threaded variant is used because Unity may raise log callbacks off
+    /// the main thread, and the handler is fully lock-guarded.
     ///
     /// The buffer holds at most <see cref="MaxEntries"/> entries; the oldest is dropped when full.
     /// </summary>
@@ -45,19 +46,35 @@ namespace Unity.Pipeline.Editor.Commands.Observability
         public const int MaxEntries = 1000;
 
         private static readonly object m_Lock = new object();
+        private static readonly object m_SubscriptionLock = new object();
         private static readonly Queue<ConsoleLogEntryDto> m_Entries = new Queue<ConsoleLogEntryDto>(MaxEntries);
 
         /// <summary>
         /// Subscribe to Unity's threaded log callback as soon as the Editor domain loads, so capture
-        /// is live before any command runs. Idempotent across domain reloads (handler is removed
-        /// first to avoid double-subscription if Init somehow runs twice).
+        /// is live before any command runs, and re-arm on every play-mode transition — Unity clears
+        /// <see cref="Application.logMessageReceivedThreaded"/>'s subscribers on play-mode exit even
+        /// though exiting play mode does not reload the domain.
         /// </summary>
         [InitializeOnLoadMethod]
         private static void Init()
         {
-            Application.logMessageReceivedThreaded -= OnLogMessageThreaded;
-            Application.logMessageReceivedThreaded += OnLogMessageThreaded;
+            EnsureCapturing();
+
+            EditorApplication.playModeStateChanged -= OnPlayModeStateChanged;
+            EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
         }
+
+        /// <summary>Subscribe to the log callback, removing any existing subscription first.</summary>
+        internal static void EnsureCapturing()
+        {
+            lock (m_SubscriptionLock)
+            {
+                Application.logMessageReceivedThreaded -= OnLogMessageThreaded;
+                Application.logMessageReceivedThreaded += OnLogMessageThreaded;
+            }
+        }
+
+        private static void OnPlayModeStateChanged(PlayModeStateChange state) => EnsureCapturing();
 
         private static void OnLogMessageThreaded(string condition, string stackTrace, LogType type)
         {

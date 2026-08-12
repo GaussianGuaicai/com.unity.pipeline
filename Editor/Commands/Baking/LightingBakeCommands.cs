@@ -47,7 +47,7 @@ namespace Unity.Pipeline.Editor.Commands.Baking
 
         #region bake_lighting
 
-        [CliCommand("bake_lighting", "Trigger an async lightmap bake of the open scene(s) via Lightmapping.BakeAsync(). Returns immediately; poll lighting_bake_status until completed.")]
+        [CliCommand("bake_lighting", "Trigger an async lightmap bake of the open scene(s) via Lightmapping.BakeAsync(). Returns immediately; poll lighting_bake_status until completed.", Tags = new[] { "baking/lighting" })]
         public static object BakeLighting(
             [CliArg("confirm", "Recommended (true): a bake overwrites existing lightmap data. Accepted for parity; not required.")] bool confirm = false,
             [CliArg("dry_run", "If true, validate there is an open bakeable scene and return the current lighting settings without baking.")] bool dryRun = false)
@@ -92,7 +92,7 @@ namespace Unity.Pipeline.Editor.Commands.Baking
             return new { status = "baking", bakeId };
         }
 
-        [CliCommand("lighting_bake_status", "Get the status of the last lighting bake: idle | baking | completed.", MainThreadRequired = false)]
+        [CliCommand("lighting_bake_status", "Get the status of the last lighting bake: idle | baking | completed.", MainThreadRequired = false, Tags = new[] { "baking/lighting" })]
         public static string LightingBakeStatus()
         {
             if (File.Exists(StatusFile))
@@ -100,7 +100,7 @@ namespace Unity.Pipeline.Editor.Commands.Baking
             return "{\"status\":\"idle\"}";
         }
 
-        [CliCommand("cancel_lighting_bake", "Cancel an in-progress lighting bake (Lightmapping.Cancel()).")]
+        [CliCommand("cancel_lighting_bake", "Cancel an in-progress lighting bake (Lightmapping.Cancel()).", Tags = new[] { "baking/lighting" })]
         public static object CancelLightingBake()
         {
             var wasRunning = Lightmapping.isRunning;
@@ -126,7 +126,7 @@ namespace Unity.Pipeline.Editor.Commands.Baking
             return new { cancelled = wasRunning };
         }
 
-        [CliCommand("clear_baked_lighting", "Clear baked lightmap data for the open scene(s). Destructive: requires confirm=true.")]
+        [CliCommand("clear_baked_lighting", "Clear baked lightmap data for the open scene(s). Destructive: requires confirm=true.", Tags = new[] { "baking/lighting" })]
         public static object ClearBakedLighting(
             [CliArg("confirm", "Must be true to actually clear (destructive, not undoable via Unity's Undo).")] bool confirm = false,
             [CliArg("include_disk_cache", "If true, also clear the GI disk cache (Lightmapping.ClearDiskCache()).")] bool includeDiskCache = false,
@@ -149,13 +149,13 @@ namespace Unity.Pipeline.Editor.Commands.Baking
 
         #region settings
 
-        [CliCommand("get_lighting_settings", "Read the active LightingSettings (lightmapper, bounces, resolution, directional mode, AO, etc.).")]
+        [CliCommand("get_lighting_settings", "Read the active LightingSettings (lightmapper, bounces, resolution, directional mode, AO, etc.).", Tags = new[] { "baking/lighting" })]
         public static LightingSettingsResult GetLightingSettings()
         {
             return ReadLightingSettings();
         }
 
-        [CliCommand("set_lighting_settings", "Apply a subset of lighting settings to the active LightingSettings. Returns { applied[], unknown[] }.")]
+        [CliCommand("set_lighting_settings", "Apply a subset of lighting settings to the active LightingSettings. Returns { applied[], unknown[] }.", Tags = new[] { "baking/lighting" })]
         public static object SetLightingSettings(
             [CliArg("settings", "JSON object with a subset of lighting fields to set (same names/enums as get_lighting_settings).", Required = true)] JObject settings,
             [CliArg("dry_run", "If true, validate the keys and report applied/unknown without changing anything.")] bool dryRun = false)

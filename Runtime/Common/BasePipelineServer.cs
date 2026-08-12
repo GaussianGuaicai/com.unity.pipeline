@@ -1,8 +1,10 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Unity.Pipeline.Models;
 using Unity.Pipeline.Commands;
@@ -36,10 +38,49 @@ namespace Unity.Pipeline
         /// </summary>
         private const long MaxDrainBytes = 8 * 1024 * 1024;
 
+        /// <summary>
+        /// Maximum accepted body size for /api/job/cancel (4 KiB). The body is just an
+        /// <c>{"id": "..."}</c> object, so it needs far less headroom than <see cref="MaxRequestBodyBytes"/>.
+        /// </summary>
+        private const long MaxCancelBodyBytes = 4 * 1024;
+
+        /// <summary>
+        /// Dispatcher wait for a detached job's main-thread execution. Nothing is synchronously
+        /// waiting on this thread (the job's HTTP response was already sent), so this only needs
+        /// to be larger than any command's own timeout (e.g. eval's 24h cap) rather than bounded
+        /// by an HTTP-facing default.
+        /// </summary>
+        private const int UnboundedJobDispatcherTimeoutMs = int.MaxValue;
+
         private bool m_IsRunning;
         private int m_Port;
+
+        /// <summary>
+        /// Serializes /api/exec command execution now that requests are processed
+        /// concurrently: execs queue exactly as they did when the accept loop was serial,
+        /// while read-only endpoints (/api/status, /api/progress, …) answer immediately.
+        /// </summary>
+        private readonly SemaphoreSlim m_ExecGate = new SemaphoreSlim(1, 1);
         private HttpListener m_HttpListener;
         private readonly Dispatcher m_Dispatcher = new Dispatcher();
+
+        /// <summary>This server's own progress-reporting state (see CliProgress).</summary>
+        internal CliProgressState Progress { get; } = new CliProgressState();
+
+        /// <summary>This server's own detached-job registry (see PipelineCancellation, /api/job).</summary>
+        internal PipelineJobRegistry JobRegistry { get; } = new PipelineJobRegistry();
+
+        /// <summary>
+        /// The server instance currently executing a command on this thread, if any. Set only
+        /// around the actual command invocation (see <see cref="ExecuteCommandDirect"/>) so
+        /// CliProgress.Report/PipelineCancellation — called from arbitrary command code with no
+        /// reference to "which server is running me" — resolve to the right instance. Correct
+        /// regardless of which physical thread ends up running the command, since the push/read/pop
+        /// all happen within one synchronous call frame; a command that awaits and resumes on a
+        /// different thread before calling either API would not see it (no command does today).
+        /// </summary>
+        [ThreadStatic] private static BasePipelineServer m_CurrentServer;
+        internal static BasePipelineServer CurrentServer => m_CurrentServer;
 
         private bool m_WatchdogEnabled;
         private bool m_WatchdogArmed;
@@ -133,6 +174,17 @@ namespace Unity.Pipeline
         {
 
         }
+
+        /// <summary>
+        /// Busy probe for the /api/exec gate: return a non-null, human-readable reason when the
+        /// host cannot service <paramref name="command"/> right now (e.g. the Editor is still
+        /// importing/compiling while settling after a cold start), or null to let it run. A busy
+        /// command is rejected with HTTP 503 and a structured, retryable envelope — before sync
+        /// execution and before a detached job is created — instead of executing into a
+        /// half-ready host and failing opaquely (AUTHAPI-35). Called on the request thread, so
+        /// implementations must only read thread-safe state. Default: never busy.
+        /// </summary>
+        protected virtual string GetBusyReason(CommandInfo command) => null;
 
         protected virtual void ServerStopped()
         {
@@ -341,7 +393,14 @@ namespace Unity.Pipeline
                 try
                 {
                     var context = await m_HttpListener.GetContextAsync();
-                    await ProcessRequest(context);
+                    // Process detached so the accept loop keeps serving while a long command
+                    // holds its /api/exec connection open. Without this, ANY in-flight exec
+                    // blocked every other request — including /api/status probes and the
+                    // /api/progress polls that exist precisely for that situation (CLI-488;
+                    // the "editor is unresponsive until the command finishes" report in
+                    // CLI-335). Command execution itself stays strictly serialized via
+                    // m_ExecGate below, so exec ordering semantics are unchanged.
+                    _ = ProcessRequestDetached(context);
                 }
                 catch (ObjectDisposedException)
                 {
@@ -359,6 +418,22 @@ namespace Unity.Pipeline
                 }
             }
             m_IsRunning = false;
+        }
+
+        /// <summary>
+        /// Run ProcessRequest without the accept loop awaiting it; a per-request failure is
+        /// logged and must never tear down the listener loop.
+        /// </summary>
+        private async Task ProcessRequestDetached(HttpListenerContext context)
+        {
+            try
+            {
+                await ProcessRequest(context);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError(ex);
+            }
         }
 
         /// <summary>
@@ -411,16 +486,31 @@ namespace Unity.Pipeline
                         await HandleEditorStatusRequest(response);
                         break;
                     case "/api/commands":
-                        await HandleCommandsRequest(response);
+                        await HandleCommandsRequest(request, response);
                         break;
                     case "/api/exec":
                         if (request.HttpMethod == "POST")
                             await HandleExecRequest(request, response);
                         else
-                            await HandleMethodNotAllowed(response);
+                            await HandleMethodNotAllowed(response, "POST");
                         break;
                     case "/api/test-status":
                         await HandleTestStatusRequest(response);
+                        break;
+                    case "/api/progress":
+                        await HandleProgressRequest(response);
+                        break;
+                    case "/api/job":
+                        if (request.HttpMethod == "GET")
+                            await HandleJobStatusRequest(request, response);
+                        else
+                            await HandleMethodNotAllowed(response, "GET");
+                        break;
+                    case "/api/job/cancel":
+                        if (request.HttpMethod == "POST")
+                            await HandleJobCancelRequest(request, response);
+                        else
+                            await HandleMethodNotAllowed(response, "POST");
                         break;
                     default:
                         await HandleNotFound(response);
@@ -482,6 +572,34 @@ namespace Unity.Pipeline
         }
 
         /// <summary>
+        /// Serialize <paramref name="payload"/> (null fields omitted) and send it as the JSON
+        /// body. Shares <see cref="SendStatusResponse"/>'s write guard: a failure while writing
+        /// (e.g. the client disconnected mid-response) is swallowed here instead of propagating
+        /// into the caller's own catch block, which would otherwise attempt a second response on
+        /// the now-dead connection.
+        /// </summary>
+        private async Task SendJsonResponse(HttpListenerResponse response, int statusCode, object payload)
+        {
+            try
+            {
+                var json = JsonConvert.SerializeObject(payload,
+                    new JsonSerializerSettings { NullValueHandling = NullValueHandling.Ignore });
+
+                response.StatusCode = statusCode;
+                response.ContentType = "application/json";
+                var buffer = Encoding.UTF8.GetBytes(json);
+                response.ContentLength64 = buffer.Length;
+
+                await response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
+                response.OutputStream.Close();
+            }
+            catch
+            {
+                try { response.OutputStream.Close(); } catch { }
+            }
+        }
+
+        /// <summary>
         /// Handle /api/status endpoint - returns basic server health information.
         /// No Editor API access required, always fast response.
         /// </summary>
@@ -518,8 +636,20 @@ namespace Unity.Pipeline
             {
                 // TODO: should this be implemented as a command??
 
-                // Execute editor_status command to get rich Editor information
-                var result = await ExecuteCommandByName("editor_status", new JObject());
+                // Queue behind the same gate as /api/exec so this doesn't run concurrently with
+                // an in-flight exec (or another editor_status/test_status call): it dispatches
+                // onto the main thread just like exec does, so left ungated it would race rather
+                // than queue the way it did under the old serial accept loop.
+                object result;
+                await m_ExecGate.WaitAsync();
+                try
+                {
+                    result = await ExecuteCommandByName("editor_status", new JObject());
+                }
+                finally
+                {
+                    m_ExecGate.Release();
+                }
 
                 // The editor_status command returns a StatusResponse directly
                 var editorStatus = result as StatusResponse;
@@ -569,27 +699,127 @@ namespace Unity.Pipeline
         }
 
         /// <summary>
-        /// Handle /api/commands endpoint - returns available CLI commands with schemas.
+        /// Handle /api/commands endpoint - returns the available CLI commands.
+        ///
+        /// Optional query parameters (filters combine with AND):
+        ///  - detail: 'full' (default) includes parameters and the generated JSON schema;
+        ///    'compact' returns a lightweight index (name, description, tags, package) so a
+        ///    client can cheaply browse, then fetch full detail only for the commands it
+        ///    intends to invoke.
+        ///  - query: case-insensitive substring match on name, description, or any tag.
+        ///  - tag: scope to a tag subtree via segment-aware prefix match ('assets' matches
+        ///    'assets' and 'assets/import' but not 'assetsx').
+        ///  - group_by: 'flat' (default) returns a 'commands' array; 'package' and 'tag'
+        ///    return a 'groups' array instead ('tag' is a nested tree mirroring tag/subtag;
+        ///    untagged commands land in a node with an empty tag).
+        ///  - sort: 'name' (default) or 'package' (originating package, name as tiebreak);
+        ///    order: 'asc' (default) or 'desc'. Sorting applies to the flat list before
+        ///    pagination and grouping.
+        ///  - offset / limit: paginate the filtered, sorted flat list (applied before
+        ///    grouping, so pages are deterministic); 'total' reports the match count before
+        ///    pagination while 'count' is the number of commands actually returned.
         /// </summary>
-        private async Task HandleCommandsRequest(HttpListenerResponse response)
+        private async Task HandleCommandsRequest(HttpListenerRequest request, HttpListenerResponse response)
         {
             try
             {
-                var commands = CommandRegistry.DiscoverCommands()
-                    .Where(c => IncludeRuntimeOnlyCommands || !c.RuntimeOnly)
-                    .ToList();
-                var commandsJson = commands.Select(BuildCommandResponse).ToList();
+                var queryString = request.QueryString;
 
-                var responseData = new
+                var detail = queryString["detail"] ?? "full";
+                bool fullDetail;
+                if (string.Equals(detail, "full", StringComparison.OrdinalIgnoreCase))
+                    fullDetail = true;
+                else if (string.Equals(detail, "compact", StringComparison.OrdinalIgnoreCase))
+                    fullDetail = false;
+                else
                 {
-                    commands = commandsJson,
-                    count = commands.Count,
-                    server = new
+                    await SendStatusResponse(response, 400, "Invalid Request",
+                        $"Unknown detail value '{detail}'. Accepted values: compact, full");
+                    return;
+                }
+
+                var groupBy = queryString["group_by"] ?? "flat";
+                var groupByPackage = string.Equals(groupBy, "package", StringComparison.OrdinalIgnoreCase);
+                var groupByTag = string.Equals(groupBy, "tag", StringComparison.OrdinalIgnoreCase);
+                if (!groupByPackage && !groupByTag && !string.Equals(groupBy, "flat", StringComparison.OrdinalIgnoreCase))
+                {
+                    await SendStatusResponse(response, 400, "Invalid Request",
+                        $"Unknown group_by value '{groupBy}'. Accepted values: flat, package, tag");
+                    return;
+                }
+
+                var sort = queryString["sort"] ?? "name";
+                var sortByPackage = string.Equals(sort, "package", StringComparison.OrdinalIgnoreCase);
+                if (!sortByPackage && !string.Equals(sort, "name", StringComparison.OrdinalIgnoreCase))
+                {
+                    await SendStatusResponse(response, 400, "Invalid Request",
+                        $"Unknown sort value '{sort}'. Accepted values: name, package");
+                    return;
+                }
+
+                var order = queryString["order"] ?? "asc";
+                var descending = string.Equals(order, "desc", StringComparison.OrdinalIgnoreCase);
+                if (!descending && !string.Equals(order, "asc", StringComparison.OrdinalIgnoreCase))
+                {
+                    await SendStatusResponse(response, 400, "Invalid Request",
+                        $"Unknown order value '{order}'. Accepted values: asc, desc");
+                    return;
+                }
+
+                var offset = 0;
+                if (queryString["offset"] != null
+                    && (!int.TryParse(queryString["offset"], out offset) || offset < 0))
+                {
+                    await SendStatusResponse(response, 400, "Invalid Request",
+                        $"Invalid offset value '{queryString["offset"]}'. Expected a non-negative integer");
+                    return;
+                }
+
+                int? limit = null;
+                if (queryString["limit"] != null)
+                {
+                    if (!int.TryParse(queryString["limit"], out var parsedLimit) || parsedLimit < 0)
                     {
-                        version = "0.0.1", // TODO: Get from package.json
-                        port = m_Port,
-                        startTime = StartedAt
+                        await SendStatusResponse(response, 400, "Invalid Request",
+                            $"Invalid limit value '{queryString["limit"]}'. Expected a non-negative integer");
+                        return;
                     }
+                    limit = parsedLimit;
+                }
+
+                var query = queryString["query"];
+                var tag = queryString["tag"];
+
+                var filtered = CommandRegistry.DiscoverCommands()
+                    .Where(c => IncludeRuntimeOnlyCommands || !c.RuntimeOnly)
+                    .Where(c => MatchesQuery(c, query) && MatchesTagSubtree(c, tag));
+                var matching = SortCommands(filtered, sortByPackage, descending).ToList();
+
+                // Paginate the flat, sorted list before any grouping so pages are deterministic.
+                IEnumerable<CommandInfo> window = matching.Skip(offset);
+                if (limit.HasValue)
+                    window = window.Take(limit.Value);
+                var page = window.ToList();
+
+                Func<CommandInfo, object> project = c =>
+                    fullDetail ? BuildFullCommandResponse(c) : BuildCompactCommandResponse(c);
+
+                var responseData = new Dictionary<string, object>();
+                if (groupByPackage)
+                    responseData["groups"] = BuildPackageGroups(page, project);
+                else if (groupByTag)
+                    responseData["groups"] = BuildTagTree(page, project);
+                else
+                    responseData["commands"] = page.Select(project).ToList();
+                responseData["count"] = page.Count;
+                responseData["total"] = matching.Count;
+                responseData["offset"] = offset;
+                responseData["limit"] = limit;
+                responseData["server"] = new
+                {
+                    version = "0.0.1", // TODO: Get from package.json
+                    port = m_Port,
+                    startTime = StartedAt
                 };
 
                 var json = JsonConvert.SerializeObject(responseData, Formatting.Indented);
@@ -622,14 +852,30 @@ namespace Unity.Pipeline
         }
 
         /// <summary>
-        /// Build JSON response object for a single command.
+        /// Build the lightweight index entry for a single command (detail=compact).
         /// </summary>
-        private object BuildCommandResponse(CommandInfo command)
+        private static object BuildCompactCommandResponse(CommandInfo command)
         {
             return new
             {
                 name = command.Name,
                 description = command.Description,
+                tags = command.Tags,
+                package = command.Package
+            };
+        }
+
+        /// <summary>
+        /// Build the complete JSON response object for a single command (detail=full).
+        /// </summary>
+        private object BuildFullCommandResponse(CommandInfo command)
+        {
+            return new
+            {
+                name = command.Name,
+                description = command.Description,
+                tags = command.Tags,
+                package = command.Package,
                 mainThreadRequired = command.MainThreadRequired,
                 runtimeOnly = command.RuntimeOnly,
                 parameters = command.Parameters.Select(p => new
@@ -642,6 +888,135 @@ namespace Unity.Pipeline
                 }).ToList(),
                 schema = JsonSchemaGenerator.GenerateCommandSchema(command)
             };
+        }
+
+        /// <summary>
+        /// Order the filtered command list: by name, or by originating package with name as
+        /// tiebreak. Both keys follow the requested direction.
+        /// </summary>
+        private static IEnumerable<CommandInfo> SortCommands(IEnumerable<CommandInfo> commands, bool byPackage, bool descending)
+        {
+            if (byPackage)
+            {
+                var byPkg = descending
+                    ? commands.OrderByDescending(c => c.Package ?? string.Empty, StringComparer.Ordinal)
+                    : commands.OrderBy(c => c.Package ?? string.Empty, StringComparer.Ordinal);
+                return descending
+                    ? byPkg.ThenByDescending(c => c.Name, StringComparer.Ordinal)
+                    : byPkg.ThenBy(c => c.Name, StringComparer.Ordinal);
+            }
+            return descending
+                ? commands.OrderByDescending(c => c.Name, StringComparer.Ordinal)
+                : commands.OrderBy(c => c.Name, StringComparer.Ordinal);
+        }
+
+        /// <summary>
+        /// Case-insensitive substring match on the command's name, description, or any tag.
+        /// A null/empty query matches everything.
+        /// </summary>
+        private static bool MatchesQuery(CommandInfo command, string query)
+        {
+            if (string.IsNullOrEmpty(query))
+                return true;
+            return command.Name.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0
+                || command.Description.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0
+                || command.Tags.Any(t => t.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0);
+        }
+
+        /// <summary>
+        /// Segment-aware tag subtree match: 'assets' matches tags 'assets' and 'assets/import'
+        /// but not 'assetsx'. A null/empty tag matches everything.
+        /// </summary>
+        private static bool MatchesTagSubtree(CommandInfo command, string tag)
+        {
+            if (string.IsNullOrEmpty(tag))
+                return true;
+            return command.Tags.Any(t => t.Equals(tag, StringComparison.OrdinalIgnoreCase)
+                || t.StartsWith(tag + "/", StringComparison.OrdinalIgnoreCase));
+        }
+
+        /// <summary>
+        /// Group a page of commands by originating package, sorted by package name.
+        /// </summary>
+        private static List<object> BuildPackageGroups(List<CommandInfo> commands, Func<CommandInfo, object> project)
+        {
+            return commands
+                .GroupBy(c => c.Package ?? string.Empty)
+                .OrderBy(g => g.Key, StringComparer.Ordinal)
+                .Select(g => (object)new
+                {
+                    package = g.Key,
+                    count = g.Count(),
+                    commands = g.Select(project).ToList()
+                })
+                .ToList();
+        }
+
+        /// <summary>
+        /// Node of the group_by=tag tree. A command appears in the node of each tag it carries;
+        /// untagged commands land in a top-level node with an empty tag.
+        /// </summary>
+        private class TagTreeNode
+        {
+            public readonly List<CommandInfo> Commands = new List<CommandInfo>();
+            public readonly SortedDictionary<string, TagTreeNode> Children =
+                new SortedDictionary<string, TagTreeNode>(StringComparer.Ordinal);
+        }
+
+        /// <summary>
+        /// Build the nested group_by=tag tree mirroring the tag/subtag hierarchy. Each node's
+        /// 'count' covers its whole subtree (a command tagged with several tags under the same
+        /// node counts once per tag entry).
+        /// </summary>
+        private static List<object> BuildTagTree(List<CommandInfo> commands, Func<CommandInfo, object> project)
+        {
+            var root = new TagTreeNode();
+            foreach (var command in commands)
+            {
+                if (command.Tags.Count == 0)
+                {
+                    GetOrAddChild(root, string.Empty).Commands.Add(command);
+                    continue;
+                }
+                foreach (var tag in command.Tags)
+                {
+                    var node = root;
+                    foreach (var segment in tag.Split('/'))
+                        node = GetOrAddChild(node, segment);
+                    node.Commands.Add(command);
+                }
+            }
+            return root.Children
+                .Select(kv => ToTagGroup(kv.Key, kv.Value, project))
+                .ToList();
+        }
+
+        private static TagTreeNode GetOrAddChild(TagTreeNode node, string key)
+        {
+            if (!node.Children.TryGetValue(key, out var child))
+            {
+                child = new TagTreeNode();
+                node.Children[key] = child;
+            }
+            return child;
+        }
+
+        private static object ToTagGroup(string path, TagTreeNode node, Func<CommandInfo, object> project)
+        {
+            return new
+            {
+                tag = path,
+                count = SubtreeCommandCount(node),
+                commands = node.Commands.Select(project).ToList(),
+                children = node.Children
+                    .Select(kv => ToTagGroup(path.Length == 0 ? kv.Key : path + "/" + kv.Key, kv.Value, project))
+                    .ToList()
+            };
+        }
+
+        private static int SubtreeCommandCount(TagTreeNode node)
+        {
+            return node.Commands.Count + node.Children.Values.Sum(SubtreeCommandCount);
         }
 
         /// <summary>
@@ -663,9 +1038,10 @@ namespace Unity.Pipeline
         /// <summary>
         /// Handle 405 Method Not Allowed responses.
         /// </summary>
-        private async Task HandleMethodNotAllowed(HttpListenerResponse response)
+        private async Task HandleMethodNotAllowed(HttpListenerResponse response, string allowedMethod)
         {
-            await SendErrorResponse(response, "Method Not Allowed", "This endpoint only supports POST requests");
+            await SendErrorResponse(response, "Method Not Allowed",
+                $"This endpoint only supports {allowedMethod} requests", statusCode: 405);
         }
 
         /// <summary>
@@ -675,8 +1051,20 @@ namespace Unity.Pipeline
         {
             try
             {
-                // Execute test_status command to get current test status
-                var result = await ExecuteCommandByName("test_status", new JObject());
+                // Queue behind the same gate as /api/exec/editor_status — see the comment in
+                // HandleEditorStatusRequest. (In practice this rarely blocks: the async-test-status
+                // workflow polls this only once run_tests --async_tests has already returned and
+                // released the gate.)
+                object result;
+                await m_ExecGate.WaitAsync();
+                try
+                {
+                    result = await ExecuteCommandByName("test_status", new JObject());
+                }
+                finally
+                {
+                    m_ExecGate.Release();
+                }
 
                 string jsonResponse;
                 if (result is string statusString)
@@ -703,6 +1091,287 @@ namespace Unity.Pipeline
             {
                 Debug.LogError($"HandleTestStatusRequest failed: {ex.Message}");
                 await SendErrorResponse(response, "Test Status Error", $"Failed to get test status: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Runs <paramref name="body"/> under the exec gate: tracks the in-flight count for
+        /// /api/progress ("active" while any exec runs) via CliProgress's own atomic
+        /// BeginExecutionCount/EndExecutionCount, owns CliProgress for the duration
+        /// (BeginExecution/EndExecution) so a queued execution can't surface the previous one's
+        /// stale progress, and resets the explicit report when the last in-flight execution
+        /// completes. Shared by the synchronous /api/exec path and <see cref="RunJobDetached"/> so
+        /// the two copies of this scaffold can't drift apart.
+        /// </summary>
+        /// <param name="executionId">Id CliProgress.Report calls during this execution are attributed to.</param>
+        /// <param name="body">The gated work to run once the exec gate is acquired.</param>
+        /// <param name="preStartCheck">Runs after the gate is acquired but before
+        /// CliProgress.BeginExecution; returning false skips <paramref name="body"/> entirely
+        /// (used by the job path to honor a cancellation requested while still queued).</param>
+        private async Task ExecuteGated(string executionId, Func<Task> body, Func<bool> preStartCheck = null)
+        {
+            Progress.BeginExecutionCount();
+            try
+            {
+                await m_ExecGate.WaitAsync();
+                try
+                {
+                    if (preStartCheck != null && !preStartCheck())
+                        return;
+
+                    Progress.BeginExecution(executionId);
+                    try
+                    {
+                        await body();
+                    }
+                    finally
+                    {
+                        Progress.EndExecution(executionId);
+                    }
+                }
+                finally
+                {
+                    m_ExecGate.Release();
+                }
+            }
+            finally
+            {
+                Progress.EndExecutionCount();
+            }
+        }
+
+        /// <summary>
+        /// Execute a detached job (CLI-335). A cancellation requested while the job is still
+        /// queued prevents it from starting; a running job is only cooperatively cancelable (see
+        /// PipelineCancellation).
+        /// </summary>
+        private async Task RunJobDetached(PipelineJobRecord record, CommandExecutionRequest commandRequest)
+        {
+            try
+            {
+                await ExecuteGated(record.Id, async () =>
+                {
+                    JobRegistry.MarkRunning(record);
+                    try
+                    {
+                        var result = await ExecuteCommandByName(commandRequest.Command, commandRequest.Parameters,
+                            UnboundedJobDispatcherTimeoutMs);
+                        if (record.CancellationRequested)
+                        {
+                            // The code honored (or raced) a cancellation request; report
+                            // canceled rather than a half-relevant result.
+                            JobRegistry.MarkCanceled(record);
+                        }
+                        else
+                        {
+                            JobRegistry.MarkCompleted(record, result);
+                        }
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        JobRegistry.MarkCanceled(record);
+                    }
+                    catch (Exception ex)
+                    {
+                        // The command layer wraps thrown exceptions (an
+                        // OperationCanceledException from PipelineCancellation surfaces as
+                        // a wrapped execution failure) — after a cancellation request, any
+                        // failure is reported as the cancellation taking effect.
+                        if (record.CancellationRequested)
+                        {
+                            JobRegistry.MarkCanceled(record);
+                        }
+                        else
+                        {
+                            JobRegistry.MarkFailed(record, "Command Execution Failed", ex.Message);
+                        }
+                    }
+                },
+                preStartCheck: () =>
+                {
+                    if (record.CancellationRequested)
+                    {
+                        JobRegistry.MarkCanceled(record);
+                        return false;
+                    }
+                    return true;
+                });
+            }
+            catch (Exception ex)
+            {
+                // The runner is fire-and-forget; a failure here must be recorded, never thrown.
+                Debug.LogError($"RunJobDetached failed: {ex.Message}");
+                JobRegistry.MarkFailed(record, "Internal Server Error", ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Project a progress snapshot to the <c>{title,info,current,total,pct}</c> wire shape
+        /// shared by /api/progress and a running job's <c>progress</c> field — kept as one helper
+        /// so the two can't drift out of sync with each other or the documented contract.
+        /// </summary>
+        private static object BuildProgressPayload(CliProgressState.Snapshot snapshot)
+        {
+            if (!snapshot.HasReport)
+                return null;
+
+            return new
+            {
+                title = snapshot.Title,
+                info = snapshot.Info,
+                current = snapshot.Current,
+                total = snapshot.Total,
+                pct = snapshot.Progress01
+            };
+        }
+
+        /// <summary>Serialize one job record to the wire shape shared by the job endpoints.</summary>
+        private object BuildJobResponse(PipelineJobRecord record)
+        {
+            lock (record.Gate)
+            {
+                var running = record.State == PipelineJobState.Running;
+                var progress = running ? BuildProgressPayload(Progress.Current) : null;
+
+                return new
+                {
+                    jobId = record.Id,
+                    command = record.Command,
+                    state = record.State.ToString().ToLowerInvariant(),
+                    cancellationRequested = record.CancellationRequested,
+                    enqueuedAt = record.EnqueuedAt,
+                    startedAt = record.StartedAt,
+                    completedAt = record.CompletedAt,
+                    result = record.Result,
+                    error = record.Error,
+                    errorDetails = record.ErrorDetails,
+                    progress
+                };
+            }
+        }
+
+        /// <summary>
+        /// Handle GET /api/job?id=… — a detached job's state, progress, and (once terminal)
+        /// its retained result (CLI-335 poll/reattach). Served on the listener thread.
+        /// </summary>
+        private async Task HandleJobStatusRequest(HttpListenerRequest request, HttpListenerResponse response)
+        {
+            try
+            {
+                var id = request.QueryString["id"];
+                if (string.IsNullOrEmpty(id))
+                {
+                    await SendStatusResponse(response, 400, "Bad Request", "Query parameter 'id' is required");
+                    return;
+                }
+                if (!JobRegistry.TryGet(id, out var record))
+                {
+                    await SendStatusResponse(response, 404, "Job Not Found", $"No job with id '{id}' (jobs do not survive domain reloads and are pruned after retention)");
+                    return;
+                }
+
+                await SendJsonResponse(response, 200, BuildJobResponse(record));
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"HandleJobStatusRequest failed: {ex.Message}");
+                await SendErrorResponse(response, "Job Status Error", $"Failed to get job status: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Handle POST /api/job/cancel — request cancellation of a detached job (CLI-335).
+        /// A queued job never starts; a running job gets the cooperative
+        /// PipelineCancellation flag (synchronous code cannot be aborted from outside).
+        /// </summary>
+        private async Task HandleJobCancelRequest(HttpListenerRequest request, HttpListenerResponse response)
+        {
+            try
+            {
+                if (request.ContentLength64 > MaxCancelBodyBytes)
+                {
+                    await DrainRequestBody(request, MaxDrainBytes);
+                    await SendStatusResponse(response, 413, "Payload Too Large",
+                        $"Request body exceeds the maximum allowed size of {MaxCancelBodyBytes} bytes");
+                    return;
+                }
+
+                string body;
+                try
+                {
+                    using (var limited = new MaxLengthStream(request.InputStream, MaxCancelBodyBytes, leaveOpen: true))
+                    using (var reader = new StreamReader(limited))
+                    {
+                        body = await reader.ReadToEndAsync();
+                    }
+                }
+                catch (RequestTooLargeException ex)
+                {
+                    await DrainRequestBody(request, MaxDrainBytes);
+                    await SendStatusResponse(response, 413, "Payload Too Large", ex.Message);
+                    return;
+                }
+                finally
+                {
+                    request.InputStream.Dispose();
+                }
+
+                string id = null;
+                try
+                {
+                    var parsed = JObject.Parse(string.IsNullOrEmpty(body) ? "{}" : body);
+                    id = parsed["id"]?.ToString();
+                }
+                catch (JsonException)
+                {
+                    // Fall through to the missing-id error below.
+                }
+
+                if (string.IsNullOrEmpty(id))
+                {
+                    await SendStatusResponse(response, 400, "Bad Request", "Request body must be JSON with an 'id' field");
+                    return;
+                }
+                if (!JobRegistry.RequestCancel(id, out var record))
+                {
+                    await SendStatusResponse(response, 404, "Job Not Found", $"No job with id '{id}'");
+                    return;
+                }
+
+                await SendJsonResponse(response, 200, BuildJobResponse(record));
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"HandleJobCancelRequest failed: {ex.Message}");
+                await SendErrorResponse(response, "Job Cancel Error", $"Failed to cancel job: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Handle /api/progress endpoint — the currently executing command's task progress
+        /// (CLI-488): the server side of the CLI's terminal progress bars, the pipeline
+        /// equivalent of EditorUtility.DisplayProgressBar.
+        ///
+        /// Served entirely on the listener thread from CliProgress's lock-protected snapshot —
+        /// never marshaled to the main thread — so it stays responsive while a long synchronous
+        /// command has the main thread blocked (exactly when progress matters most).
+        ///
+        /// Contract (all progress fields optional; pct is 0–1):
+        /// <code>{"active":true,"progress":{"title":"…","info":"…","current":42,"total":100,"pct":0.42}}</code>
+        /// </summary>
+        private async Task HandleProgressRequest(HttpListenerResponse response)
+        {
+            try
+            {
+                var active = Progress.IsActive;
+                var progress = active ? BuildProgressPayload(Progress.Current) : null;
+
+                await SendJsonResponse(response, 200, new { active, progress });
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"HandleProgressRequest failed: {ex.Message}");
+                await SendErrorResponse(response, "Progress Error", $"Failed to get progress: {ex.Message}");
             }
         }
 
@@ -782,8 +1451,56 @@ namespace Unity.Pipeline
                 }
 
                 cmd = commandRequest.Command;
-                // Execute command using shared execution logic
-                var result = await ExecuteCommandByName(commandRequest.Command, commandRequest.Parameters);
+
+                // Resolve the command once — the busy gate and the execution path share this
+                // single registry lookup instead of scanning twice per request. An unknown name
+                // throws here and surfaces as the usual Command Not Found via the catch below
+                // (for a "job": true submission that now happens BEFORE a job is created, so a
+                // misnamed command fails fast instead of producing a job that fails later).
+                var command = ResolveCommand(cmd);
+
+                // Busy gate (AUTHAPI-35): while the host is settling after startup, reject
+                // not-yet-serviceable commands up front — before sync execution AND before a
+                // detached job is created (a queued job would otherwise run into the half-ready
+                // Editor in the background). 503 with a retryable envelope, distinguishable from
+                // a genuine command failure. Only the exec endpoint gates; the status endpoints
+                // keep working so the busy state itself stays observable.
+                var busyReason = GetBusyReason(command);
+                if (busyReason != null)
+                {
+                    await SendExecResponse(response, 503,
+                        CommandExecutionResponse.CmdBusy(cmd, busyReason), requestBody);
+                    return;
+                }
+
+                // Detached job (CLI-335): reply with a job id immediately and run the command
+                // in the background — the client polls GET /api/job?id=… to reattach and
+                // collect the result after its own HTTP timeout would have expired.
+                if (commandRequest.Job)
+                {
+                    if (!JobRegistry.TryCreate(commandRequest.Command, out var jobRecord))
+                    {
+                        await SendExecResponse(response, 429,
+                            CommandExecutionResponse.CmdFailure(commandRequest.Command, "Too Many Queued Jobs",
+                                "Too many jobs are queued or running; wait for some to finish and retry."), requestBody);
+                        return;
+                    }
+                    _ = RunJobDetached(jobRecord, commandRequest);
+                    // Standard exec envelope; the job handle is the command's "result".
+                    await SendExecResponse(response, 200,
+                        CommandExecutionResponse.CmdSuccess(commandRequest.Command,
+                            new { jobId = jobRecord.Id, state = "queued" }), requestBody);
+                    return;
+                }
+
+                // Execute command using shared execution logic (see ExecuteGated: one command at
+                // a time, exactly as when the accept loop was serial).
+                object result = null;
+                await ExecuteGated(Guid.NewGuid().ToString("N"), async () =>
+                {
+                    result = await ExecuteCommandByName(command, commandRequest.Parameters,
+                        commandRequest.Timeout ?? 60000);
+                });
 
                 // Send success response
                 await SendExecResponse(response, 200,
@@ -848,12 +1565,12 @@ namespace Unity.Pipeline
         /// <summary>
         /// Send error response with structured JSON format.
         /// </summary>
-        private async Task SendErrorResponse(HttpListenerResponse response, string error, string details = null)
+        private async Task SendErrorResponse(HttpListenerResponse response, string error, string details = null, int statusCode = 400)
         {
             try
             {
                 var errorResponse = BaseResponse.Failure(error, details);
-                await SendResponse(response, 400, errorResponse);
+                await SendResponse(response, statusCode, errorResponse);
             }
             catch
             {
@@ -863,7 +1580,7 @@ namespace Unity.Pipeline
 
         private async Task SendResponse(HttpListenerResponse response, int statusCode, BaseResponse pipelineResponse)
         {
-            response.StatusCode = 400;
+            response.StatusCode = statusCode;
             response.ContentType = "application/json";
             var json = JsonConvert.SerializeObject(pipelineResponse, Formatting.Indented);
             var buffer = Encoding.UTF8.GetBytes(json);
@@ -1013,13 +1730,12 @@ namespace Unity.Pipeline
         }
 
         /// <summary>
-        /// Execute a command by name with JSON parameters.
-        /// Handles command lookup, parameter validation, and execution.
-        /// Shared logic for both /api/exec and /api/editor_status endpoints.
+        /// Resolve a command name to its <see cref="CommandInfo"/>, or throw the standard
+        /// Command Not Found error. Single registry scan — /api/exec resolves once and shares
+        /// the result between the busy gate and execution.
         /// </summary>
-        private async Task<object> ExecuteCommandByName(string commandName, JObject parametersJson)
+        private static CommandInfo ResolveCommand(string commandName)
         {
-            // Find command
             var commands = CommandRegistry.DiscoverCommands().ToList();
             var command = commands.FirstOrDefault(c => c.Name == commandName);
             if (command == null)
@@ -1029,7 +1745,26 @@ namespace Unity.Pipeline
                 Debug.LogError($"ExecuteCommandByName: {errorMessage}");
                 throw new InvalidOperationException(errorMessage);
             }
+            return command;
+        }
 
+        /// <summary>
+        /// Execute a command by name with JSON parameters.
+        /// Handles command lookup, parameter validation, and execution.
+        /// Used by callers that only hold a name (status endpoints, detached job runner); the
+        /// /api/exec handler resolves the command itself and uses the CommandInfo overload.
+        /// </summary>
+        private async Task<object> ExecuteCommandByName(string commandName, JObject parametersJson, int dispatcherTimeoutMs = 60000)
+        {
+            return await ExecuteCommandByName(ResolveCommand(commandName), parametersJson, dispatcherTimeoutMs);
+        }
+
+        /// <summary>
+        /// Execute a pre-resolved command with JSON parameters (parameter extraction, required
+        /// validation, threading).
+        /// </summary>
+        private async Task<object> ExecuteCommandByName(CommandInfo command, JObject parametersJson, int dispatcherTimeoutMs = 60000)
+        {
             // Extract parameters
             var parameters = ExtractCommandParameters(command, parametersJson);
 
@@ -1042,14 +1777,14 @@ namespace Unity.Pipeline
             }
 
             // Execute command with appropriate threading
-            return await ExecuteCommand(command, parameters);
+            return await ExecuteCommand(command, parameters, dispatcherTimeoutMs);
         }
 
         /// <summary>
         /// Execute the command method with provided parameters.
         /// Handles main thread execution if required.
         /// </summary>
-        private async Task<object> ExecuteCommand(CommandInfo command, object[] parameters)
+        private async Task<object> ExecuteCommand(CommandInfo command, object[] parameters, int dispatcherTimeoutMs = 60000)
         {
             object raw;
             if (command.MainThreadRequired)
@@ -1061,7 +1796,18 @@ namespace Unity.Pipeline
                 }
                 else
                 {
-                    raw = await Task.Run(() => m_Dispatcher.Invoke(() => ExecuteCommandDirect(command, parameters)));
+                    // If the command declares its own int "timeout" parameter (e.g. eval/eval_file),
+                    // honor it as the wait budget instead of the caller-provided dispatcher budget
+                    // (UUM-148641) — that's the only mechanism that actually enforces such a
+                    // command's requested deadline end-to-end, in both directions: a request below
+                    // the dispatcher default must time out early, not wait it out. Detached jobs
+                    // are the one exception: they pass an unbounded budget (CLI-335) and rely on
+                    // cooperative cancellation, so the requested value must not re-bound them.
+                    var requestedTimeoutMs = ResolveRequestedTimeoutMs(command, parameters);
+                    var waitBudgetMs = dispatcherTimeoutMs == UnboundedJobDispatcherTimeoutMs
+                        ? dispatcherTimeoutMs
+                        : requestedTimeoutMs ?? dispatcherTimeoutMs;
+                    raw = await Task.Run(() => m_Dispatcher.Invoke(() => ExecuteCommandDirect(command, parameters), waitBudgetMs));
                 }
             }
             else
@@ -1071,6 +1817,35 @@ namespace Unity.Pipeline
             }
 
             return await UnwrapResult(raw);
+        }
+
+        /// <summary>
+        /// Commands whose own "timeout" parameter is documented in milliseconds and is meant to bound
+        /// the whole main-thread call. Other commands happen to also declare a "timeout" parameter
+        /// (e.g. run_tests, in seconds) with different semantics, so this can't be a blanket
+        /// name/type match — it has to be opted into per command.
+        /// </summary>
+        private static readonly HashSet<string> CommandsWithMillisecondTimeoutParameter = new HashSet<string> { "eval", "eval_file" };
+
+        /// <summary>
+        /// For commands in <see cref="CommandsWithMillisecondTimeoutParameter"/>, return the value the
+        /// caller passed for their own "timeout" parameter. Returns null otherwise, in which case the
+        /// caller should fall back to Dispatcher.Invoke's own default wait.
+        /// </summary>
+        private static int? ResolveRequestedTimeoutMs(CommandInfo command, object[] parameters)
+        {
+            if (!CommandsWithMillisecondTimeoutParameter.Contains(command.Name))
+                return null;
+
+            for (int i = 0; i < command.Parameters.Count; i++)
+            {
+                if (command.Parameters[i].Name == "timeout" && command.Parameters[i].ParameterType == typeof(int))
+                {
+                    return (int)parameters[i];
+                }
+            }
+
+            return null;
         }
 
         /// <summary>
@@ -1094,10 +1869,14 @@ namespace Unity.Pipeline
         }
 
         /// <summary>
-        /// Direct command execution using reflection.
+        /// Direct command execution using reflection. Sets <see cref="CurrentServer"/> for the
+        /// duration so CliProgress/PipelineCancellation calls inside the command body resolve to
+        /// this server, regardless of which thread this ends up running on.
         /// </summary>
         private object ExecuteCommandDirect(CommandInfo command, object[] parameters)
         {
+            var previousServer = m_CurrentServer;
+            m_CurrentServer = this;
             try
             {
                 return command.Method.Invoke(null, parameters);
@@ -1122,6 +1901,10 @@ namespace Unity.Pipeline
             {
                 Debug.LogError($"Command execution failed: {ex.Message}");
                 throw new InvalidOperationException($"Command '{command.Name}' failed: {ex.Message}", ex);
+            }
+            finally
+            {
+                m_CurrentServer = previousServer;
             }
         }
 

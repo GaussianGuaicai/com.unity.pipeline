@@ -49,7 +49,8 @@ namespace Unity.Pipeline.Editor.Commands.Animation
 
         [CliCommand("create_timeline",
             "Create a .playable TimelineAsset under the authoring root (optional frame rate). Requires the com.unity.timeline package.",
-            MainThreadRequired = true)]
+            MainThreadRequired = true,
+            Tags = new[] { "animation/timeline" })]
         public static object CreateTimeline(
             [CliArg("path", "Asset path ending in .playable, relative to the authoring root. The Assets/ prefix is optional.", Required = true)] string path,
             [CliArg("frameRate", "Timeline frame rate (default 60).")] float frameRate = 60f,
@@ -98,7 +99,8 @@ namespace Unity.Pipeline.Editor.Commands.Animation
 
         [CliCommand("add_timeline_track",
             "Add a track (Animation | Audio | Activation | Control | Playable | Signal | Marker) to a TimelineAsset, optionally nested under a parent group/track. Requires the com.unity.timeline package.",
-            MainThreadRequired = true)]
+            MainThreadRequired = true,
+            Tags = new[] { "animation/timeline" })]
         public static object AddTimelineTrack(
             [CliArg("timeline", "Reference to the TimelineAsset to edit (path / guid / globalId).", Required = true)] ObjectRef timeline,
             [CliArg("trackType", "Track type: Animation | Audio | Activation | Control | Playable | Signal | Marker.", Required = true)] string trackType = null,
@@ -155,7 +157,8 @@ namespace Unity.Pipeline.Editor.Commands.Animation
 
         [CliCommand("add_timeline_clip",
             "Add a clip to a named track on a TimelineAsset. For Animation tracks pass an AnimationClip asset; for Audio tracks an AudioClip. Requires the com.unity.timeline package.",
-            MainThreadRequired = true)]
+            MainThreadRequired = true,
+            Tags = new[] { "animation/timeline" })]
         public static object AddTimelineClip(
             [CliArg("timeline", "Reference to the TimelineAsset to edit (path / guid / globalId).", Required = true)] ObjectRef timeline,
             [CliArg("track", "Target track name.", Required = true)] string track = null,
@@ -230,7 +233,8 @@ namespace Unity.Pipeline.Editor.Commands.Animation
 
         [CliCommand("get_timeline",
             "Read a TimelineAsset's structure: frame rate, duration, and its tracks with their clips. Requires the com.unity.timeline package.",
-            MainThreadRequired = true)]
+            MainThreadRequired = true,
+            Tags = new[] { "animation/timeline" })]
         public static object GetTimeline(
             [CliArg("timeline", "Reference to the TimelineAsset to read (path / guid / globalId).", Required = true)] ObjectRef timeline)
         {

@@ -12,7 +12,7 @@ namespace Unity.Pipeline.Editor.Commands
     {
         // TODO Pipeline: should all commands have name with namespace: editor.play build.generate instead of using _
 
-        [CliCommand("editor_play", "Enter Unity Editor play mode")]
+        [CliCommand("editor_play", "Enter Unity Editor play mode", Tags = new[] { "editor/playmode" })]
         public static string EnterPlayMode()
         {
             if (EditorApplication.isPlaying)
@@ -25,7 +25,7 @@ namespace Unity.Pipeline.Editor.Commands
             return "Entered play mode";
         }
 
-        [CliCommand("editor_stop", "Exit Unity Editor play mode")]
+        [CliCommand("editor_stop", "Exit Unity Editor play mode", Tags = new[] { "editor/playmode" })]
         public static string ExitPlayMode()
         {
             if (!EditorApplication.isPlaying)
@@ -38,7 +38,7 @@ namespace Unity.Pipeline.Editor.Commands
             return "Exited play mode";
         }
 
-        [CliCommand("editor_pause", "Pause Unity Editor play mode")]
+        [CliCommand("editor_pause", "Toggle pause state of Unity Editor play mode", Tags = new[] { "editor/playmode" })]
         public static string PausePlayMode()
         {
             if (!EditorApplication.isPlaying)

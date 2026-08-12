@@ -12,7 +12,7 @@ namespace Unity.Pipeline.Editor.Commands.Observability
     /// </summary>
     public static class ConsoleCommands
     {
-        [CliCommand("get_console_logs", "Read recently captured Editor console logs (structured).")]
+        [CliCommand("get_console_logs", "Read recently captured Editor console logs (structured).", Tags = new[] { "observability/console" })]
         public static object GetConsoleLogs(
             [CliArg("severity", "Filter: all | log | warning | error. 'all' = every entry; 'log' = Log only; 'warning' = Warning only; 'error' = Error/Exception/Assert only.")] string severity = "all",
             [CliArg("limit", "Max entries to return (most-recent first), capped at 1000.")] int limit = 100)
@@ -41,7 +41,7 @@ namespace Unity.Pipeline.Editor.Commands.Observability
             };
         }
 
-        [CliCommand("clear_console", "Clear the captured log buffer and the Unity Editor console.")]
+        [CliCommand("clear_console", "Clear the captured log buffer and the Unity Editor console.", Tags = new[] { "observability/console" })]
         public static object ClearConsole()
         {
             ConsoleLogBuffer.Clear();

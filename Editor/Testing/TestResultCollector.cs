@@ -66,6 +66,15 @@ namespace Unity.Pipeline.Editor.Testing
                 return;
             }
 
+            // A stale collector can receive a later run's RunFinished (see PipelineTestRunner);
+            // re-completing OnRunFinished/m_CompletionSource would throw. IsComplete can't detect
+            // this — RunStarted resets it on every non-cancelled collector, stale ones included.
+            if (m_CompletionSource.Task.IsCompleted)
+            {
+                Debug.Log("[TestResultCollector] Ignoring duplicate RunFinished (already completed)");
+                return;
+            }
+
             RootResult = result;
             IsComplete = true;
 

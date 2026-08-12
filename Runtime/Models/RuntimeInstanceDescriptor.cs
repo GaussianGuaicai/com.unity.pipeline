@@ -106,29 +106,39 @@ namespace Unity.Pipeline.Models
         }
 
         /// <summary>
+        /// Serializes descriptor writes so concurrent heartbeat rewrites (e.g. overlapping
+        /// /api/status probes) can't leave a torn file on disk. Mirrors InstanceDescriptor's
+        /// m_WriteGate.
+        /// </summary>
+        private static readonly object m_WriteGate = new object();
+
+        /// <summary>
         /// Write runtime instance descriptor to working directory.
         /// </summary>
         public static void WriteToWorkingDirectory(RuntimeInstanceDescriptor descriptor)
         {
-            try
+            lock (m_WriteGate)
             {
-                var filePath = GetDescriptorFilePath();
-                var isNewFile = !File.Exists(filePath);
-                var json = JsonConvert.SerializeObject(descriptor, Formatting.Indented);
+                try
+                {
+                    var filePath = GetDescriptorFilePath();
+                    var isNewFile = !File.Exists(filePath);
+                    var json = JsonConvert.SerializeObject(descriptor, Formatting.Indented);
 
-                File.WriteAllText(filePath, json);
+                    File.WriteAllText(filePath, json);
 
-                // The descriptor carries the auth token; keep it readable only by the current user.
-                // Applied once on creation (heartbeat rewrites preserve the existing permissions).
-                if (isNewFile)
-                    FilePermissions.RestrictToCurrentUser(filePath);
+                    // The descriptor carries the auth token; keep it readable only by the current user.
+                    // Applied once on creation (heartbeat rewrites preserve the existing permissions).
+                    if (isNewFile)
+                        FilePermissions.RestrictToCurrentUser(filePath);
 
-                System.Console.WriteLine($"Pipeline: Runtime descriptor written to {filePath}");
-            }
-            catch (Exception ex)
-            {
-                UnityEngine.Debug.LogError($"Pipeline: Failed to write runtime descriptor: {ex.Message}");
-                throw;
+                    System.Console.WriteLine($"Pipeline: Runtime descriptor written to {filePath}");
+                }
+                catch (Exception ex)
+                {
+                    UnityEngine.Debug.LogError($"Pipeline: Failed to write runtime descriptor: {ex.Message}");
+                    throw;
+                }
             }
         }
 

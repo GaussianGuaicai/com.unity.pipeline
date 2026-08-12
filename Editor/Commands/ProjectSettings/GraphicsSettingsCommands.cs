@@ -15,10 +15,10 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
     {
         const string Group = "graphics";
 
-        [CliCommand("get_graphics_settings", "Read GraphicsSettings (default render pipeline).", MainThreadRequired = true)]
+        [CliCommand("get_graphics_settings", "Read GraphicsSettings (default render pipeline).", MainThreadRequired = true, Tags = new[] { "settings/graphics" })]
         public static ProjectSettingsResponse Get() => ProjectSettingsCommand.Get(Group, Read);
 
-        [CliCommand("set_graphics_settings", "Set the default render pipeline asset. Requires confirm=true; use dry_run to preview. Not undoable via Ctrl+Z.", MainThreadRequired = true)]
+        [CliCommand("set_graphics_settings", "Set the default render pipeline asset. Requires confirm=true; use dry_run to preview. Not undoable via Ctrl+Z.", MainThreadRequired = true, Tags = new[] { "settings/graphics" })]
         public static ProjectSettingsResponse Set(
             [CliArg("settings", "Fields to change; omitted fields are left unchanged.")] GraphicsSettingsInput settings = null,
             [CliArg("confirm", "Apply the change. Without it the call is refused.")] bool confirm = false,

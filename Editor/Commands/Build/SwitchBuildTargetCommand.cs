@@ -40,7 +40,8 @@ namespace Unity.Pipeline.Editor.Commands.Build
         [CliCommand("switch_build_target",
             "Switch the active build target (destructive, long-running: triggers a full reimport + domain " +
             "reload). Requires confirm=true. Returns immediately; poll switch_build_target_status.",
-            MainThreadRequired = false)]
+            MainThreadRequired = false,
+            Tags = new[] { "build/targets" })]
         public static object SwitchBuildTarget(
             [CliArg("target", "BuildTarget name to switch to (must be installed; see list_build_targets).", Required = true)] string target = "",
             [CliArg("confirm", "Apply the switch. Without it the call is refused.")] bool confirm = false)
@@ -98,7 +99,8 @@ namespace Unity.Pipeline.Editor.Commands.Build
 
         [CliCommand("switch_build_target_status",
             "Status of the last target switch: idle | switching | completed (with success + activeBuildTarget).",
-            MainThreadRequired = false)]
+            MainThreadRequired = false,
+            Tags = new[] { "build/targets" })]
         public static string SwitchBuildTargetStatus()
         {
             if (File.Exists(StatusFile))

@@ -14,7 +14,7 @@ namespace Unity.Pipeline.Editor.Commands
     /// </summary>
     public static class EditorStatusCommand
     {
-        [CliCommand("editor_status", "Get detailed Unity Editor status and state information")]
+        [CliCommand("editor_status", "Get detailed Unity Editor status and state information", Tags = new[] { "editor" })]
         public static StatusResponse GetEditorStatus()
         {
             return new StatusResponse

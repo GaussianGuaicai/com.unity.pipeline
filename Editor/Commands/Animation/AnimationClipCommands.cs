@@ -32,7 +32,8 @@ namespace Unity.Pipeline.Editor.Commands.Animation
     {
         [CliCommand("create_animation_clip",
             "Create an empty .anim AnimationClip asset under the authoring root, with an optional frame rate and loop flag.",
-            MainThreadRequired = true)]
+            MainThreadRequired = true,
+            Tags = new[] { "animation/clip" })]
         public static AuthoringResult CreateAnimationClip(
             [CliArg("path", "Asset path ending in .anim, relative to the authoring root. The Assets/ prefix is optional.", Required = true)] string path,
             [CliArg("frameRate", "Sampling frame rate of the clip (default 60).")] float frameRate = 60f,
@@ -84,7 +85,8 @@ namespace Unity.Pipeline.Editor.Commands.Animation
         [CliCommand("set_animation_curve",
             "Add or replace a single float curve binding on an AnimationClip (via AnimationUtility.SetEditorCurve). " +
             "Replacing an existing binding overwrites it rather than duplicating.",
-            MainThreadRequired = true)]
+            MainThreadRequired = true,
+            Tags = new[] { "animation/clip" })]
         public static SetAnimationCurveResult SetAnimationCurve(
             [CliArg("clip", "Reference to the AnimationClip to edit (path / guid / globalId).", Required = true)] ObjectRef clip,
             [CliArg("path", "GameObject path relative to the animated root the property lives on. Empty string (default) targets the root.")] string path = "",
@@ -131,7 +133,8 @@ namespace Unity.Pipeline.Editor.Commands.Animation
 
         [CliCommand("get_animation_clip",
             "Read an AnimationClip's metadata and all float curve bindings (optionally with keyframes).",
-            MainThreadRequired = true)]
+            MainThreadRequired = true,
+            Tags = new[] { "animation/clip" })]
         public static AnimationClipInfo GetAnimationClip(
             [CliArg("clip", "Reference to the AnimationClip to read (path / guid / globalId).", Required = true)] ObjectRef clip,
             [CliArg("includeKeys", "If true, include each binding's keyframes (default false).")] bool includeKeys = false)
@@ -183,7 +186,8 @@ namespace Unity.Pipeline.Editor.Commands.Animation
 
         [CliCommand("remove_animation_curve",
             "Remove a float curve binding from an AnimationClip (SetEditorCurve(clip, binding, null)). Destructive: requires confirm=true.",
-            MainThreadRequired = true)]
+            MainThreadRequired = true,
+            Tags = new[] { "animation/clip" })]
         public static SetAnimationCurveResult RemoveAnimationCurve(
             [CliArg("clip", "Reference to the AnimationClip to edit (path / guid / globalId).", Required = true)] ObjectRef clip,
             [CliArg("path", "GameObject path relative to the animated root the binding lives on. Empty string (default) targets the root.")] string path = "",

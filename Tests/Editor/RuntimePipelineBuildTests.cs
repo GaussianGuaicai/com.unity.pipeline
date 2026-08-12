@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using NUnit.Framework;
@@ -8,6 +9,7 @@ using UnityEditor.Build.Reporting;
 using UnityEditor.SceneManagement;
 using UnityEditor.TestTools;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 namespace Unity.Pipeline.Tests.Editor
 {
@@ -149,6 +151,50 @@ namespace Unity.Pipeline.Tests.Editor
                 Object.DestroyImmediate(go1);
                 Object.DestroyImmediate(go2);
             }
+        }
+
+        [TestCase(false, TestName = "BuildProcessor_ClosesBuildScenes_ThatWereNotAlreadyOpen")]
+        [TestCase(true, TestName = "BuildProcessor_LeavesBuildScenes_ThatWereAlreadyOpenAlone")]
+        public void BuildProcessor_DoesNotChangeOpenSceneSet(bool sceneAlreadyOpenBeforeBuild)
+        {
+            // Arrange - Create scene with an enabled RuntimePipelineManager
+            var scene = EditorSceneManager.NewScene(NewSceneSetup.EmptyScene);
+            var go = new GameObject("RuntimePipelineManager");
+            go.AddComponent<RuntimePipelineManager>().enableInBuilds = true;
+            EditorSceneManager.SaveScene(scene, m_TestScenePath);
+
+            if (!sceneAlreadyOpenBeforeBuild)
+            {
+                // Replace the active scene so the build scene starts out closed, and the build
+                // processor must be the one to open (and close) it.
+                EditorSceneManager.NewScene(NewSceneSetup.EmptyScene, NewSceneMode.Single);
+            }
+
+            var originalScenes = EditorBuildSettings.scenes;
+            EditorBuildSettings.scenes = new[] { new EditorBuildSettingsScene(m_TestScenePath, true) };
+
+            var openScenesBefore = OpenScenePaths();
+
+            try
+            {
+                m_BuildProcessor.OnPreprocessBuild(CreateMockBuildReport());
+
+                CollectionAssert.AreEquivalent(openScenesBefore, OpenScenePaths(),
+                    "OnPreprocessBuild scans build scenes for RuntimePipelineManager components; it must not change which scenes are open in the editor afterward.");
+            }
+            finally
+            {
+                EditorBuildSettings.scenes = originalScenes;
+                Object.DestroyImmediate(go);
+            }
+        }
+
+        private static List<string> OpenScenePaths()
+        {
+            var paths = new List<string>();
+            for (var i = 0; i < SceneManager.sceneCount; i++)
+                paths.Add(SceneManager.GetSceneAt(i).path);
+            return paths;
         }
 
         /// <summary>

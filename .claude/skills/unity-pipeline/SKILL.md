@@ -102,6 +102,29 @@ unity command eval "return 2 + 2;"
 unity command eval_file Assets/Scratch.cs
 ```
 
+## 5. Project audit (Editor)
+
+Static-analysis scan via Project Auditor, producing a CSV of issues to fix. Trigger, poll, read.
+
+```bash
+unity command audit                              # optional: --categories Code,ProjectSetting --output my.csv
+unity command audit_status                       # repeat until terminal status
+```
+
+`audit_status` is terminal on `completed` (with `csvPath` + `issueCount`), `failed`, `unavailable`, or
+`interrupted` (a domain reload killed the scan — just re-run `audit`). Polling stays responsive while a
+Code-category scan compiles assemblies and holds the main thread. One scan at a time: a second `audit`
+returns `busy`. There is no cancel — stop polling to abandon a scan.
+
+CSV columns: `Category, Severity, Areas, Description, RelativePath, Line, DescriptorId, Recommendation`
+(diagnostics only, so every row is something to fix; `Recommendation` says how).
+
+> **Requires Project Auditor plus its rules.** `unavailable` means the Editor has no Project Auditor,
+> or it has no analysis rules — in a built-in-module Editor the rules live in the separate
+> `com.unity.project-auditor-rules` package (`unity command package_add --identifier
+> com.unity.project-auditor-rules --confirm true`). Read the `message` field; the command never reports
+> an empty `completed` scan that would look like a clean project.
+
 ## Gotchas
 
 - **`set_autotick` first.** Without it, recompile and tests can hang while the editor is

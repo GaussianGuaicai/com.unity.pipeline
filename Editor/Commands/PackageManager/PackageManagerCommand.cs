@@ -75,7 +75,8 @@ namespace Unity.Pipeline.Editor.Commands.PackageManager
         [CliCommand("package_list",
             "List packages by scope: installed (default) | available (registry) | all (both). Returns the full " +
             "result synchronously — available/all block until the registry query completes.",
-            MainThreadRequired = false)]
+            MainThreadRequired = false,
+            Tags = new[] { "packages" })]
         public static object PackageList(
             [CliArg("scope", "Which packages to list: installed (default) | available | all.")] string scope = "installed",
             [CliArg("include_indirect", "Include indirect (transitive) installed dependencies (applies to scope=installed/all).")]
@@ -200,7 +201,8 @@ namespace Unity.Pipeline.Editor.Commands.PackageManager
         [CliCommand("package_search",
             "Search packages available in the registry. Provide a name (e.g. com.unity.foo) or omit to list all. " +
             "Returns the full result synchronously (blocks until the registry query completes).",
-            MainThreadRequired = false)]
+            MainThreadRequired = false,
+            Tags = new[] { "packages" })]
         public static object PackageSearch(
             [CliArg("query", "Package name to search for. Omit/empty to list all available packages.")] string query = "",
             [CliArg("offline", "Search the local cache only.")] bool offline = false)
@@ -242,7 +244,8 @@ namespace Unity.Pipeline.Editor.Commands.PackageManager
             "Add a UPM package by name@version, git URL, or 'file:' local path. Async by default (returns " +
             "in_progress; poll package_status); pass wait=true to block until added. A recompile/domain reload " +
             "follows — poll recompile_status. Requires confirm=true; use dry_run to preview.",
-            MainThreadRequired = false)]
+            MainThreadRequired = false,
+            Tags = new[] { "packages" })]
         public static object PackageAdd(
             [CliArg("identifier", "Package to add: 'com.unity.foo@1.2.3', a git URL, or 'file:../Path'.", Required = true)] string identifier = "",
             [CliArg("confirm", "Apply the change. Without it the call is refused.")] bool confirm = false,
@@ -275,7 +278,8 @@ namespace Unity.Pipeline.Editor.Commands.PackageManager
             "Remove a UPM package by name. Async by default (returns in_progress; poll package_status); pass " +
             "wait=true to block until removed. A recompile/domain reload follows — poll recompile_status. " +
             "Requires confirm=true; use dry_run to preview.",
-            MainThreadRequired = false)]
+            MainThreadRequired = false,
+            Tags = new[] { "packages" })]
         public static object PackageRemove(
             [CliArg("name", "Package name to remove (e.g. com.unity.foo).", Required = true)] string name = "",
             [CliArg("confirm", "Apply the change. Without it the call is refused.")] bool confirm = false,
@@ -305,7 +309,8 @@ namespace Unity.Pipeline.Editor.Commands.PackageManager
         [CliCommand("package_resolve",
             "Resolve/refresh packages from the manifest (re-fetch and re-link). May trigger a recompile/domain " +
             "reload — poll recompile_status. Its outcome is recorded for package_status.",
-            MainThreadRequired = true)]
+            MainThreadRequired = true,
+            Tags = new[] { "packages" })]
         public static object PackageResolve()
         {
             WriteStatus(new PackageStatus
@@ -357,7 +362,8 @@ namespace Unity.Pipeline.Editor.Commands.PackageManager
         [CliCommand("package_status",
             "Status of the last async package operation (add/remove/resolve): idle | in_progress | completed | " +
             "failed, with the added package, manifest, and any error.",
-            MainThreadRequired = false)]
+            MainThreadRequired = false,
+            Tags = new[] { "packages" })]
         public static string GetPackageStatus()
         {
             if (File.Exists(StatusFile))

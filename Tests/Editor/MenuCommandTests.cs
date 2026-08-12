@@ -17,7 +17,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// </summary>
     public class MenuCommandTests
     {
-        const string k_TestMenuPath = "PipelineTests/Invoke Marker";
+        const string k_TestMenuPath = "Window/Pipeline/Tests/Invoke Marker";
         static bool s_MarkerInvoked;
 
         [MenuItem(k_TestMenuPath)]
@@ -112,7 +112,7 @@ namespace Unity.Pipeline.Tests.Editor
             // does not treat that expected log as a failure.
             LogAssert.Expect(LogType.Error, new Regex("ExecuteMenuItem failed because there is no menu named"));
 
-            var result = MenuItemCommand.ExecuteMenu("PipelineTests/This Item Does Not Exist 12345");
+            var result = MenuItemCommand.ExecuteMenu("Window/Pipeline/Tests/This Item Does Not Exist 12345");
 
             Assert.IsFalse(result.Success, "An unknown menu item should fail");
             StringAssert.Contains("not found", result.Message);

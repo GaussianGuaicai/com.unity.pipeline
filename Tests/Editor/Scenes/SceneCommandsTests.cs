@@ -63,7 +63,7 @@ namespace Unity.Pipeline.Tests.Editor.Scenes
                 }
             }
             if (deletedAny)
-                AssetDatabase.Refresh();
+                AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
         }
 
         private static bool IsTestScenePath(string path) =>

@@ -7,11 +7,6 @@ using Unity.Pipeline.Models;
 using UnityEditor;
 using UnityEngine;
 using Object = UnityEngine.Object;
-#if UNITY_6000_0_OR_NEWER
-using PhysicsMaterial = UnityEngine.PhysicsMaterial;
-#else
-using PhysicsMaterial = UnityEngine.PhysicMaterial;
-#endif
 
 namespace Unity.Pipeline.Editor.Commands.Assets
 {
@@ -33,7 +28,7 @@ namespace Unity.Pipeline.Editor.Commands.Assets
     /// </summary>
     public static class AssetCommands
     {
-        [CliCommand("create_asset", "Create a new ScriptableObject (or other UnityEngine.Object) asset of the given type at a path under the authoring root.")]
+        [CliCommand("create_asset", "Create a new ScriptableObject (or other UnityEngine.Object) asset of the given type at a path under the authoring root.", Tags = new[] { "assets" })]
         public static AuthoringResult CreateAsset(
             [CliArg("path", "Asset path relative to the authoring root, including extension (e.g. Data/Config.asset or Materials/Wall.mat). The Assets/ prefix is optional.", Required = true)] string path,
             [CliArg("type", "Fully-qualified or short type name to instantiate (e.g. UnityEngine.Material, MyGame.GameConfig). Must derive from UnityEngine.Object and be creatable.", Required = true)] string type,
@@ -137,7 +132,7 @@ namespace Unity.Pipeline.Editor.Commands.Assets
             return result;
         }
 
-        [CliCommand("import_asset", "Import an external file (e.g. a texture, model, audio clip) into the project by copying it to a path under the authoring root, then importing it.")]
+        [CliCommand("import_asset", "Import an external file (e.g. a texture, model, audio clip) into the project by copying it to a path under the authoring root, then importing it.", Tags = new[] { "assets/import" })]
         public static AuthoringResult ImportAsset(
             [CliArg("source", "Absolute filesystem path to the external file to import.", Required = true)] string source,
             [CliArg("path", "Destination asset path relative to the authoring root, including extension. The Assets/ prefix is optional.", Required = true)] string path,
@@ -170,7 +165,7 @@ namespace Unity.Pipeline.Editor.Commands.Assets
             return result;
         }
 
-        [CliCommand("move_asset", "Move (or rename via a new path) an asset to a new location under the authoring root. Preserves the asset's GUID.")]
+        [CliCommand("move_asset", "Move (or rename via a new path) an asset to a new location under the authoring root. Preserves the asset's GUID.", Tags = new[] { "assets" })]
         public static AuthoringResult MoveAsset(
             [CliArg("asset", "Reference to the asset to move (path / guid / globalId).", Required = true)] ObjectRef asset,
             [CliArg("destination", "Destination asset path relative to the authoring root, including extension. The Assets/ prefix is optional.", Required = true)] string destination,
@@ -206,7 +201,7 @@ namespace Unity.Pipeline.Editor.Commands.Assets
             return result;
         }
 
-        [CliCommand("copy_asset", "Copy an asset to a new path under the authoring root. The copy gets a fresh GUID.")]
+        [CliCommand("copy_asset", "Copy an asset to a new path under the authoring root. The copy gets a fresh GUID.", Tags = new[] { "assets" })]
         public static AuthoringResult CopyAsset(
             [CliArg("asset", "Reference to the asset to copy (path / guid / globalId).", Required = true)] ObjectRef asset,
             [CliArg("destination", "Destination asset path relative to the authoring root, including extension. The Assets/ prefix is optional.", Required = true)] string destination,
@@ -242,7 +237,7 @@ namespace Unity.Pipeline.Editor.Commands.Assets
             return result;
         }
 
-        [CliCommand("rename_asset", "Rename an asset in place (keeps it in the same folder, keeps its GUID).")]
+        [CliCommand("rename_asset", "Rename an asset in place (keeps it in the same folder, keeps its GUID).", Tags = new[] { "assets" })]
         public static AuthoringResult RenameAsset(
             [CliArg("asset", "Reference to the asset to rename (path / guid / globalId).", Required = true)] ObjectRef asset,
             [CliArg("new_name", "New file name WITHOUT a folder path. The extension is preserved if omitted.", Required = true)] string newName,
@@ -277,7 +272,7 @@ namespace Unity.Pipeline.Editor.Commands.Assets
             return result;
         }
 
-        [CliCommand("delete_asset", "Delete an asset from the project. Destructive: requires confirm=true.")]
+        [CliCommand("delete_asset", "Delete an asset from the project. Destructive: requires confirm=true.", Tags = new[] { "assets" })]
         public static AuthoringResult DeleteAsset(
             [CliArg("asset", "Reference to the asset to delete (path / guid / globalId).", Required = true)] ObjectRef asset,
             [CliArg("confirm", "Must be true to actually delete. Without it the command refuses (destructive guard).")] bool confirm = false,
@@ -302,7 +297,7 @@ namespace Unity.Pipeline.Editor.Commands.Assets
             return result;
         }
 
-        [CliCommand("find_assets", "Find assets by type and/or name and/or label, returning their path, GUID and type. At least one filter is required.")]
+        [CliCommand("find_assets", "Find assets by type and/or name and/or label, returning their path, GUID and type. At least one filter is required.", Tags = new[] { "assets" })]
         public static FindAssetsResult FindAssets(
             [CliArg("type", "Type name to filter by (e.g. Material, GameObject, ScriptableObject, MyGame.GameConfig). Resolved to a System.Type and matched against each asset's actual main type.")] string type = null,
             [CliArg("name", "Name substring to filter by (AssetDatabase name filter).")] string name = null,

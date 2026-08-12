@@ -1,8 +1,7 @@
 # Pipeline Documentation
 
 `com.unity.pipeline` lets a client — CLI, CI, or an agent — drive a running Unity Editor (or a
-development Player) over a local HTTP API by executing registered commands. This is the documentation
-index; the [README](../README.md) has the full narrative overview, install steps, and CLI walkthrough.
+development Player) over a local HTTP API by executing registered commands.
 
 ## Guides
 
@@ -235,7 +234,7 @@ Every available command, grouped by area. Each name links to its full reference 
 |---------|-------------|
 | [`editor_play`](commands/editor-lifecycle-and-observability.md#editor_play) | Enter play mode. |
 | [`editor_stop`](commands/editor-lifecycle-and-observability.md#editor_stop) | Exit play mode. |
-| [`editor_pause`](commands/editor-lifecycle-and-observability.md#editor_pause) | Pause play mode. |
+| [`editor_pause`](commands/editor-lifecycle-and-observability.md#editor_pause) | Toggle play mode pause. |
 | [`editor_status`](commands/editor-lifecycle-and-observability.md#editor_status) | Detailed Editor status. |
 | [`editor_focus`](commands/editor-lifecycle-and-observability.md#editor_focus) | Bring the Editor to the foreground. |
 | [`menu`](commands/editor-lifecycle-and-observability.md#menu) | Execute (or list) Editor menu items. |
@@ -244,6 +243,8 @@ Every available command, grouped by area. Each name links to its full reference 
 | [`get_console_logs`](commands/editor-lifecycle-and-observability.md#get_console_logs) | Read captured Editor console logs. |
 | [`clear_console`](commands/editor-lifecycle-and-observability.md#clear_console) | Clear the console / log buffer. |
 | [`get_performance_stats`](commands/editor-lifecycle-and-observability.md#get_performance_stats) | Read render / memory / frame stats. |
+| [`audit`](commands/editor-lifecycle-and-observability.md#audit) | Run a Project Auditor scan, producing a CSV of issues. |
+| [`audit_status`](commands/editor-lifecycle-and-observability.md#audit_status) | Poll the audit scan; returns the CSV path + issue count. |
 | [`get_authoring_root`](commands/editor-lifecycle-and-observability.md#get_authoring_root) | Get the authoring-root folder. |
 | [`set_authoring_root`](commands/editor-lifecycle-and-observability.md#set_authoring_root) | Set the authoring-root folder. |
 

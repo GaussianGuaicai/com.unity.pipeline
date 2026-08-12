@@ -13,10 +13,10 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
     {
         const string Group = "physics";
 
-        [CliCommand("get_physics_settings", "Read Physics settings (gravity, solver iterations, bounce threshold).", MainThreadRequired = true)]
+        [CliCommand("get_physics_settings", "Read Physics settings (gravity, solver iterations, bounce threshold).", MainThreadRequired = true, Tags = new[] { "settings/physics" })]
         public static ProjectSettingsResponse Get() => ProjectSettingsCommand.Get(Group, Read);
 
-        [CliCommand("set_physics_settings", "Change Physics settings. Requires confirm=true; use dry_run to preview. Not undoable via Ctrl+Z.", MainThreadRequired = true)]
+        [CliCommand("set_physics_settings", "Change Physics settings. Requires confirm=true; use dry_run to preview. Not undoable via Ctrl+Z.", MainThreadRequired = true, Tags = new[] { "settings/physics" })]
         public static ProjectSettingsResponse Set(
             [CliArg("settings", "Fields to change; omitted fields are left unchanged.")] PhysicsSettingsInput settings = null,
             [CliArg("confirm", "Apply the change. Without it the call is refused.")] bool confirm = false,

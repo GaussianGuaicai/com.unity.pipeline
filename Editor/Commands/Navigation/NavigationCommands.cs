@@ -23,7 +23,7 @@ namespace Unity.Pipeline.Editor.Commands.Navigation
     {
         private const int MaxSearchResults = 200;
 
-        [CliCommand("get_selection", "Read the current Editor selection as structured object identities.")]
+        [CliCommand("get_selection", "Read the current Editor selection as structured object identities.", Tags = new[] { "navigation" })]
         public static SelectionResult GetSelection()
         {
             return DescribeSelection(null);
@@ -38,7 +38,7 @@ namespace Unity.Pipeline.Editor.Commands.Navigation
         /// each through <see cref="ObjectResolver.TryResolve"/> for the full handle surface.
         /// </para>
         /// </summary>
-        [CliCommand("set_selection", "Set the Editor selection to the given assets/scene objects.")]
+        [CliCommand("set_selection", "Set the Editor selection to the given assets/scene objects.", Tags = new[] { "navigation" })]
         public static SelectionResult SetSelection(
             [CliArg("instance_ids", "Scene/loaded object instance IDs to select.")] ObjectId[] instanceIds = null,
             [CliArg("paths", "Asset paths to select (e.g. Assets/Foo.prefab).")] string[] paths = null)
@@ -89,7 +89,7 @@ namespace Unity.Pipeline.Editor.Commands.Navigation
             return DescribeSelection(unresolved.ToArray());
         }
 
-        [CliCommand("search", "Run a Unity Search query and return structured results.")]
+        [CliCommand("search", "Run a Unity Search query and return structured results.", Tags = new[] { "navigation" })]
         public static SearchResult Search(
             [CliArg("query", "Unity Search query string, e.g. 't:Material', 'p: my asset', 'h: Main Camera'.", Required = true)] string query,
             [CliArg("limit", "Max results to return (capped 200).")] int limit = 50)

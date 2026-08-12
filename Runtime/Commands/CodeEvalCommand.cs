@@ -12,7 +12,7 @@ namespace Unity.Pipeline.Runtime.Commands
     /// </summary>
     public static class CodeEvalCommand
     {
-        [CliCommand("eval", "Evaluate C# code dynamically using Roslyn compiler", MainThreadRequired = true)]
+        [CliCommand("eval", "Evaluate C# code dynamically using Roslyn compiler", MainThreadRequired = true, Tags = new[] { "scripts/eval" })]
         public static EvalResponse EvaluateCode(
             [CliArg("code", "C# code to evaluate", Required = true)] string code,
             [CliArg("timeout", "Timeout in milliseconds")] int timeout = 5000)
@@ -27,7 +27,7 @@ namespace Unity.Pipeline.Runtime.Commands
             return EvaluateSource(code, timeout);
         }
 
-        [CliCommand("eval_file", "Evaluate C# code read from a .cs file on disk", MainThreadRequired = true)]
+        [CliCommand("eval_file", "Evaluate C# code read from a .cs file on disk", MainThreadRequired = true, Tags = new[] { "scripts/eval" })]
         public static EvalResponse EvaluateFile(
             [CliArg("file", "Path to a .cs file to evaluate", Required = true)] string file,
             [CliArg("timeout", "Timeout in milliseconds")] int timeout = 5000)
@@ -75,6 +75,9 @@ namespace Unity.Pipeline.Runtime.Commands
             return EvaluateSource(code, timeout);
         }
 
+        /// <summary>Upper bound on a single eval's timeout — 24 hours (CLI-335; was 30s).</summary>
+        private const int MaxTimeoutMs = 86_400_000;
+
         /// <summary>
         /// Shared evaluation path: compiles and executes the given C# source and returns the
         /// response. Both the <c>eval</c> and <c>eval_file</c> commands funnel their resolved
@@ -87,12 +90,15 @@ namespace Unity.Pipeline.Runtime.Commands
             try
             {
                 // Validate timeout
-                if (timeout <= 0 || timeout > 30000)
+                // Cap raised from 30000ms (CLI-335): long evals are now legitimate — clients
+                // set custom timeouts or run detached jobs and reattach. 24h bounds abuse.
+                // (Supersedes the interim 300000ms raise from UUM-148641.)
+                if (timeout <= 0 || timeout > MaxTimeoutMs)
                 {
                     stopwatch.Stop();
                     return EvalResponse.EvalFailure(
                         "Bad Request",
-                        "Timeout must be between 1ms and 30000ms",
+                        $"Timeout must be between 1ms and {MaxTimeoutMs}ms",
                         stopwatch.ElapsedMilliseconds);
                 }
 

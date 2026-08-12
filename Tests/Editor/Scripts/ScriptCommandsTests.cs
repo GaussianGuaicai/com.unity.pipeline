@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using NUnit.Framework;
 using Unity.Pipeline.Editor.Authoring;
 using Unity.Pipeline.Editor.Commands.Scripts;
@@ -6,6 +7,7 @@ using Unity.Pipeline.Models;
 using Unity.Pipeline.Tests.Runtime; // AttachByPathFixture lives in the runtime test assembly (addable)
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.TestTools;
 using Object = UnityEngine.Object;
 using Unity.Pipeline;
 
@@ -15,16 +17,18 @@ namespace Unity.Pipeline.Tests.Editor.Scripts
     /// Tests for the CLI-195 script-management / reference-linking commands, exercised both directly
     /// (calling the static command method) and ViaClient (over HTTP through <see cref="PipelineTestServer"/>).
     ///
-    /// LIMITATION — the create_script -> recompile -> attach_script round-trip crosses a domain
-    /// reload (the new type does not exist until Unity recompiles), which cannot complete inside a
-    /// single in-process [Test]. We therefore cover:
+    /// create_script's own domain reload IS exercised in-test — see
+    /// <see cref="CreateScript_WritesFileAndReturnsAssetIdentity"/>, which forces and survives it
+    /// (UUM-148802). What still can't complete inside a single test is attach_script against the type
+    /// that reload just compiled: no local state survives a real domain reload, so there is nothing
+    /// left in-process afterward to hand to attach_script. We therefore cover:
     ///   * set_serialized_field -> get_serialized_fields round-trips (primitive, enum, vector),
     ///   * wiring a [SerializeField] object reference and reading it back as a handle,
     ///   * the recoverable "attach before compile" error path (attaching a type name that isn't
     ///     compiled), which is exactly what an agent hits if it skips the recompile step.
     /// The happy-path attach is validated against an ALREADY-COMPILED test component
-    /// (<see cref="ScriptCommandTestBehaviour"/>) so the type exists without a reload. Full
-    /// create->compile->attach must be verified in a live Editor (see PR notes).
+    /// (<see cref="ScriptCommandTestBehaviour"/>) so the type exists without a reload. Attaching a
+    /// type from a script create_script just wrote must still be verified in a live Editor (see PR notes).
     /// </summary>
     public class ScriptCommandsTests
     {
@@ -265,25 +269,40 @@ namespace Unity.Pipeline.Tests.Editor.Scripts
 
         #endregion
 
-        #region Direct — create_script (file write only; no reload)
+        #region Direct — create_script (file write, survives its own domain reload)
 
-        [Test]
-        public void CreateScript_WritesFileAndReturnsAssetIdentity()
+        [UnityTest]
+        public IEnumerator CreateScript_WritesFileAndReturnsAssetIdentity()
         {
             const string folder = "Assets/__CLI195Test";
+            const string expectedAssetPath = folder + "/CLI195Generated.cs";
             try
             {
                 if (!AssetDatabase.IsValidFolder(folder))
                 {
                     AssetDatabase.CreateFolder("Assets", "__CLI195Test");
-                    AssetDatabase.Refresh();
+                    AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
                 }
 
                 var result = CreateScriptCommand.CreateScript("CLI195Generated", folder, "Game.Generated");
+                Assert.AreEqual(expectedAssetPath, result.AssetPath);
 
-                Assert.AreEqual(folder + "/CLI195Generated.cs", result.AssetPath);
+                // create_script deliberately doesn't recompile (callers batch writes before paying
+                // that cost once, see CreateScriptCommand's doc comment) — so importing the real .cs
+                // file above just left Unity owing a compile pass. Left alone, that debt gets paid
+                // off whenever Unity next decides it's safe to check — empirically, the next Play
+                // Mode transition — landing mid-coroutine on an unrelated [UnityTest] elsewhere in
+                // the suite and hanging it to its timeout (UUM-148802). Force and wait out the reload
+                // right here instead, before anything else in the suite can be caught by it.
+                EditorUtility.RequestScriptReload();
+                yield return new WaitForDomainReload();
+
+                // Local state doesn't survive a real domain reload — the Test Runner resumes this
+                // coroutine at the right point, but every captured local (even a plain string, not
+                // just `result` itself) resets to its default. Re-derive what we check from the
+                // (const) inputs rather than anything captured before the yield.
                 Assert.IsTrue(System.IO.File.Exists(
-                    System.IO.Path.Combine(ProjectPaths.ProjectRoot, result.AssetPath)),
+                    System.IO.Path.Combine(ProjectPaths.ProjectRoot, expectedAssetPath)),
                     "The .cs file should be written to disk");
             }
             finally
@@ -291,7 +310,7 @@ namespace Unity.Pipeline.Tests.Editor.Scripts
                 if (AssetDatabase.IsValidFolder(folder))
                 {
                     AssetDatabase.DeleteAsset(folder);
-                    AssetDatabase.Refresh();
+                    AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
                 }
             }
         }

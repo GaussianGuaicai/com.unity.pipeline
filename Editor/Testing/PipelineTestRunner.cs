@@ -139,7 +139,8 @@ namespace Unity.Pipeline.Editor.Testing
                     Result = "playmode_running",
                     StatusPath = playmodeStart.StatusPath,
                     Message = $"EditMode complete: {editorResponse.Summary.Passed}/{editorResponse.Summary.Total} passed. " +
-                              "PlayMode tests started asynchronously — poll the test_status command for their results."
+                              "PlayMode tests started asynchronously — poll the test_status command for their results.",
+                    ExecutedAt = DateTime.UtcNow
                 };
             }
             catch (Exception ex)
@@ -214,7 +215,8 @@ namespace Unity.Pipeline.Editor.Testing
                             Skipped = resultAdaptor.SkipCount,
                             Inconclusive = resultAdaptor.InconclusiveCount
                         } : new TestSummary(),
-                        Results = collector.Results
+                        Results = collector.Results,
+                        ExecutedAt = DateTime.UtcNow
                     };
 
                     // Clean up PlayMode request file
@@ -231,6 +233,10 @@ namespace Unity.Pipeline.Editor.Testing
                     Debug.LogError($"[PipelineTestRunner] Sync execution error: {ex.Message}");
                     CleanupRequestFile();
                     return CreateErrorResponse($"Test execution failed: {ex.Message}");
+                }
+                finally
+                {
+                    UnregisterCollector(api, collector);
                 }
             }
         }
@@ -279,7 +285,8 @@ namespace Unity.Pipeline.Editor.Testing
                     StatusPath = TestStatusFile,
                     Mode = testMode.ToString(),
                     FilterApplied = string.IsNullOrEmpty(filter) ? null : $"{filterType}: {filter}",
-                    Message = "Tests started in async mode. Poll /test-status for results."
+                    Message = "Tests started in async mode. Poll /test-status for results.",
+                    ExecutedAt = DateTime.UtcNow
                 });
             }
             catch (Exception ex)
@@ -349,10 +356,12 @@ namespace Unity.Pipeline.Editor.Testing
         /// </summary>
         private static void StartAsyncTestExecution(TestMode testMode, string filter, string filterType, bool includeExplicit)
         {
+            TestRunnerApi api = null;
+            TestResultCollector collector = null;
             try
             {
-                var api = ScriptableObject.CreateInstance<TestRunnerApi>();
-                var collector = new TestResultCollector();
+                api = ScriptableObject.CreateInstance<TestRunnerApi>();
+                collector = new TestResultCollector();
 
                 m_ActiveApi = api;
                 m_ActiveCollector = collector;
@@ -363,8 +372,7 @@ namespace Unity.Pipeline.Editor.Testing
                     WriteCompletedResults(collector);
                     RestoreLiveServerIfDisrupted(); // B2: self-heal if a test broke the live server.
                     CleanupRequestFile();
-                    m_ActiveApi = null;
-                    m_ActiveCollector = null;
+                    UnregisterCollector(api, collector);
                 };
 
                 api.RetrieveTestList(testMode, (ITestAdaptor rootTest) =>
@@ -383,8 +391,7 @@ namespace Unity.Pipeline.Editor.Testing
                                 results = new object[0]
                             });
                             CleanupRequestFile();
-                            m_ActiveApi = null;
-                            m_ActiveCollector = null;
+                            UnregisterCollector(api, collector);
                             return;
                         }
 
@@ -400,8 +407,7 @@ namespace Unity.Pipeline.Editor.Testing
                         Debug.LogError($"[PipelineTestRunner] Async run setup error: {ex.Message}");
                         WriteStatusFile(new { status = "error", message = ex.Message });
                         CleanupRequestFile();
-                        m_ActiveApi = null;
-                        m_ActiveCollector = null;
+                        UnregisterCollector(api, collector);
                     }
                 });
             }
@@ -410,8 +416,7 @@ namespace Unity.Pipeline.Editor.Testing
                 Debug.LogError($"[PipelineTestRunner] Async execution error: {ex.Message}");
                 WriteStatusFile(new { status = "error", message = ex.Message });
                 CleanupRequestFile();
-                m_ActiveApi = null;
-                m_ActiveCollector = null;
+                UnregisterCollector(api, collector);
             }
         }
 
@@ -427,10 +432,12 @@ namespace Unity.Pipeline.Editor.Testing
         /// </summary>
         private static void ReattachResultCollector()
         {
+            TestRunnerApi api = null;
+            TestResultCollector collector = null;
             try
             {
-                var api = ScriptableObject.CreateInstance<TestRunnerApi>();
-                var collector = new TestResultCollector();
+                api = ScriptableObject.CreateInstance<TestRunnerApi>();
+                collector = new TestResultCollector();
 
                 m_ActiveApi = api;
                 m_ActiveCollector = collector;
@@ -440,8 +447,7 @@ namespace Unity.Pipeline.Editor.Testing
                     WriteCompletedResults(collector);
                     RestoreLiveServerIfDisrupted();
                     CleanupRequestFile();
-                    m_ActiveApi = null;
-                    m_ActiveCollector = null;
+                    UnregisterCollector(api, collector);
                 };
 
                 api.RegisterCallbacks(collector);
@@ -451,8 +457,7 @@ namespace Unity.Pipeline.Editor.Testing
                 Debug.LogError($"[PipelineTestRunner] Failed to reattach result collector: {ex.Message}");
                 WriteStatusFile(new { status = "error", message = ex.Message });
                 CleanupRequestFile();
-                m_ActiveApi = null;
-                m_ActiveCollector = null;
+                UnregisterCollector(api, collector);
             }
         }
 
@@ -623,21 +628,31 @@ namespace Unity.Pipeline.Editor.Testing
             if (m_ActiveCollector != null)
             {
                 m_ActiveCollector.Cancel();
-
-                if (m_ActiveApi != null)
-                {
-                    try { m_ActiveApi.UnregisterCallbacks(m_ActiveCollector); }
-                    catch (Exception ex)
-                    {
-                        Debug.LogWarning($"[PipelineTestRunner] Could not unregister old collector: {ex.Message}");
-                    }
-                }
-
+                UnregisterCollector(m_ActiveApi, m_ActiveCollector);
                 Debug.Log("[PipelineTestRunner] Invalidated previous test run");
             }
+        }
 
-            m_ActiveApi = null;
-            m_ActiveCollector = null;
+        /// <summary>
+        /// Unregisters a collector from Unity's TestRunnerApi callback registry (process-wide, not
+        /// per-instance) and clears the active-run fields if they still point at it.
+        /// </summary>
+        private static void UnregisterCollector(TestRunnerApi api, TestResultCollector collector)
+        {
+            if (api != null && collector != null)
+            {
+                try { api.UnregisterCallbacks(collector); }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"[PipelineTestRunner] Could not unregister collector: {ex.Message}");
+                }
+            }
+
+            if (ReferenceEquals(m_ActiveCollector, collector))
+            {
+                m_ActiveApi = null;
+                m_ActiveCollector = null;
+            }
         }
 
         private static TestExecutionResponse CreateErrorResponse(string message)
@@ -648,7 +663,8 @@ namespace Unity.Pipeline.Editor.Testing
                 Command = "run_tests",
                 Error = message,
                 Results = new List<TestResult>(),
-                Summary = new TestSummary()
+                Summary = new TestSummary(),
+                ExecutedAt = DateTime.UtcNow
             };
         }
 

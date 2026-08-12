@@ -39,72 +39,95 @@ namespace Unity.Pipeline.Editor.BuildProcessors
             // Integrity gate: fail the build if a bundled Roslyn DLL was swapped or modified.
             VerifyBundledChecksums();
 
-            // Note: this opens and closes scene which invalidate all managers.
-            // Find RuntimePipelineManager components in build scenes
-            var managers = FindRuntimeManagersInBuildScenes();
-
-            if (managers.Count == 0)
+            // Find RuntimePipelineManager components in build scenes. Any scene not already open is
+            // opened additively for the duration of this method and closed again in the finally below -
+            // closing it earlier would destroy the manager GameObjects this method still reads below.
+            var scenesOpenedForScan = new List<Scene>();
+            try
             {
-                Debug.LogWarning("Pipeline: No RuntimePipelineManager components found in build scenes. Pipeline will be disabled in Player builds.");
-                return;
-            }
+                var managers = FindRuntimeManagersInBuildScenes(scenesOpenedForScan);
 
-            if (managers.Count > 1)
-            {
-                var sceneNames = string.Join(", ", managers.Select(m => m.gameObject.scene.name + "/" + m.gameObject.name));
-                Debug.LogWarning($"Pipeline: Multiple RuntimePipelineManager components found in build: {sceneNames}. Only the first enabled component will be used.");
-            }
-
-            // Find enabled managers
-            var enabledManagers = managers.Where(m => m.enableInBuilds).ToList();
-
-            if (enabledManagers.Count == 0)
-            {
-                Debug.LogWarning("Pipeline: RuntimePipelineManager components found, but all have enableInBuilds = false. Pipeline will be disabled in Player builds.");
-                return;
-            }
-
-            if (enabledManagers.Count > 1)
-            {
-                var enabledNames = string.Join(", ", enabledManagers.Select(m => m.gameObject.scene.name + "/" + m.gameObject.name));
-                Debug.LogWarning($"Pipeline: Multiple enabled RuntimePipelineManager components found: {enabledNames}. Using the first one.");
-            }
-
-            var activeManager = enabledManagers[0];
-
-            // Validate the active manager configuration
-            var validationResult = activeManager.ValidateConfiguration();
-
-            if (!validationResult.IsValid)
-            {
-                throw new BuildFailedException($"Pipeline: Runtime configuration validation failed for {activeManager.gameObject.scene.name}/{activeManager.gameObject.name}: {validationResult.Message}");
-            }
-
-            if (validationResult.Level == "warning")
-            {
-                Debug.LogWarning($"Pipeline: Runtime configuration warning for {activeManager.gameObject.scene.name}/{activeManager.gameObject.name}: {validationResult.Message}");
-
-                if (!EditorUserBuildSettings.development)
+                if (managers.Count == 0)
                 {
-                    Debug.LogWarning("Pipeline: Security warnings detected in release build. Consider reviewing configuration.");
+                    Debug.LogWarning("Pipeline: No RuntimePipelineManager components found in build scenes. Pipeline will be disabled in Player builds.");
+                    return;
+                }
+
+                if (managers.Count > 1)
+                {
+                    var sceneNames = string.Join(", ", managers.Select(m => m.gameObject.scene.name + "/" + m.gameObject.name));
+                    Debug.LogWarning($"Pipeline: Multiple RuntimePipelineManager components found in build: {sceneNames}. Only the first enabled component will be used.");
+                }
+
+                // Find enabled managers
+                var enabledManagers = managers.Where(m => m.enableInBuilds).ToList();
+
+                if (enabledManagers.Count == 0)
+                {
+                    Debug.LogWarning("Pipeline: RuntimePipelineManager components found, but all have enableInBuilds = false. Pipeline will be disabled in Player builds.");
+                    return;
+                }
+
+                if (enabledManagers.Count > 1)
+                {
+                    var enabledNames = string.Join(", ", enabledManagers.Select(m => m.gameObject.scene.name + "/" + m.gameObject.name));
+                    Debug.LogWarning($"Pipeline: Multiple enabled RuntimePipelineManager components found: {enabledNames}. Using the first one.");
+                }
+
+                var activeManager = enabledManagers[0];
+
+                // Validate the active manager configuration
+                var validationResult = activeManager.ValidateConfiguration();
+
+                if (!validationResult.IsValid)
+                {
+                    throw new BuildFailedException($"Pipeline: Runtime configuration validation failed for {activeManager.gameObject.scene.name}/{activeManager.gameObject.name}: {validationResult.Message}");
+                }
+
+                if (validationResult.Level == "warning")
+                {
+                    Debug.LogWarning($"Pipeline: Runtime configuration warning for {activeManager.gameObject.scene.name}/{activeManager.gameObject.name}: {validationResult.Message}");
+
+                    if (!EditorUserBuildSettings.development)
+                    {
+                        Debug.LogWarning("Pipeline: Security warnings detected in release build. Consider reviewing configuration.");
+                    }
+                }
+
+                Debug.Log($"Pipeline: Runtime server ENABLED in build for {activeManager.gameObject.scene.name}/{activeManager.gameObject.name}");
+            }
+            finally
+            {
+                foreach (var scene in scenesOpenedForScan)
+                {
+                    EditorSceneManager.CloseScene(scene, true);
                 }
             }
-
-            Debug.Log($"Pipeline: Runtime server ENABLED in build for {activeManager.gameObject.scene.name}/{activeManager.gameObject.name}");
         }
 
         /// <summary>
         /// Find all RuntimePipelineManager components in scenes that will be included in the build.
+        /// Opens each enabled build scene additively to scan it, appending to <paramref name="scenesOpenedForScan"/>
+        /// any scene that was not already open - the caller is responsible for closing those once it is
+        /// done reading the returned managers. A scene the user already had open is left off that list,
+        /// so it is never closed out from under them.
         /// </summary>
-        private List<RuntimePipelineManager> FindRuntimeManagersInBuildScenes()
+        private List<RuntimePipelineManager> FindRuntimeManagersInBuildScenes(List<Scene> scenesOpenedForScan)
         {
             var managers = new List<RuntimePipelineManager>();
 
             var buildScenes = EditorBuildSettings.scenes.Where(s => s.enabled).ToArray();
+            var alreadyOpenPaths = new HashSet<string>(OpenScenePaths());
 
             foreach (var buildScene in buildScenes)
             {
+                var wasAlreadyOpen = alreadyOpenPaths.Contains(buildScene.path);
                 var scene = EditorSceneManager.OpenScene(buildScene.path, OpenSceneMode.Additive);
+
+                if (!wasAlreadyOpen)
+                {
+                    scenesOpenedForScan.Add(scene);
+                }
 
                 var sceneManagers = scene.GetRootGameObjects()
                     .SelectMany(go => go.GetComponentsInChildren<RuntimePipelineManager>(true))
@@ -112,6 +135,12 @@ namespace Unity.Pipeline.Editor.BuildProcessors
                 managers.AddRange(sceneManagers);
             }
             return managers;
+        }
+
+        private static IEnumerable<string> OpenScenePaths()
+        {
+            for (var i = 0; i < SceneManager.sceneCount; i++)
+                yield return SceneManager.GetSceneAt(i).path;
         }
 
         /// <summary>

@@ -14,10 +14,10 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
     {
         const string Group = "quality";
 
-        [CliCommand("get_quality_settings", "Read QualitySettings (current level, level names, vSync, anti-aliasing).", MainThreadRequired = true)]
+        [CliCommand("get_quality_settings", "Read QualitySettings (current level, level names, vSync, anti-aliasing).", MainThreadRequired = true, Tags = new[] { "settings/quality" })]
         public static ProjectSettingsResponse Get() => ProjectSettingsCommand.Get(Group, Read);
 
-        [CliCommand("set_quality_settings", "Change QualitySettings. Requires confirm=true; use dry_run to preview. Not undoable via Ctrl+Z.", MainThreadRequired = true)]
+        [CliCommand("set_quality_settings", "Change QualitySettings. Requires confirm=true; use dry_run to preview. Not undoable via Ctrl+Z.", MainThreadRequired = true, Tags = new[] { "settings/quality" })]
         public static ProjectSettingsResponse Set(
             [CliArg("settings", "Fields to change; omitted fields are left unchanged.")] QualitySettingsInput settings = null,
             [CliArg("confirm", "Apply the change. Without it the call is refused.")] bool confirm = false,

@@ -6,7 +6,9 @@
         "Unity.Pipeline.Editor",
         "Unity.Pipeline",
         "UnityEngine.TestRunner",
-        "Unity.Pipeline.Tests.Runtime"
+        "Unity.Pipeline.Tests.Runtime",
+        "Unity.InputSystem",
+        "Unity.InputSystem.TestFramework"
     ],
     "includePlatforms": [
         "Editor"

@@ -94,10 +94,25 @@ namespace Unity.Pipeline.Editor
         }
 
         /// <summary>
+        /// Serializes the log's read-modify-write. Requests are processed concurrently since the
+        /// /api/progress work (an exec response can be written while the next exec runs), so two
+        /// appends may race; without this lock they would drop or corrupt entries.
+        /// </summary>
+        private static readonly object m_AppendGate = new object();
+
+        /// <summary>
         /// Append a transaction to the JSON-array log in an explicit directory. Testable seam behind
         /// the public <see cref="Append(string,string)"/>.
         /// </summary>
         internal static void Append(string logsDir, string requestJson, string responseJson)
+        {
+            lock (m_AppendGate)
+            {
+                AppendLocked(logsDir, requestJson, responseJson);
+            }
+        }
+
+        private static void AppendLocked(string logsDir, string requestJson, string responseJson)
         {
             Directory.CreateDirectory(logsDir);
             var logPath = Path.Combine(logsDir, LogFileName);

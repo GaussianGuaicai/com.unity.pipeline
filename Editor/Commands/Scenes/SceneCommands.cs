@@ -37,7 +37,7 @@ namespace Unity.Pipeline.Editor.Commands.Scenes
 
         #region Create / Open / Save
 
-        [CliCommand("create_scene", "Create a new scene and save it to the given path under the authoring root.")]
+        [CliCommand("create_scene", "Create a new scene and save it to the given path under the authoring root.", Tags = new[] { "scenes" })]
         public static AuthoringResult CreateScene(
             [CliArg("path", "Scene path relative to the authoring root (default Assets/); the Assets/ prefix and the .unity extension are optional. e.g. Scenes/Level1", Required = true)] string path,
             [CliArg("additive", "Open the new scene additively alongside currently open scenes instead of replacing them.", DefaultValue = false)] bool additive = false,
@@ -66,7 +66,7 @@ namespace Unity.Pipeline.Editor.Commands.Scenes
             return DescribeSceneAsset(normalized);
         }
 
-        [CliCommand("open_scene", "Open an existing scene from the given path.")]
+        [CliCommand("open_scene", "Open an existing scene from the given path.", Tags = new[] { "scenes" })]
         public static AuthoringResult OpenScene(
             [CliArg("path", "Scene path relative to the authoring root (default Assets/); the Assets/ prefix and the .unity extension are optional.", Required = true)] string path,
             [CliArg("additive", "Open additively alongside currently open scenes instead of replacing them.", DefaultValue = false)] bool additive = false)
@@ -85,7 +85,7 @@ namespace Unity.Pipeline.Editor.Commands.Scenes
             return DescribeSceneAsset(normalized);
         }
 
-        [CliCommand("save_scene", "Save an open scene. Saves the active scene when no path is given.")]
+        [CliCommand("save_scene", "Save an open scene. Saves the active scene when no path is given.", Tags = new[] { "scenes" })]
         public static AuthoringResult SaveScene(
             [CliArg("path", "Path of the open scene to save (authoring-root relative; Assets/ prefix and .unity optional). Omit to save the active scene.")] string path = null)
         {
@@ -116,7 +116,7 @@ namespace Unity.Pipeline.Editor.Commands.Scenes
             return DescribeSceneAsset(scene.path);
         }
 
-        [CliCommand("save_all", "Save all open scenes that have unsaved changes.")]
+        [CliCommand("save_all", "Save all open scenes that have unsaved changes.", Tags = new[] { "scenes" })]
         public static object SaveAll()
         {
             GuardNotPlaying("save_all");
@@ -146,7 +146,7 @@ namespace Unity.Pipeline.Editor.Commands.Scenes
 
         #region Inspect / Active
 
-        [CliCommand("list_open_scenes", "List all currently open scenes with their load/active/dirty state.")]
+        [CliCommand("list_open_scenes", "List all currently open scenes with their load/active/dirty state.", Tags = new[] { "scenes" })]
         public static object ListOpenScenes()
         {
             // Read-only; safe in play mode, so no guard here.
@@ -166,7 +166,7 @@ namespace Unity.Pipeline.Editor.Commands.Scenes
             return new { count = scenes.Count, scenes };
         }
 
-        [CliCommand("set_active_scene", "Set which open scene is the active scene (new objects are created in the active scene).")]
+        [CliCommand("set_active_scene", "Set which open scene is the active scene (new objects are created in the active scene).", Tags = new[] { "scenes" })]
         public static AuthoringResult SetActiveScene(
             [CliArg("path", "Path of an already-open scene to make active (authoring-root relative; Assets/ prefix and .unity optional).", Required = true)] string path)
         {
@@ -183,7 +183,7 @@ namespace Unity.Pipeline.Editor.Commands.Scenes
             return DescribeSceneAsset(scene.path);
         }
 
-        [CliCommand("get_scene_hierarchy", "Return the GameObject tree of an open scene (or the active scene). Each node carries instanceId + hierarchyPath usable by GameObject commands.")]
+        [CliCommand("get_scene_hierarchy", "Return the GameObject tree of an open scene (or the active scene). Each node carries instanceId + hierarchyPath usable by GameObject commands.", Tags = new[] { "scenes" })]
         public static SceneHierarchy GetSceneHierarchy(
             [CliArg("path", "Path of the open scene to snapshot (authoring-root relative; Assets/ prefix and .unity optional). Omit for the active scene.")] string path = null)
         {
@@ -217,7 +217,7 @@ namespace Unity.Pipeline.Editor.Commands.Scenes
 
         #region Build settings
 
-        [CliCommand("add_scene_to_build", "Add a scene to the Build Settings scene list (idempotent). Optionally enable it.")]
+        [CliCommand("add_scene_to_build", "Add a scene to the Build Settings scene list (idempotent). Optionally enable it.", Tags = new[] { "scenes", "build/settings" })]
         public static object AddSceneToBuild(
             [CliArg("path", "Scene path to add (authoring-root relative; Assets/ prefix and .unity optional).", Required = true)] string path,
             [CliArg("enabled", "Whether the scene is enabled in the build list.", DefaultValue = true)] bool enabled = true)
@@ -245,7 +245,7 @@ namespace Unity.Pipeline.Editor.Commands.Scenes
             return new { path = normalized, enabled, buildIndex = SceneUtility.GetBuildIndexByScenePath(normalized), count = scenes.Count };
         }
 
-        [CliCommand("remove_scene_from_build", "Remove a scene from the Build Settings scene list (idempotent).")]
+        [CliCommand("remove_scene_from_build", "Remove a scene from the Build Settings scene list (idempotent).", Tags = new[] { "scenes", "build/settings" })]
         public static object RemoveSceneFromBuild(
             [CliArg("path", "Scene path to remove (authoring-root relative; Assets/ prefix and .unity optional).", Required = true)] string path)
         {

@@ -13,7 +13,7 @@ namespace Unity.Pipeline.Runtime.Commands
     /// </summary>
     public static class RuntimeStatusCommand
     {
-        [CliCommand("runtime_status", "Get comprehensive runtime application status", MainThreadRequired = true, RuntimeOnly = true)]
+        [CliCommand("runtime_status", "Get comprehensive runtime application status", MainThreadRequired = true, RuntimeOnly = true, Tags = new[] { "runtime" })]
         public static RuntimeStatusResponse GetRuntimeStatus()
         {
             try

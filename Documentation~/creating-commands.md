@@ -26,8 +26,39 @@ public static <ReturnType> Handler(...);
 | `description` | Human-readable text shown in help and the `/api/commands` listing. |
 | `MainThreadRequired` | Whether the handler must run on Unity's main thread. **Default `true`.** |
 | `RuntimeOnly` | Whether the command is hidden from an Editor server's command listing. **Default `false`.** |
+| `Tags` | Optional hierarchical tags for grouping/browsing commands. Path-style: a `/` separates tag from subtag (e.g. `"assets"`, `"assets/import"`). **Default: empty.** |
+
+Every discovered command also carries the **package** it originates from (derived from the declaring assembly, e.g. `Unity.Pipeline.Editor`). Tags and package appear in both the compact and full `/api/commands` listings — `detail=full` (the default) includes the parameters and generated JSON schema, while `detail=compact` returns just the lightweight index (`name`, `description`, `tags`, `package`). Tags also drive the endpoint's `tag` filter and its `group_by=tag` tree (see [Connectivity](connectivity.md)).
 
 The method **must be `static`**, but its accessibility does not matter: `public`, `internal`, and `private` static methods can all be registered. `CommandRegistry` invokes handlers through reflection, so a `private` handler runs exactly like a `public` one. Only a non-static (instance) method fails to register — `CommandRegistry` skips it and logs a warning.
+
+### Tag taxonomy
+
+Every shipped command carries at least one tag (enforced by `CommandRegistrationTests.CommandRegistry_DiscoverCommands_AllShippedCommandsCarryTags`). Tags are lowercase `/`-separated paths. Pick from the established top-level tags before inventing a new one, and add a subtag when a family is large enough to browse on its own:
+
+| Top-level tag | Covers | Subtags in use |
+|---------------|--------|----------------|
+| `animation` | Animation authoring | `animator`, `clip`, `timeline` |
+| `assets` | Asset CRUD and search | `import`, `text` |
+| `authoring` | Authoring-root configuration | — |
+| `baking` | Bake pipelines | `lighting`, `navmesh`, `occlusion` |
+| `build` | Player builds | `settings`, `targets` |
+| `capture` | Screenshots and view/element capture | — |
+| `editor` | Editor application control | `playmode` |
+| `gameobjects` | Scene GameObject manipulation | `components` |
+| `materials` | Materials | `shaders` |
+| `navigation` | Selection and search | — |
+| `observability` | Logs and diagnostics | `console`, `performance` |
+| `packages` | UPM package management | — |
+| `prefabs` | Prefab workflows | — |
+| `runtime` | Player-only application control | `application`, `input` |
+| `scenes` | Scene lifecycle and hierarchy | — |
+| `scripts` | C# source workflows | `compile`, `eval`, `hotreload` |
+| `settings` | Project settings | `audio`, `graphics`, `input`, `physics`, `player`, `quality`, `tags_layers`, `time` |
+| `tests` | Test runner | — |
+| `ui` | UI element workflows | — |
+
+A command may carry multiple tags when it genuinely belongs to two families (e.g. `add_scene_to_build` is tagged `scenes` and `build/settings`).
 
 ### Describing parameters
 

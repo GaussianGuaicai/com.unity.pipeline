@@ -10,6 +10,13 @@ namespace Unity.Pipeline
         private RuntimePipelineConfig m_Config;
         private RuntimeInstanceDescriptor m_InstanceDescriptor;
 
+        /// <summary>
+        /// Guards mutate-then-write of m_InstanceDescriptor: concurrent /api/status probes both
+        /// reach UpdateHeartBeat now, and RuntimeInstanceDescriptor.WriteToWorkingDirectory's own
+        /// lock only covers the write, not the field mutation feeding it.
+        /// </summary>
+        private readonly object m_HeartbeatLock = new object();
+
         public override DateTime StartedAt => m_InstanceDescriptor == null ? new DateTime() : m_InstanceDescriptor.StartedAt;
 
         public RuntimePipelineServer(RuntimePipelineConfig config)
@@ -42,7 +49,10 @@ namespace Unity.Pipeline
         protected override void UpdateHeartBeat()
         {
             // Update heartbeat in instance descriptor
-            if (m_InstanceDescriptor != null)
+            if (m_InstanceDescriptor == null)
+                return;
+
+            lock (m_HeartbeatLock)
             {
                 m_InstanceDescriptor.LastHeartbeat = DateTime.UtcNow;
                 try

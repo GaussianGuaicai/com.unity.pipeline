@@ -37,6 +37,13 @@ namespace Unity.Pipeline.Commands
         public bool RuntimeOnly { get; set; } = false;
 
         /// <summary>
+        /// Optional hierarchical tags used to group and browse commands.
+        /// Path-style: a '/' separates tag from subtag (e.g. "assets", "assets/import").
+        /// Default: empty (untagged).
+        /// </summary>
+        public string[] Tags { get; set; } = Array.Empty<string>();
+
+        /// <summary>
         /// Create a new CLI command attribute.
         /// </summary>
         /// <param name="name">Unique command name for CLI execution</param>

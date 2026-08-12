@@ -99,6 +99,85 @@ namespace Unity.Pipeline.Tests.Editor
         }
 
         [Test]
+        public void CommandRegistry_DiscoverCommands_PopulatesTagsFromAttribute()
+        {
+            // Arrange & Act
+            var commands = CommandRegistry.DiscoverCommands();
+
+            // Assert - path-style tags flow from [CliCommand(Tags = ...)] into CommandInfo
+            var tagged = commands.FirstOrDefault(cmd => cmd.Name == "test_tagged");
+            Assert.IsNotNull(tagged, "Should discover the test_tagged test command");
+            CollectionAssert.AreEqual(new[] { "test/registration", "test" }, tagged.Tags,
+                "Tags should flow from the [CliCommand] attribute into CommandInfo");
+        }
+
+        [Test]
+        public void CommandRegistry_DiscoverCommands_UntaggedCommandHasEmptyTags()
+        {
+            // Arrange & Act
+            var commands = CommandRegistry.DiscoverCommands();
+
+            // Assert - commands without Tags get an empty (never null) list
+            var untagged = commands.First(cmd => cmd.Name == "log_editor");
+            Assert.IsNotNull(untagged.Tags, "Tags should never be null");
+            Assert.AreEqual(0, untagged.Tags.Count, "Untagged command should have no tags");
+        }
+
+        [Test]
+        public void CommandRegistry_DiscoverCommands_AllShippedCommandsCarryTags()
+        {
+            // Arrange & Act
+            var commands = CommandRegistry.DiscoverCommands();
+
+            // Assert - every command shipped in the package assemblies is browsable by tag.
+            // Test-fixture commands (Unity.Pipeline.Tests.*) are exempt: several tests
+            // depend on deliberately untagged fixtures (e.g. log_editor).
+            var shippedAssemblies = new[] { "Unity.Pipeline", "Unity.Pipeline.Editor" };
+            var untagged = commands
+                .Where(cmd => shippedAssemblies.Contains(cmd.Package))
+                .Where(cmd => cmd.Tags.Count == 0)
+                .Select(cmd => cmd.Name)
+                .OrderBy(name => name)
+                .ToList();
+            Assert.IsEmpty(untagged,
+                $"Shipped commands must declare at least one tag: {string.Join(", ", untagged)}");
+        }
+
+        [Test]
+        public void CommandRegistry_DiscoverCommands_TagsAreWellFormedPaths()
+        {
+            // Arrange & Act
+            var commands = CommandRegistry.DiscoverCommands();
+
+            // Assert - tags are lowercase '/'-separated paths so tag-subtree filtering
+            // and group_by=tag nesting behave predictably
+            var pattern = new System.Text.RegularExpressions.Regex("^[a-z0-9_]+(/[a-z0-9_]+)*$");
+            var malformed = commands
+                .SelectMany(cmd => cmd.Tags
+                    .Where(tag => !pattern.IsMatch(tag))
+                    .Select(tag => $"{cmd.Name}: '{tag}'"))
+                .ToList();
+            Assert.IsEmpty(malformed,
+                $"Tags must be lowercase path-style segments: {string.Join(", ", malformed)}");
+        }
+
+        [Test]
+        public void CommandRegistry_DiscoverCommands_DerivesPackageFromDeclaringAssembly()
+        {
+            // Arrange & Act
+            var commands = CommandRegistry.DiscoverCommands().ToList();
+
+            // Assert - each command carries the assembly it originates from
+            var testCommand = commands.First(cmd => cmd.Name == "log_editor");
+            Assert.AreEqual("Unity.Pipeline.Tests.Editor", testCommand.Package,
+                "Test-assembly command should report the test assembly as its package");
+
+            var editorCommand = commands.First(cmd => cmd.Name == "editor_status");
+            Assert.AreEqual("Unity.Pipeline.Editor", editorCommand.Package,
+                "Editor command should report the editor assembly as its package");
+        }
+
+        [Test]
         public void JsonSchemaGeneration_FromCommandInfo_CreatesValidSchema()
         {
             // Arrange - Get our test command
@@ -269,6 +348,13 @@ namespace Unity.Pipeline.Tests.Editor
             [CliArg("factor", "Multiplier factor")] float factor = 1.0f)
         {
             // Test command with various types
+        }
+
+        [CliCommand("test_tagged", "Test command with hierarchical tags",
+            Tags = new[] { "test/registration", "test" })]
+        public static void TestTaggedCommand()
+        {
+            // Carries path-style tags to verify they flow into CommandInfo
         }
 
         [CliCommand("test_structured", "Test command with a structured object parameter")]
