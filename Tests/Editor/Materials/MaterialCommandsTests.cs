@@ -96,6 +96,16 @@ namespace Unity.Pipeline.Tests.Editor.Materials
         private static MaterialPropertyValue Prop(MaterialPropertiesResult r, string name)
             => r.Properties.FirstOrDefault(p => p.Name == name);
 
+        private static int GetRawRenderQueue(Material material)
+        {
+    #if UNITY_6000_0_OR_NEWER
+            return material.rawRenderQueue;
+    #else
+            var property = new SerializedObject(material).FindProperty("m_CustomRenderQueue");
+            return property != null ? property.intValue : material.renderQueue;
+    #endif
+        }
+
         /// <summary>
         /// Extract the float components of a Color/Vector property value. The direct (in-process) path
         /// returns a <c>float[]</c>; tolerate any IEnumerable (e.g. a JArray) so the helper also works
@@ -294,7 +304,7 @@ namespace Unity.Pipeline.Tests.Editor.Materials
             // default can legitimately equal the prior override (e.g. 3000), so comparing the effective
             // value would be flaky. rawRenderQueue is -1 exactly when the material inherits the shader's.
             var mat = AssetDatabase.LoadAssetAtPath<Material>(handle.Path);
-            Assert.AreEqual(-1, mat.rawRenderQueue, "renderQueue -1 should clear the override and inherit from the shader");
+            Assert.AreEqual(-1, GetRawRenderQueue(mat), "renderQueue -1 should clear the override and inherit from the shader");
         }
 
         // ---- unknown / mismatch -------------------------------------------------------------------
