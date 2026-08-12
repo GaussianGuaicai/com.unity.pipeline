@@ -3,11 +3,6 @@ using Unity.Pipeline.Editor.Authoring;
 using Unity.Pipeline.Editor.Commands.Assets;
 using UnityEditor;
 using UnityEngine;
-#if UNITY_6000_0_OR_NEWER
-using PhysicsMaterial = UnityEngine.PhysicsMaterial;
-#else
-using PhysicsMaterial = UnityEngine.PhysicMaterial;
-#endif
 
 namespace Unity.Pipeline.Tests.Editor.Assets
 {
@@ -40,7 +35,7 @@ namespace Unity.Pipeline.Tests.Editor.Assets
             if (AssetDatabase.IsValidFolder(Root))
             {
                 AssetDatabase.DeleteAsset(Root);
-                AssetDatabase.Refresh();
+                AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
             }
         }
 

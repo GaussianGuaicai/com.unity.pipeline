@@ -13,10 +13,10 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
     {
         const string Group = "time";
 
-        [CliCommand("get_time_settings", "Read Time settings (fixedDeltaTime, maximumDeltaTime, timeScale).", MainThreadRequired = true)]
+        [CliCommand("get_time_settings", "Read Time settings (fixedDeltaTime, maximumDeltaTime, timeScale).", MainThreadRequired = true, Tags = new[] { "settings/time" })]
         public static ProjectSettingsResponse Get() => ProjectSettingsCommand.Get(Group, Read);
 
-        [CliCommand("set_time_settings", "Change Time settings. Requires confirm=true; use dry_run to preview. Not undoable via Ctrl+Z.", MainThreadRequired = true)]
+        [CliCommand("set_time_settings", "Change Time settings. Requires confirm=true; use dry_run to preview. Not undoable via Ctrl+Z.", MainThreadRequired = true, Tags = new[] { "settings/time" })]
         public static ProjectSettingsResponse Set(
             [CliArg("settings", "Fields to change; omitted fields are left unchanged.")] TimeSettingsInput settings = null,
             [CliArg("confirm", "Apply the change. Without it the call is refused.")] bool confirm = false,

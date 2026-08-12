@@ -109,9 +109,24 @@ namespace Unity.Pipeline.Models
         }
 
         /// <summary>
+        /// Serializes descriptor writes. Heartbeat rewrites can now run concurrently (requests
+        /// are processed in parallel since the /api/progress work); a torn concurrent write
+        /// would leave clients reading half a descriptor.
+        /// </summary>
+        private static readonly object m_WriteGate = new object();
+
+        /// <summary>
         /// Write instance descriptor to project root
         /// </summary>
         public static void WriteToProjectRoot(InstanceDescriptor descriptor)
+        {
+            lock (m_WriteGate)
+            {
+                WriteToProjectRootLocked(descriptor);
+            }
+        }
+
+        private static void WriteToProjectRootLocked(InstanceDescriptor descriptor)
         {
             try
             {

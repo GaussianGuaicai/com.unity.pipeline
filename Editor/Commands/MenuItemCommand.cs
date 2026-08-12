@@ -36,7 +36,7 @@ namespace Unity.Pipeline.Editor.Commands
     /// </summary>
     public static class MenuItemCommand
     {
-        [CliCommand("menu", "Execute an Editor menu item by path, or list available items when no path is given", MainThreadRequired = true)]
+        [CliCommand("menu", "Execute an Editor menu item by path, or list available items when no path is given", MainThreadRequired = true, Tags = new[] { "editor" })]
         public static MenuResponse ExecuteMenu(
             [CliArg("path", "Menu item path to execute, e.g. \"Assets/Reimport All\". Omit to list available menu items.")] string path = "")
         {

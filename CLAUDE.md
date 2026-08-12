@@ -22,7 +22,7 @@ run tests, eval C#, hot-reload files, play-mode control, status/heartbeat.
   `Runtime/PlayerSupport/RuntimePipelineServer.cs`.
 - **`Editor/EditorPipelineStartup.cs`** (`PipelineServerStartup`) — `[InitializeOnLoad]` static
   owner of the live editor server; survives domain reloads; auto-enables autotick.
-- **`Editor/EditorPipelineManager.cs`** — inspectable settings asset (`Pipeline/Settings...` menu).
+- **`Editor/EditorPipelineManager.cs`** — inspectable settings asset (`Window/Pipeline/Settings...` menu).
 - Commands are discovered via `[CliCommand]` attributes. Editor command groups live under
   `Editor/Commands/` (Assets, Scenes, GameObjects, Prefabs, Scripts, Build, PackageManager,
   ProjectSettings, …); runtime commands under `Runtime/`.

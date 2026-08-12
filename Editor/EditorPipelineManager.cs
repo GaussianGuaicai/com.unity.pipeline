@@ -10,7 +10,7 @@ namespace Unity.Pipeline.Editor
     /// lifetime does not track the server across editor events). The owner reads this asset's config
     /// when starting; the custom inspector drives Start/Stop through the owner and shows live status.
     ///
-    /// The asset is optional: without it the owner uses the defaults below. "Pipeline/Settings"
+    /// The asset is optional: without it the owner uses the defaults below. "Window/Pipeline/Settings"
     /// creates it on demand.
     /// </summary>
     public class EditorPipelineManager : ScriptableObject

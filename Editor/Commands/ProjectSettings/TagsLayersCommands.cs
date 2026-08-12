@@ -17,10 +17,10 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
         const int FirstUserLayer = 8;
         const int LastUserLayer = 31;
 
-        [CliCommand("get_tags_layers", "Read the project's tags and (named) layers.", MainThreadRequired = true)]
+        [CliCommand("get_tags_layers", "Read the project's tags and (named) layers.", MainThreadRequired = true, Tags = new[] { "settings/tags_layers" })]
         public static ProjectSettingsResponse Get() => ProjectSettingsCommand.Get(Group, Read);
 
-        [CliCommand("set_tags_layers", "Add/remove tags and assign user layer names (index 8-31). Requires confirm=true; use dry_run to preview. Not undoable via Ctrl+Z.", MainThreadRequired = true)]
+        [CliCommand("set_tags_layers", "Add/remove tags and assign user layer names (index 8-31). Requires confirm=true; use dry_run to preview. Not undoable via Ctrl+Z.", MainThreadRequired = true, Tags = new[] { "settings/tags_layers" })]
         public static ProjectSettingsResponse Set(
             [CliArg("settings", "Tag/layer changes to make.")] TagsLayersInput settings = null,
             [CliArg("confirm", "Apply the change. Without it the call is refused.")] bool confirm = false,

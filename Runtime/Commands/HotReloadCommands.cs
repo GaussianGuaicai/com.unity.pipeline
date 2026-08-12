@@ -16,7 +16,7 @@ namespace Unity.Pipeline.Runtime.Commands
     /// </summary>
     public static class HotReloadCommands
     {
-        [CliCommand("reload_file_override", "Compile and apply hot reload file changes immediately", MainThreadRequired = true)]
+        [CliCommand("reload_file_override", "Compile and apply hot reload file changes immediately", MainThreadRequired = true, Tags = new[] { "scripts/hotreload" })]
         internal static HotReloadResponse ReloadFileOverride(
             [CliArg("filename", "Hot reload source file to compile (e.g. PlayerTweaks.cs)", Required = true)] string filename,
             [CliArg("timeout", "Compilation timeout in milliseconds")] int timeout = 30000,
@@ -127,7 +127,7 @@ namespace Unity.Pipeline.Runtime.Commands
             }
         }
 
-        [CliCommand("reload_file", "Compile and apply in-place [HotReload] edits from a source file", MainThreadRequired = true)]
+        [CliCommand("reload_file", "Compile and apply in-place [HotReload] edits from a source file", MainThreadRequired = true, Tags = new[] { "scripts/hotreload" })]
         public static HotReloadResponse ReloadFile(
             [CliArg("filename", "Source file containing [HotReload] methods (e.g. Assets/Scripts/Player.cs)", Required = true)] string filename,
             [CliArg("timeout", "Compilation timeout in milliseconds")] int timeout = 30000,
@@ -214,7 +214,7 @@ namespace Unity.Pipeline.Runtime.Commands
             }
         }
 
-        [CliCommand("cleanup_hotreload", "Remove old hot reload DLL versions and clear registry", MainThreadRequired = true, RuntimeOnly = true)]
+        [CliCommand("cleanup_hotreload", "Remove old hot reload DLL versions and clear registry", MainThreadRequired = true, RuntimeOnly = true, Tags = new[] { "scripts/hotreload" })]
         public static HotReloadResponse CleanupHotReload(
             [CliArg("assemblyDir", "Directory containing assemblies to cleanup", Required = true)] string assemblyDir,
             [CliArg("force_domain_reload", "Force Unity domain reload after cleanup")] bool forceDomainReload = true)
@@ -276,7 +276,7 @@ namespace Unity.Pipeline.Runtime.Commands
             }
         }
 
-        [CliCommand("hotreload_status", "Show current hot reload registry status and statistics", MainThreadRequired = true, RuntimeOnly = true)]
+        [CliCommand("hotreload_status", "Show current hot reload registry status and statistics", MainThreadRequired = true, RuntimeOnly = true, Tags = new[] { "scripts/hotreload" })]
         public static HotReloadResponse HotReloadStatus()
         {
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
@@ -519,7 +519,8 @@ namespace Unity.Pipeline.Runtime.Commands
                 AssemblyName = assemblyName,
                 Message = message,
                 Items = items ?? new System.Collections.Generic.List<string>(),
-                ExecutionTimeMs = executionTimeMs
+                ExecutionTimeMs = executionTimeMs,
+                ExecutedAt = DateTime.UtcNow
             };
         }
 
@@ -534,7 +535,8 @@ namespace Unity.Pipeline.Runtime.Commands
                 Error = error,
                 ErrorDetails = errorDetails,
                 ExecutionTimeMs = executionTimeMs,
-                Diagnostics = diagnostics ?? new System.Collections.Generic.List<string>()
+                Diagnostics = diagnostics ?? new System.Collections.Generic.List<string>(),
+                ExecutedAt = DateTime.UtcNow
             };
         }
     }

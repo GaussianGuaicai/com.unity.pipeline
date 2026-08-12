@@ -25,7 +25,7 @@ namespace Unity.Pipeline.Editor.Commands
         static MethodInfo s_GuiViewFocus;
         static bool s_Resolved;
 
-        [CliCommand("editor_focus", "Bring the Unity Editor window to the foreground", MainThreadRequired = true)]
+        [CliCommand("editor_focus", "Bring the Unity Editor window to the foreground", MainThreadRequired = true, Tags = new[] { "editor" })]
         public static string FocusEditor()
         {
             if (!ResolveReflection(out var error))

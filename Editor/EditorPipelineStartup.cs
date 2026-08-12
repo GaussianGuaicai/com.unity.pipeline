@@ -68,7 +68,7 @@ namespace Unity.Pipeline.Editor
             StartServer();
         }
 
-        [MenuItem("Pipeline/Start Server")]
+        [MenuItem("Window/Pipeline/Start Server")]
         private static void MenuStartServer()
         {
             StartServer();
@@ -78,23 +78,23 @@ namespace Unity.Pipeline.Editor
                 Debug.LogWarning("Pipeline Server failed to start");
         }
 
-        [MenuItem("Pipeline/Start Server", true)]
+        [MenuItem("Window/Pipeline/Start Server", true)]
         private static bool MenuStartServerValidate() => m_Server == null || !m_Server.IsRunning;
 
-        [MenuItem("Pipeline/Stop Server")]
+        [MenuItem("Window/Pipeline/Stop Server")]
         private static void MenuStopServer()
         {
             StopServer();
         }
 
-        [MenuItem("Pipeline/Stop Server", true)]
+        [MenuItem("Window/Pipeline/Stop Server", true)]
         private static bool MenuStopServerValidate() => m_Server != null && m_Server.IsRunning;
 
         /// <summary>
         /// Select the EditorPipelineManager settings asset, creating it under Assets/Settings/Pipeline
         /// on first use (the live server otherwise runs from built-in defaults).
         /// </summary>
-        [MenuItem("Pipeline/Settings...")]
+        [MenuItem("Window/Pipeline/Settings...")]
         private static void OpenSettings()
         {
             var mgr = EditorPipelineManager.Load();
@@ -163,14 +163,15 @@ namespace Unity.Pipeline.Editor
 
                 m_Server.Start(cfg?.Port ?? 0); // 0 auto-assigns from the 7800-7849 range.
 
-                if (m_Server.WatchdogEnabled)
-                {
-                    // The watchdog rides EditorApplication.update, but a backgrounded/idle editor stops
-                    // ticking once the listener dies (no requests left to wake it) — the exact moment the
-                    // watchdog must run. Keep auto-tick on so the update loop keeps spinning regardless of
-                    // focus, which keeps both the watchdog AND the dispatcher message pump alive.
-                    Commands.AutoTickCommand.SetAutoTick(true);
-                }
+                // Restore whatever auto-tick state the user last set this session (survives the
+                // domain reload that just wiped AutoTickCommand's statics). Only a session with no
+                // prior explicit set_autotick call falls back to a default, and that default is "on"
+                // when the watchdog is enabled: the watchdog rides EditorApplication.update, but a
+                // backgrounded/idle editor stops ticking once the listener dies (no requests left to
+                // wake it) — the exact moment the watchdog must run. Keeping auto-tick on by default
+                // keeps the update loop spinning regardless of focus, which keeps both the watchdog
+                // AND the dispatcher message pump alive.
+                Commands.AutoTickCommand.RestoreFromSession(defaultEnabled: m_Server.WatchdogEnabled);
             }
             catch (System.Exception ex)
             {

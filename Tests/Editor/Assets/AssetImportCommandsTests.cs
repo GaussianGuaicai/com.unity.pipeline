@@ -23,7 +23,7 @@ namespace Unity.Pipeline.Tests.Editor.Assets
             if (AssetDatabase.IsValidFolder(Root))
             {
                 AssetDatabase.DeleteAsset(Root);
-                AssetDatabase.Refresh();
+                AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
             }
         }
 

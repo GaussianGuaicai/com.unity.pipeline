@@ -9,7 +9,7 @@ namespace Unity.Pipeline.Runtime.Commands
     /// </summary>
     public static class RuntimeApplicationCommand
     {
-        [CliCommand("quit", "Gracefully quit the Unity application", MainThreadRequired = true, RuntimeOnly = true)]
+        [CliCommand("quit", "Gracefully quit the Unity application", MainThreadRequired = true, RuntimeOnly = true, Tags = new[] { "runtime/application" })]
         public static string QuitApplication(
             [CliArg("exitCode", "Exit code for the application")] int exitCode = 0)
         {
@@ -21,7 +21,7 @@ namespace Unity.Pipeline.Runtime.Commands
             return $"Application quit scheduled with exit code {exitCode}";
         }
 
-        [CliCommand("set_target_framerate", "Set the target frame rate for the application", MainThreadRequired = true, RuntimeOnly = true)]
+        [CliCommand("set_target_framerate", "Set the target frame rate for the application", MainThreadRequired = true, RuntimeOnly = true, Tags = new[] { "runtime/application" })]
         public static string SetTargetFrameRate(
             [CliArg("frameRate", "Target frame rate (-1 for platform default, 0 for unlimited)", Required = true)] int frameRate)
         {
@@ -38,7 +38,7 @@ namespace Unity.Pipeline.Runtime.Commands
             return $"Target frame rate set to {frameRateDescription} (was {previousFrameRate})";
         }
 
-        [CliCommand("set_timescale", "Set the time scale for the application", MainThreadRequired = true, RuntimeOnly = true)]
+        [CliCommand("set_timescale", "Set the time scale for the application", MainThreadRequired = true, RuntimeOnly = true, Tags = new[] { "runtime/application" })]
         public static string SetTimeScale(
             [CliArg("scale", "Time scale multiplier (0.0 to pause, 1.0 for normal speed)", Required = true)] float scale)
         {

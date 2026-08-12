@@ -23,7 +23,8 @@ namespace Unity.Pipeline.Editor.Commands.Materials
     public static class ShaderCommands
     {
         [CliCommand("list_shaders",
-            "Discover available shaders so an agent can pick a valid name for set_material_properties / create_asset. Returns [{ name, assetPath|null, isBuiltin, isSupported }].")]
+            "Discover available shaders so an agent can pick a valid name for set_material_properties / create_asset. Returns [{ name, assetPath|null, isBuiltin, isSupported }].",
+            Tags = new[] { "materials/shaders" })]
         public static List<ShaderInfo> ListShaders(
             [CliArg("filter", "Case-insensitive substring matched against the shader name (e.g. \"URP\", \"Lit\").")] string filter = null,
             [CliArg("includeBuiltin", "Include built-in/engine shaders (those with no project asset path). Default true.")] bool includeBuiltin = true,
@@ -96,7 +97,8 @@ namespace Unity.Pipeline.Editor.Commands.Materials
         }
 
         [CliCommand("get_shader_properties",
-            "Introspect a shader's declared property list (name, description, type Color|Vector|Float|Range|TexEnv|Int, range, textureDimension, flags). Provide 'shader' (by name) OR 'material' (read the shader off that material).")]
+            "Introspect a shader's declared property list (name, description, type Color|Vector|Float|Range|TexEnv|Int, range, textureDimension, flags). Provide 'shader' (by name) OR 'material' (read the shader off that material).",
+            Tags = new[] { "materials/shaders" })]
         public static ShaderPropertiesResult GetShaderProperties(
             [CliArg("shader", "Shader name (e.g. \"Universal Render Pipeline/Lit\"). Provide this OR 'material'.")] string shader = null,
             [CliArg("material", "Reference to a material to read the shader from instead of naming it. Provide this OR 'shader'.")] ObjectRef material = null)

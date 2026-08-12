@@ -78,7 +78,8 @@ namespace Unity.Pipeline.Editor.Commands.Build
             "Trigger an async Player build and report the full BuildReport. Returns immediately (queued); " +
             "poll build_status until status is 'completed'. DetailedBuildReport is included by default unless " +
             "'options' is supplied. Use dry_run to validate without building.",
-            MainThreadRequired = false)]
+            MainThreadRequired = false,
+            Tags = new[] { "build" })]
         public static object Build(
             [CliArg("target", "BuildTarget name (e.g. StandaloneWindows64). Defaults to the active target. Must be installed.")] string target = "",
             [CliArg("outputPath", "Output path (absolute, or relative to the project root). Defaults to the last/auto path.")] string outputPath = "",
@@ -210,7 +211,8 @@ namespace Unity.Pipeline.Editor.Commands.Build
         [CliCommand("build_status",
             "Status of the current/most recent build: idle | queued | building | completed, with the full " +
             "BuildReport (files, packedAssets, buildSteps, errors, warnings) once completed. Retained until the next build.",
-            MainThreadRequired = false)]
+            MainThreadRequired = false,
+            Tags = new[] { "build" })]
         public static string BuildStatus()
         {
             if (!File.Exists(StatusFile))

@@ -20,10 +20,10 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
         const string Group = "input";
         const string AssetPath = "ProjectSettings/InputManager.asset";
 
-        [CliCommand("get_input_settings", "Read the legacy Input Manager axes (names and count).", MainThreadRequired = true)]
+        [CliCommand("get_input_settings", "Read the legacy Input Manager axes (names and count).", MainThreadRequired = true, Tags = new[] { "settings/input" })]
         public static ProjectSettingsResponse Get() => ProjectSettingsCommand.Get(Group, Read);
 
-        [CliCommand("set_input_settings", "Tune a legacy Input Manager axis (sensitivity/gravity/dead) by name. Requires confirm=true; use dry_run to preview. Not undoable via Ctrl+Z.", MainThreadRequired = true)]
+        [CliCommand("set_input_settings", "Tune a legacy Input Manager axis (sensitivity/gravity/dead) by name. Requires confirm=true; use dry_run to preview. Not undoable via Ctrl+Z.", MainThreadRequired = true, Tags = new[] { "settings/input" })]
         public static ProjectSettingsResponse Set(
             [CliArg("settings", "Axis change. 'axis' selects the axis by name; omitted numeric fields are left unchanged.")] InputAxisInput settings = null,
             [CliArg("confirm", "Apply the change. Without it the call is refused.")] bool confirm = false,

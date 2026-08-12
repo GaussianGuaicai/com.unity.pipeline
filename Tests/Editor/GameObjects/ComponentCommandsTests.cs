@@ -45,7 +45,7 @@ namespace Unity.Pipeline.Tests.Editor.GameObjects
             if (AssetDatabase.IsValidFolder(AssetRoot))
             {
                 AssetDatabase.DeleteAsset(AssetRoot);
-                AssetDatabase.Refresh();
+                AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
             }
         }
 
@@ -186,7 +186,7 @@ namespace Unity.Pipeline.Tests.Editor.GameObjects
             finally
             {
                 AssetDatabase.DeleteAsset(dir);
-                AssetDatabase.Refresh();
+                AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
             }
         }
 

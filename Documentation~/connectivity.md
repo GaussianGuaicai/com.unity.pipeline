@@ -170,7 +170,192 @@ A client connects by:
 2. Taking the `port` and `evalToken` from it.
 3. Sending requests to `http://127.0.0.1:<port>/...` with `Authorization: Bearer <evalToken>`.
 
-Endpoints exposed by the server include `/api/status`, `/api/editor_status`, `/api/commands` (lists available commands), `/api/exec` (POST — runs a command), and `/api/test-status`.
+Endpoints exposed by the server include `/api/status`, `/api/editor_status`, `/api/commands` (lists available commands), `/api/exec` (POST — runs a command), `/api/test-status`, and `/api/progress`.
+
+### Command progress (`GET /api/progress`)
+
+While a command is executing over `/api/exec`, clients can poll `GET /api/progress` for the
+task's live progress — the `unity` CLI uses this to render terminal progress bars, mirroring
+`EditorUtility.DisplayProgressBar`. The endpoint is served off the Editor main thread, so it
+answers even while a long synchronous command has the Editor blocked. Response
+(`pct` is 0–1; all `progress` fields optional; `progress` is omitted when nothing is reported):
+
+```json
+{
+  "active": true,
+  "progress": {
+    "title": "Generating World",
+    "info": "Processing 42/100",
+    "current": 42,
+    "total": 100,
+    "pct": 0.42
+  }
+}
+```
+
+Progress sources, in order of precedence:
+
+1. `CliProgress.Report(title, info, current, total, progress)` — explicit reporting from
+   command code; thread-safe and works from a blocked main thread.
+2. Running `UnityEditor.Progress` items, mirrored automatically.
+
+### Detached jobs (`/api/exec` with `"job": true`, `/api/job`, `/api/job/cancel`)
+
+A long command can outlive the client's HTTP timeout. Submitting it as a **detached job**
+returns a job id immediately; the command runs in the background (still one at a time, in
+arrival order) and the client polls for the result — reattaching at any point:
+
+1. `POST /api/exec` with body `{"command": "…", "parameters": {…}, "job": true}` → the
+   standard exec envelope, with the job handle as its `result`:
+   `{"success": true, "command": "…", "result": {"jobId": "…", "state": "queued"}}`.
+2. `GET /api/job?id=<jobId>` → `{"jobId", "command", "state":
+   "queued|running|completed|failed|canceled", "progress": {…}, "result", "error", …}`.
+   `progress` mirrors `/api/progress` while the job runs; `result` is retained after
+   completion (last 100 terminal jobs, 1 hour) so it can be fetched repeatedly.
+3. `POST /api/job/cancel` with body `{"id": "<jobId>"}` — a queued job is canceled before it
+   starts; a running job gets a cooperative cancellation flag that command or `eval` code can
+   observe via `Unity.Pipeline.PipelineCancellation.ThrowIfCancellationRequested()` (arbitrary
+   synchronous code cannot be aborted from outside).
+
+At most 100 jobs may be queued or running at once (jobs execute strictly serially, so a deeper
+backlog is pure queued work with no benefit) — submitting one beyond that returns `429`.
+
+Jobs live in Editor memory: they do not survive domain reloads (script recompilation).
+
+Editor code that already calls `EditorUtility.DisplayProgressBar` can switch to the drop-in
+`CliEditorProgress.DisplayProgressBar` / `ClearProgressBar` wrappers to keep the Editor dialog
+and gain CLI visibility. See [Creating commands](creating-commands.md).
+
+### Readiness and the settle window
+
+On a **cold project import** the editor server comes up (and its descriptor is written) while the Editor is still importing assets and compiling scripts, so the Editor is not yet able to service commands. Until the Editor is first seen idle after server start:
+
+- `/api/status` reports `"status": "settling"` instead of `"ready"`. Wait for `ready` before issuing commands.
+- `/api/exec` rejects **main-thread** commands with **HTTP 503** and a structured, retryable envelope — distinguishable from a genuine command failure. The gate applies before execution *and* before a detached job (`"job": true`) is created, so a job can't run into the half-ready Editor in the background either:
+
+  ```json
+  {
+    "success": false,
+    "command": "create_scene",
+    "error": "Server Busy",
+    "errorDetails": "The Editor is still settling after startup (importing assets / compiling scripts), so main-thread commands are not serviceable yet. Retry shortly, or poll /api/status until it reports 'ready'.",
+    "status": "busy",
+    "retryable": true
+  }
+  ```
+
+- Background commands (`recompile_status`, `package_status`, `console`, ...) and `editor_status` stay servable throughout, so progress remains observable.
+
+The settle gate is one-way and scoped to the **editor session**: once the Editor has been idle once after startup, the server reports `ready` and the gate never arms again for that session — including for server instances recreated by domain reloads and for servers started while a mid-session compile/import happens to be in flight. Warm starts settle immediately; only the cold-import window gates.
+
+`/api/commands` accepts optional query parameters for discovery:
+
+- `detail` — `full` (the **default**) returns the complete command metadata including `parameters` and the generated `schema`; `compact` returns a lightweight index per command (`name`, `description`, `tags`, `package`). The recommended discovery flow is to browse the compact index first, then request full detail only for the few commands you intend to invoke.
+- `query` — case-insensitive substring match on a command's name, description, or any tag.
+- `tag` — scope results to a tag subtree via segment-aware prefix match (`tag=assets` matches `assets` and `assets/import`, not `assetsx`).
+- `group_by` — `flat` (the default) returns a `commands` array; `package` or `tag` return a `groups` array instead (`tag` is a nested tree mirroring the tag/subtag hierarchy; untagged commands land in a node with an empty tag).
+- `sort` — `name` (the default) or `package` (originating package, with name as tiebreak).
+- `order` — `asc` (the default) or `desc`. Applies to the chosen `sort`; sorting happens on the flat list before pagination and grouping.
+- `offset` / `limit` — paginate the filtered, sorted list. Both apply to the flat list *before* grouping, so pages stay deterministic. `offset` skips that many matches (default `0`); `limit` caps how many are returned (default: no cap). A client has seen everything once `offset + count` reaches `total`.
+
+Filters combine with AND; a filter that matches nothing returns an empty result, not an error. An invalid `detail`, `group_by`, `sort`, `order`, `offset`, or `limit` value is rejected with `400` naming the accepted values.
+
+### `/api/commands` response shape
+
+Every response carries the pagination counters plus a `server` block. The command payload is either a flat `commands` array or — under `group_by` — a `groups` array in its place:
+
+| Field | Meaning |
+|---|---|
+| `commands` | The page of commands. Present only when `group_by=flat` (the default). |
+| `groups` | Present *instead of* `commands` when `group_by=package` or `group_by=tag`. |
+| `count` | How many commands this page actually returned. |
+| `total` | How many commands matched the filters, **before** `offset`/`limit` were applied. |
+| `offset` | Echo of the requested `offset` (`0` when not supplied). |
+| `limit` | Echo of the requested `limit` (`null` when not supplied — no cap). |
+| `server` | The responding server's `version`, `port`, and `startTime`. |
+
+`GET /api/commands?detail=compact&tag=baking/lighting&limit=2` — `count` is the 2 returned here, while `total` is all 6 commands under `baking/lighting`, so the next page is `offset=2`:
+
+```json
+{
+  "commands": [
+    {
+      "name": "bake_lighting",
+      "description": "Trigger an async lightmap bake of the open scene(s) via Lightmapping.BakeAsync(). Returns immediately; poll lighting_bake_status until completed.",
+      "tags": ["baking/lighting"],
+      "package": "Unity.Pipeline.Editor"
+    },
+    {
+      "name": "cancel_lighting_bake",
+      "description": "Cancel an in-progress lighting bake (Lightmapping.Cancel()).",
+      "tags": ["baking/lighting"],
+      "package": "Unity.Pipeline.Editor"
+    }
+  ],
+  "count": 2,
+  "total": 6,
+  "offset": 0,
+  "limit": 2,
+  "server": {
+    "version": "0.0.1",
+    "port": 54321,
+    "startTime": "2026-07-29T09:14:22.113Z"
+  }
+}
+```
+
+Under `group_by=tag` the same envelope carries a nested `groups` tree instead. Two things to note. A node's `commands` holds only the commands tagged *exactly* at that node — so `baking`, whose commands all live in subtags, reports an empty array — while its `count` covers the node's whole **subtree**. And because pagination happens before grouping, group counts describe the returned page rather than every match: `GET /api/commands?detail=compact&tag=baking&group_by=tag&limit=2` groups only the 2 commands on this page, while `total` still reports all 17 matches under `baking`:
+
+```json
+{
+  "groups": [
+    {
+      "tag": "baking",
+      "count": 2,
+      "commands": [],
+      "children": [
+        {
+          "tag": "baking/lighting",
+          "count": 1,
+          "commands": [
+            {
+              "name": "bake_lighting",
+              "description": "Trigger an async lightmap bake of the open scene(s) via Lightmapping.BakeAsync(). Returns immediately; poll lighting_bake_status until completed.",
+              "tags": ["baking/lighting"],
+              "package": "Unity.Pipeline.Editor"
+            }
+          ],
+          "children": []
+        },
+        {
+          "tag": "baking/navmesh",
+          "count": 1,
+          "commands": [
+            {
+              "name": "bake_navmesh",
+              "description": "Trigger an async legacy NavMesh bake of the open scene(s) via UnityEditor.AI.NavMeshBuilder. Returns immediately; poll navmesh_bake_status until completed.",
+              "tags": ["baking/navmesh"],
+              "package": "Unity.Pipeline.Editor"
+            }
+          ],
+          "children": []
+        }
+      ]
+    }
+  ],
+  "count": 2,
+  "total": 17,
+  "offset": 0,
+  "limit": 2,
+  "server": {
+    "version": "0.0.1",
+    "port": 54321,
+    "startTime": "2026-07-29T09:14:22.113Z"
+  }
+}
+```
+
+`group_by=package` uses the same envelope with flatter nodes — `{ "package": "Unity.Pipeline.Editor", "count": 2, "commands": [ ... ] }`, with no `children`.
 
 ## See also
 

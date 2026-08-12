@@ -1,14 +1,8 @@
 # Unity Pipeline Package
 
-[![Unity Version](https://img.shields.io/badge/Unity-2022.3%2B-blue.svg)](https://unity.com/releases/editor/whats-new/2022.3.0)
+[![Unity Version](https://img.shields.io/badge/Unity-6.0%2B-blue.svg)](https://unity3d.com/unity/whats-new/2023.3.0)
 
 Transform Unity Editor into a programmable automation element for CI/CD pipelines and development workflows. The package exposes a running Unity Editor (or development Player) over a local HTTP API so external tools, scripts, or agents can execute commands remotely.
-
-## Compatibility focus
-
-This repository maintains Unity Pipeline compatibility for Unity 2022.3 LTS and newer, so projects that cannot yet move to Unity 6 can keep using the same Editor automation, runtime command, and Mono hot-reload workflows. Unity 6-specific APIs retain compatible fallbacks for Unity 2022.3.
-
-Input simulation is optional: it is available when the Input System package is installed and enabled; otherwise its commands return a structured unavailable result without preventing the package from loading. Hot reload remains supported on Mono only and is not available for IL2CPP builds.
 
 ## Install the Unity CLI
 
@@ -28,19 +22,19 @@ For more details, see the [CLI documentation](https://github.com/Unity-Technolog
 
 ## Install the Pipeline package
 
-Install the package through the Unity Package Manager using its Git URL:
+Install the package into a Unity project with:
 
-1. Open **Window > Package Manager** in Unity (or **Window > Package Management > Package Manager** in newer Unity versions).
-2. Open the install/add menu and select **Install package from Git URL** / **Add package from Git URL**.
-3. Enter the following URL and install the package:
+```bash
+unity pipeline install
+```
 
-   ```text
-   https://github.com/GaussianGuaicai/com.unity.pipeline.git
-   ```
+By default it targets the current directory (or the running Unity instance). Use `--project-path` to target a specific project:
 
-For details, see Unity's official documentation for [installing a package from a Git URL](https://docs.unity3d.com/Manual/upm-ui-giturl.html).
+```bash
+unity pipeline install --project-path /path/to/your/unity/project
+```
 
-After installation, the package automatically starts its HTTP server and registers the built-in commands when the project is open in the Unity Editor.
+Then open the project in the Unity Editor. The package automatically starts its HTTP server and registers the built-in commands.
 
 ## Connect to a running Editor
 

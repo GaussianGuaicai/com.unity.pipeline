@@ -111,7 +111,7 @@ namespace Unity.Pipeline.Editor.Commands.Observability
     /// </summary>
     public static class PerformanceCommands
     {
-        [CliCommand("get_performance_stats", "Read render, memory, and frame-timing stats (structured, read-only).")]
+        [CliCommand("get_performance_stats", "Read render, memory, and frame-timing stats (structured, read-only).", Tags = new[] { "observability/performance" })]
         public static PerformanceStats GetPerformanceStats()
         {
             return new PerformanceStats

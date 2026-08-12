@@ -20,10 +20,10 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
         const string RolloffProp = "Rolloff Scale";
         const string DopplerProp = "Doppler Factor";
 
-        [CliCommand("get_audio_settings", "Read project Audio settings (volume, rolloff scale, doppler factor).", MainThreadRequired = true)]
+        [CliCommand("get_audio_settings", "Read project Audio settings (volume, rolloff scale, doppler factor).", MainThreadRequired = true, Tags = new[] { "settings/audio" })]
         public static ProjectSettingsResponse Get() => ProjectSettingsCommand.Get(Group, Read);
 
-        [CliCommand("set_audio_settings", "Change project Audio settings. Requires confirm=true; use dry_run to preview. Not undoable via Ctrl+Z.", MainThreadRequired = true)]
+        [CliCommand("set_audio_settings", "Change project Audio settings. Requires confirm=true; use dry_run to preview. Not undoable via Ctrl+Z.", MainThreadRequired = true, Tags = new[] { "settings/audio" })]
         public static ProjectSettingsResponse Set(
             [CliArg("settings", "Fields to change; omitted fields are left unchanged.")] AudioSettingsInput settings = null,
             [CliArg("confirm", "Apply the change. Without it the call is refused.")] bool confirm = false,

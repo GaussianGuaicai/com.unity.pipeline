@@ -41,7 +41,7 @@ namespace Unity.Pipeline.Editor.Commands.Prefabs
         /// Save a source GameObject (typically a scene object) as a prefab asset. The source becomes
         /// a connected instance of the new prefab (interactionMode: AutomatedAction).
         /// </summary>
-        [CliCommand("create_prefab", "Save a GameObject as a prefab asset at a project path; the source becomes a connected instance.")]
+        [CliCommand("create_prefab", "Save a GameObject as a prefab asset at a project path; the source becomes a connected instance.", Tags = new[] { "prefabs" })]
         public static AuthoringResult CreatePrefab(
             [CliArg("source", "Reference to the source GameObject to save as a prefab (globalId/path/guid/instanceId/hierarchyPath).", Required = true)] ObjectRef source,
             [CliArg("path", "Prefab asset path relative to the authoring root (the Assets/ prefix is optional and the .prefab extension is added if missing). e.g. Prefabs/Enemy or Prefabs/Enemy.prefab", Required = true)] string path)
@@ -72,7 +72,7 @@ namespace Unity.Pipeline.Editor.Commands.Prefabs
         /// Instantiate a prefab asset into the active (or specified) loaded scene and return the
         /// scene instance's identity.
         /// </summary>
-        [CliCommand("instantiate_prefab", "Instantiate a prefab asset into a loaded scene and return the created instance.")]
+        [CliCommand("instantiate_prefab", "Instantiate a prefab asset into a loaded scene and return the created instance.", Tags = new[] { "prefabs" })]
         public static AuthoringResult InstantiatePrefab(
             [CliArg("prefab", "Reference to the prefab asset to instantiate (path/guid/globalId).", Required = true)] ObjectRef prefab,
             [CliArg("scene_path", "Optional path of a loaded scene to instantiate into; defaults to the active scene.")] string scenePath = null,
@@ -109,7 +109,7 @@ namespace Unity.Pipeline.Editor.Commands.Prefabs
         /// asset (which becomes a variant because its root is a base-prefab instance), then removing
         /// the temporary scene instance.
         /// </summary>
-        [CliCommand("create_prefab_variant", "Create a prefab variant asset that inherits from a base prefab.")]
+        [CliCommand("create_prefab_variant", "Create a prefab variant asset that inherits from a base prefab.", Tags = new[] { "prefabs" })]
         public static AuthoringResult CreatePrefabVariant(
             [CliArg("base", "Reference to the base prefab asset (path/guid/globalId).", Required = true)] ObjectRef basePrefab,
             [CliArg("path", "Variant prefab asset path relative to the authoring root (.prefab added if missing).", Required = true)] string path)
@@ -154,7 +154,7 @@ namespace Unity.Pipeline.Editor.Commands.Prefabs
         /// Apply a prefab instance's overrides back to its source prefab asset. By default applies
         /// the whole instance; the asset is updated on disk.
         /// </summary>
-        [CliCommand("apply_prefab_overrides", "Apply a prefab instance's overrides back to its source prefab asset.")]
+        [CliCommand("apply_prefab_overrides", "Apply a prefab instance's overrides back to its source prefab asset.", Tags = new[] { "prefabs" })]
         public static AuthoringResult ApplyPrefabOverrides(
             [CliArg("instance", "Reference to a prefab instance GameObject in a scene (instanceId/hierarchyPath/globalId).", Required = true)] ObjectRef instance)
         {
@@ -187,7 +187,7 @@ namespace Unity.Pipeline.Editor.Commands.Prefabs
         /// <summary>
         /// Revert a prefab instance's overrides, restoring it to match its source prefab asset.
         /// </summary>
-        [CliCommand("revert_prefab_overrides", "Revert a prefab instance's overrides so it matches its source prefab asset.")]
+        [CliCommand("revert_prefab_overrides", "Revert a prefab instance's overrides so it matches its source prefab asset.", Tags = new[] { "prefabs" })]
         public static AuthoringResult RevertPrefabOverrides(
             [CliArg("instance", "Reference to a prefab instance GameObject in a scene (instanceId/hierarchyPath/globalId).", Required = true)] ObjectRef instance)
         {
@@ -213,7 +213,7 @@ namespace Unity.Pipeline.Editor.Commands.Prefabs
         /// <see cref="PrefabUnpackMode.OutermostRoot"/> (one level) and
         /// <see cref="PrefabUnpackMode.Completely"/> (all nested levels).
         /// </summary>
-        [CliCommand("unpack_prefab", "Unpack a prefab instance into plain GameObjects (outermost level or completely).")]
+        [CliCommand("unpack_prefab", "Unpack a prefab instance into plain GameObjects (outermost level or completely).", Tags = new[] { "prefabs" })]
         public static AuthoringResult UnpackPrefab(
             [CliArg("instance", "Reference to a prefab instance GameObject in a scene (instanceId/hierarchyPath/globalId).", Required = true)] ObjectRef instance,
             [CliArg("completely", "If true, unpack all nested prefab levels (Completely); if false, only the outermost level (OutermostRoot).", DefaultValue = false)] bool completely = false)
@@ -248,7 +248,7 @@ namespace Unity.Pipeline.Editor.Commands.Prefabs
         /// A no-op call (no edit args) simply round-trips the asset through the stage, which is a useful
         /// integrity check that the open/edit/close cycle does not corrupt the asset.
         /// </summary>
-        [CliCommand("save_prefab_contents", "Open a prefab asset in an isolated prefab stage, apply a declarative edit, and save it back (nested-prefab safe).")]
+        [CliCommand("save_prefab_contents", "Open a prefab asset in an isolated prefab stage, apply a declarative edit, and save it back (nested-prefab safe).", Tags = new[] { "prefabs" })]
         public static AuthoringResult SavePrefabContents(
             [CliArg("prefab", "Reference to the prefab asset to edit (path/guid/globalId).", Required = true)] ObjectRef prefab,
             [CliArg("rename_child", "Optional child name (relative path under the root, e.g. 'Body/Head') to rename.")] string renameChild = null,

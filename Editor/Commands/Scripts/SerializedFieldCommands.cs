@@ -31,7 +31,8 @@ namespace Unity.Pipeline.Editor.Commands.Scripts
         [CliCommand("set_serialized_field",
             "Set a serialized field on a component/asset. Supports primitives, enums, Vector/Color/Rect/Bounds, " +
             "object references (value = an ObjectRef: asset by guid/fileId/path or scene object by instanceId/hierarchyPath), " +
-            "and array elements via 'name.Array.data[i]' (or 'name.Array.size' to resize).")]
+            "and array elements via 'name.Array.data[i]' (or 'name.Array.size' to resize).",
+            Tags = new[] { "scripts", "gameobjects/components" })]
         public static AuthoringResult SetSerializedField(
             [CliArg("target", "Reference to the component or asset to modify (globalId/path/guid/instanceId/hierarchyPath). May be a GameObject when 'component' is given.", Required = true)] ObjectRef target,
             [CliArg("field", "SerializedProperty path, e.g. 'speed', 'settings.speed', or 'waypoints.Array.data[0]'.", Required = true)] string field,
@@ -69,7 +70,8 @@ namespace Unity.Pipeline.Editor.Commands.Scripts
 
         [CliCommand("get_serialized_fields",
             "Read serialized fields of a component/asset. Returns each top-level field's name, type and value " +
-            "(object references are returned as re-usable handles). Pass 'field' to read a single SerializedProperty path.")]
+            "(object references are returned as re-usable handles). Pass 'field' to read a single SerializedProperty path.",
+            Tags = new[] { "scripts", "gameobjects/components" })]
         public static object GetSerializedFields(
             [CliArg("target", "Reference to the component or asset to read (globalId/path/guid/instanceId/hierarchyPath). May be a GameObject when 'component' is given.", Required = true)] ObjectRef target,
             [CliArg("field", "Optional single SerializedProperty path to read (e.g. 'speed' or 'items.Array.data[0]'). Omit to read all top-level fields.")] string field = null,

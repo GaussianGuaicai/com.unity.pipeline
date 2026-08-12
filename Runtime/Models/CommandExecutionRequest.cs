@@ -33,6 +33,15 @@ namespace Unity.Pipeline.Models
         public int? Timeout { get; set; }
 
         /// <summary>
+        /// When true, run the command as a detached job (CLI-335): the response returns a job
+        /// id immediately and the client collects the result later via GET /api/job?id=…,
+        /// surviving its own HTTP timeout. Execution still queues through the server's
+        /// one-command-at-a-time exec gate.
+        /// </summary>
+        [JsonProperty("job")]
+        public bool Job { get; set; }
+
+        /// <summary>
         /// Create a new command execution request.
         /// </summary>
         public CommandExecutionRequest()

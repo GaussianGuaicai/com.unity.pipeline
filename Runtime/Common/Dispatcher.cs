@@ -82,7 +82,12 @@ namespace Unity.Pipeline.Threading
             while (!task.IsCompleted)
             {
                 if ((DateTime.UtcNow - startTime).TotalMilliseconds > timeoutMs)
+                {
+                    // No-op if execution already started on the main thread — only prevents a
+                    // still-queued item from running after we've reported the timeout.
+                    workItem.TryCancel();
                     throw new TimeoutException($"Main thread operation timed out after {timeoutMs}ms");
+                }
 
                 Thread.Sleep(1);
             }
@@ -163,7 +168,24 @@ namespace Unity.Pipeline.Threading
 
         private abstract class WorkItem
         {
-            public abstract void Execute();
+            private const int Pending = 0;
+            private const int Started = 1;
+            private const int Canceled = 2;
+            private int m_State;
+
+            /// <summary>Marks the item canceled if it hasn't started executing yet. Returns false
+            /// (no-op) once <see cref="Execute"/> has already claimed it.</summary>
+            public bool TryCancel() => Interlocked.CompareExchange(ref m_State, Canceled, Pending) == Pending;
+
+            public void Execute()
+            {
+                if (Interlocked.CompareExchange(ref m_State, Started, Pending) != Pending)
+                    return; // Canceled before it could start.
+
+                ExecuteCore();
+            }
+
+            protected abstract void ExecuteCore();
             public abstract void SetException(Exception exception);
         }
 
@@ -178,7 +200,7 @@ namespace Unity.Pipeline.Threading
                 TaskCompletionSource = new TaskCompletionSource<T>();
             }
 
-            public override void Execute()
+            protected override void ExecuteCore()
             {
                 try
                 {

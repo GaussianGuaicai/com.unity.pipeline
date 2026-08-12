@@ -19,6 +19,7 @@ namespace Unity.Pipeline.Commands
     {
         private static IReadOnlyList<CommandInfo> m_CachedCommands;
         private static ICommandDiscovery m_Discovery;
+        private static readonly object m_DiscoveryLock = new object();
 
         /// <summary>
         /// Set the command discovery mechanism.
@@ -37,12 +38,22 @@ namespace Unity.Pipeline.Commands
         /// </summary>
         public static IEnumerable<CommandInfo> DiscoverCommands()
         {
-            if (m_CachedCommands == null)
+            if (m_CachedCommands != null)
             {
-                m_CachedCommands = DiscoverCommandsInternal().ToList();
+                return m_CachedCommands;
+            }
 
-                // Also discover hot reload methods when commands are discovered
-                DiscoverHotReloadMethods();
+            lock (m_DiscoveryLock)
+            {
+                if (m_CachedCommands == null)
+                {
+                    var discovered = DiscoverCommandsInternal().ToList();
+
+                    // Also discover hot reload methods when commands are discovered
+                    DiscoverHotReloadMethods();
+
+                    m_CachedCommands = discovered;
+                }
             }
 
             return m_CachedCommands;
@@ -54,7 +65,10 @@ namespace Unity.Pipeline.Commands
         /// </summary>
         public static void ClearCache()
         {
-            m_CachedCommands = null;
+            lock (m_DiscoveryLock)
+            {
+                m_CachedCommands = null;
+            }
         }
 
         /// <summary>
@@ -189,7 +203,9 @@ namespace Unity.Pipeline.Commands
                 commandAttr.MainThreadRequired,
                 method,
                 parameters,
-                commandAttr.RuntimeOnly
+                commandAttr.RuntimeOnly,
+                commandAttr.Tags,
+                method.DeclaringType?.Assembly.GetName().Name
             );
         }
 

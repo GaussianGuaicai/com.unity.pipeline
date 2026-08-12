@@ -17,7 +17,7 @@ No parameters.
 **Returns:** `string`
 
 ### `editor_pause`
-Pause Unity Editor play mode.
+Toggle pause state of Unity Editor play mode (calling it again while paused resumes play mode).
 
 No parameters.
 
@@ -68,9 +68,12 @@ Keep the editor ticking while unfocused by forcing EditorApplication.SignalTick 
 |-----------|----------|---------|-------------|
 | `enable` | no | `true` | Enable (true) or disable (false) auto-tick mode |
 | `interval_ms` | no | `16` | Minimum milliseconds between forced ticks. 0 = every update (max rate, pegs a CPU core). Default 16 (~60Hz). |
+| `persist` | no | `true` | Persist this choice to SessionState so it survives a domain reload. Set `false` for a one-off/expensive setting (e.g. `interval_ms=0`) that should revert to the last persisted choice (or the default) after the next recompile instead of sticking for the rest of the session. |
 
 **Returns:** `string`
-**Notes:** `MainThreadRequired = true`. State is static and resets on domain reload (turns itself off after a recompile).
+**Notes:** `MainThreadRequired = true`. Persisted in SessionState by default: your enabled/interval choice survives a domain reload (dies with the editor process/session).
+
+Use `persist=false` for a change you only want in effect until the next unrelated recompile — e.g. a short profiling run at `interval_ms=0` (pegs a CPU core) or a one-off test/CI script — so it can't outlive its purpose and silently burn CPU for the rest of the session. Leave `persist` at its default `true` for a setting you want to remain in effect across recompiles, such as the normal always-on 16ms tick.
 
 ### `get_console_logs`
 Read recently captured Editor console logs (structured).
@@ -95,6 +98,40 @@ Read render, memory, and frame-timing stats (structured, read-only).
 No parameters.
 
 **Returns:** `PerformanceStats`
+
+### `audit`
+Run a Project Auditor static-analysis scan. Returns immediately; poll `audit_status` until status is `completed`, then read the CSV.
+
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `categories` | no | `–` | Comma-separated issue categories to scan (e.g. `Code,ProjectSetting,Texture`). Default: all categories. An unknown name is rejected with an error listing the valid values. |
+| `output` | no | `–` | CSV output path (absolute, or relative to the project root). Defaults to `<project>/Temp/pipeline-audit/<scanId>.csv`. |
+
+**Returns:** `object` — `{ status, scanId, csvPath }` on start, or `{ status: "unavailable" | "error" | "busy", message }`.
+**Notes:** Requires Project Auditor in the Editor. Only one scan runs at a time (a second call returns `busy`). Not cancellable: stop polling to abandon a scan.
+
+### `audit_status`
+Get the status of the last audit: `idle` | `scanning` | `completed` | `failed` | `interrupted` | `unavailable`.
+
+No parameters.
+
+**Returns:** `AuditStatus` (JSON) — `issueCount` and `csvPath` are populated when `completed`; `error` when `failed`; `message` when `unavailable`.
+**Notes:** `MainThreadRequired = false`, so it answers while a scan holds the main thread (Code analysis compiles assemblies). `interrupted` means a domain reload killed an in-flight scan — re-run `audit`.
+
+#### Project Auditor prerequisites
+
+`audit` needs both Project Auditor **and** its rules:
+
+- **Project Auditor absent** — `audit` returns `unavailable` immediately.
+- **Rules absent** — when Project Auditor ships as a built-in editor module, its rules (descriptors,
+  API/obsolete databases, Roslyn analyzers) come from the separate `com.unity.project-auditor-rules`
+  package. Without it Project Auditor registers no analysis modules and cannot analyze anything, so
+  `audit` returns `scanning` and the first `audit_status` poll reports `unavailable` with a message
+  naming the package to install. It never reports an empty `completed` scan, which would read as a
+  clean project.
+
+The CSV columns are `Category, Severity, Areas, Description, RelativePath, Line, DescriptorId, Recommendation`;
+only diagnostics (things to fix) are emitted, not raw inventory rows.
 
 ### `get_authoring_root`
 Get the base folder (under Assets/) that bare authoring paths resolve against.

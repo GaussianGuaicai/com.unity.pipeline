@@ -143,7 +143,7 @@ namespace Unity.Pipeline.Tests.Editor.Materials
             finally
             {
                 AssetDatabase.DeleteAsset(folder);
-                AssetDatabase.Refresh();
+                AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
             }
         }
 

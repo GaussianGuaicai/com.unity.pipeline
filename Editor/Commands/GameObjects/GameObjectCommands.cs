@@ -37,7 +37,8 @@ namespace Unity.Pipeline.Editor.Commands.GameObjects
         /// is resolved by handle so a whole hierarchy can be built in one sequence of calls.
         /// </summary>
         [CliCommand("create_gameobject",
-            "Create an empty GameObject or a built-in primitive (cube/sphere/capsule/cylinder/plane/quad) in the active scene.")]
+            "Create an empty GameObject or a built-in primitive (cube/sphere/capsule/cylinder/plane/quad) in the active scene.",
+            Tags = new[] { "gameobjects" })]
         public static AuthoringResult CreateGameObject(
             [CliArg("name", "Name for the new GameObject. Defaults to 'GameObject' (or the primitive name).")] string name = null,
             [CliArg("primitive", "Optional primitive type: cube, sphere, capsule, cylinder, plane, quad. Omit for an empty GameObject.")] string primitive = null,
@@ -71,7 +72,8 @@ namespace Unity.Pipeline.Editor.Commands.GameObjects
         /// in ONE <see cref="AuthoringUndoScope"/> so it reverts as a single Undo step.
         /// </summary>
         [CliCommand("create_gameobjects",
-            "Batch-create N empty GameObjects or primitives in one call. Optional positions/rotations/scales are arrays of [x,y,z] (length must equal count). Returns the created identities.")]
+            "Batch-create N empty GameObjects or primitives in one call. Optional positions/rotations/scales are arrays of [x,y,z] (length must equal count). Returns the created identities.",
+            Tags = new[] { "gameobjects" })]
         public static CreateGameObjectsResult CreateGameObjects(
             [CliArg("name", "Base name. With count>1 and no explicit names, objects are suffixed Name1..NameN.")] string name = null,
             [CliArg("primitive", "Optional primitive type: cube, sphere, capsule, cylinder, plane, quad. Omit for empty GameObjects.")] string primitive = null,
@@ -129,7 +131,8 @@ namespace Unity.Pipeline.Editor.Commands.GameObjects
         /// <see cref="AuthoringResult"/> identities used everywhere else.
         /// </summary>
         [CliCommand("find_gameobjects",
-            "Find GameObjects in loaded scenes by name, tag, component type, and/or hierarchy path (filters are combined). Returns structured identities.")]
+            "Find GameObjects in loaded scenes by name, tag, component type, and/or hierarchy path (filters are combined). Returns structured identities.",
+            Tags = new[] { "gameobjects" })]
         public static FindGameObjectsResult FindGameObjects(
             [CliArg("name", "Exact name to match.")] string name = null,
             [CliArg("tag", "Tag to match (e.g. 'Player').")] string tag = null,
@@ -182,7 +185,8 @@ namespace Unity.Pipeline.Editor.Commands.GameObjects
         /// on the Transform so the change is reversible and recorded as a prefab override where relevant.
         /// </summary>
         [CliCommand("set_transform",
-            "Set a GameObject's local position/rotation(euler)/scale. Omitted channels are left unchanged.")]
+            "Set a GameObject's local position/rotation(euler)/scale. Omitted channels are left unchanged.",
+            Tags = new[] { "gameobjects" })]
         public static AuthoringResult SetTransform(
             [CliArg("target", "Handle of the GameObject to modify.", Required = true)] ObjectRef target,
             [CliArg("position", "Local position as [x,y,z].")] float[] position = null,
@@ -214,7 +218,8 @@ namespace Unity.Pipeline.Editor.Commands.GameObjects
         /// Editor's drag-to-reparent behavior.
         /// </summary>
         [CliCommand("set_parent",
-            "Reparent a GameObject under a new parent, or detach it to scene root when no parent is given.")]
+            "Reparent a GameObject under a new parent, or detach it to scene root when no parent is given.",
+            Tags = new[] { "gameobjects" })]
         public static AuthoringResult SetParent(
             [CliArg("target", "Handle of the GameObject to reparent.", Required = true)] ObjectRef target,
             [CliArg("parent", "Handle of the new parent. Omit (or empty) to move the object to the scene root.")] ObjectRef parent = null,
@@ -234,7 +239,7 @@ namespace Unity.Pipeline.Editor.Commands.GameObjects
         }
 
         /// <summary>Set a GameObject's active self-state.</summary>
-        [CliCommand("set_active", "Set a GameObject's active self-state (activeSelf).")]
+        [CliCommand("set_active", "Set a GameObject's active self-state (activeSelf).", Tags = new[] { "gameobjects" })]
         public static AuthoringResult SetActive(
             [CliArg("target", "Handle of the GameObject.", Required = true)] ObjectRef target,
             [CliArg("active", "Desired active state.", Required = true)] bool active)
@@ -254,7 +259,7 @@ namespace Unity.Pipeline.Editor.Commands.GameObjects
         /// tag surfaces a clear error rather than silently creating one (tag creation is a project
         /// settings mutation outside this command's scope).
         /// </summary>
-        [CliCommand("set_tag", "Set a GameObject's tag (the tag must already exist in the project).")]
+        [CliCommand("set_tag", "Set a GameObject's tag (the tag must already exist in the project).", Tags = new[] { "gameobjects" })]
         public static AuthoringResult SetTag(
             [CliArg("target", "Handle of the GameObject.", Required = true)] ObjectRef target,
             [CliArg("tag", "Tag to assign (must exist in the Tag Manager).", Required = true)] string tag)
@@ -276,7 +281,7 @@ namespace Unity.Pipeline.Editor.Commands.GameObjects
         /// Set a GameObject's layer by name or numeric index. A name is resolved via
         /// <see cref="LayerMask.NameToLayer"/>; an out-of-range index or unknown name is rejected.
         /// </summary>
-        [CliCommand("set_layer", "Set a GameObject's layer by name or numeric index (0-31).")]
+        [CliCommand("set_layer", "Set a GameObject's layer by name or numeric index (0-31).", Tags = new[] { "gameobjects" })]
         public static AuthoringResult SetLayer(
             [CliArg("target", "Handle of the GameObject.", Required = true)] ObjectRef target,
             [CliArg("layer", "Layer name (e.g. 'UI') or numeric index 0-31.", Required = true)] string layer)
@@ -294,7 +299,7 @@ namespace Unity.Pipeline.Editor.Commands.GameObjects
         }
 
         /// <summary>Rename a GameObject.</summary>
-        [CliCommand("rename_gameobject", "Rename a GameObject.")]
+        [CliCommand("rename_gameobject", "Rename a GameObject.", Tags = new[] { "gameobjects" })]
         public static AuthoringResult RenameGameObject(
             [CliArg("target", "Handle of the GameObject.", Required = true)] ObjectRef target,
             [CliArg("name", "New name.", Required = true)] string name)
@@ -317,7 +322,7 @@ namespace Unity.Pipeline.Editor.Commands.GameObjects
         /// deletion is reversible. The result describes the object's identity captured *before*
         /// destruction (the live object is gone afterwards).
         /// </summary>
-        [CliCommand("delete_gameobject", "Delete a GameObject from the scene (reversible via Undo).")]
+        [CliCommand("delete_gameobject", "Delete a GameObject from the scene (reversible via Undo).", Tags = new[] { "gameobjects" })]
         public static AuthoringResult DeleteGameObject(
             [CliArg("target", "Handle of the GameObject to delete.", Required = true)] ObjectRef target)
         {

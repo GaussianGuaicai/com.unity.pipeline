@@ -18,10 +18,10 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
     {
         const string Group = "player";
 
-        [CliCommand("get_player_settings", "Read PlayerSettings (company/product/version, scripting backend, API level).", MainThreadRequired = true)]
+        [CliCommand("get_player_settings", "Read PlayerSettings (company/product/version, scripting backend, API level).", MainThreadRequired = true, Tags = new[] { "settings/player" })]
         public static ProjectSettingsResponse Get() => ProjectSettingsCommand.Get(Group, Read);
 
-        [CliCommand("set_player_settings", "Change PlayerSettings. Requires confirm=true; use dry_run to preview. Not undoable via Ctrl+Z. Scripting backend / API level changes trigger a domain reload.", MainThreadRequired = true)]
+        [CliCommand("set_player_settings", "Change PlayerSettings. Requires confirm=true; use dry_run to preview. Not undoable via Ctrl+Z. Scripting backend / API level changes trigger a domain reload.", MainThreadRequired = true, Tags = new[] { "settings/player" })]
         public static ProjectSettingsResponse Set(
             [CliArg("settings", "Fields to change; omitted fields are left unchanged.")] PlayerSettingsInput settings = null,
             [CliArg("confirm", "Apply the change. Without it the call is refused.")] bool confirm = false,

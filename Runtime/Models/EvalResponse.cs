@@ -30,10 +30,12 @@ namespace Unity.Pipeline.Models
             return new EvalResponse
             {
                 Success = true,
+                Command = "eval",
                 Result = result,
                 Output = output,
                 ExecutionTimeMs = executionTimeMs,
-                Diagnostics = diagnostics ?? new List<DiagnosticInfo>()
+                Diagnostics = diagnostics ?? new List<DiagnosticInfo>(),
+                ExecutedAt = DateTime.UtcNow
             };
         }
 
@@ -45,10 +47,12 @@ namespace Unity.Pipeline.Models
             return new EvalResponse
             {
                 Success = false,
+                Command = "eval",
                 Error = error,
                 ErrorDetails = errorDetails,
                 ExecutionTimeMs = executionTimeMs,
-                Diagnostics = diagnostics ?? new List<DiagnosticInfo>()
+                Diagnostics = diagnostics ?? new List<DiagnosticInfo>(),
+                ExecutedAt = DateTime.UtcNow
             };
         }
     }

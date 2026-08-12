@@ -5,9 +5,7 @@
         "UnityEngine.TestRunner",
         "Unity.Pipeline"
     ],
-    "includePlatforms": [
-        "Editor"
-    ],
+    "includePlatforms": [],
     "excludePlatforms": [],
     "allowUnsafeCode": false,
     "overrideReferences": false,

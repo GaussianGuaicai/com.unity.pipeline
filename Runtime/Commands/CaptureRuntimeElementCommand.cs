@@ -21,7 +21,8 @@ namespace Unity.Pipeline.Runtime.Commands
     {
         [CliCommand("capture_runtime_element",
             "Capture a UI Toolkit VisualElement (by selector) from a live runtime panel (UIDocument or PanelRenderer) to a PNG; returns path + base64.",
-            MainThreadRequired = true, RuntimeOnly = true)]
+            MainThreadRequired = true, RuntimeOnly = true,
+            Tags = new[] { "capture", "ui" })]
         public static CaptureElementResponse CaptureRuntimeElement(
             [CliArg("panel", "Name of the target panel: matches the PanelSettings asset name or the host GameObject name (UIDocument or PanelRenderer). Optional when exactly one panel exists.")] string panel = "",
             [CliArg("selector", "Element selector: '#name', '.class', a type name (e.g. Button), descendant (space) / child ('>') chains, optional pseudo-states (:checked,:hover,:focus,:active,:enabled,:disabled,:not(...)).", Required = true)] string selector = "",
