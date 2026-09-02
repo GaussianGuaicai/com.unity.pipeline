@@ -2,7 +2,6 @@
     "name": "Unity.Pipeline",
     "rootNamespace": "Unity.Pipeline",
     "references": [
-        "Unity.InputSystem",
         "Unity.Pipeline.IlInterpreter"
     ],
     "includePlatforms": [],
@@ -13,7 +12,6 @@
         "Microsoft.CodeAnalysis.dll",
         "Microsoft.CodeAnalysis.CSharp.dll",
         "System.Collections.Immutable.dll",
-        "System.Runtime.CompilerServices.Unsafe.dll",
         "System.Reflection.Metadata.dll",
         "Newtonsoft.Json.dll"
     ],
