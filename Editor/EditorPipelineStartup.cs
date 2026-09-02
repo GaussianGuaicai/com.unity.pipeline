@@ -2,8 +2,12 @@ using UnityEditor;
 using UnityEngine;
 using Unity.Pipeline.Models;
 using Unity.Pipeline.Commands;
+using Unity.Pipeline.Telemetry;
 using Unity.Pipeline.Threading;
 using UnityEditor.MPE;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Editor
 {
@@ -17,7 +21,10 @@ namespace Unity.Pipeline.Editor
     /// settings asset whose config is read here at start.
     /// </summary>
     [InitializeOnLoad]
-    public static class PipelineServerStartup
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
+    static class PipelineServerStartup
     {
         private static EditorPipelineServer m_Server;
 
@@ -30,6 +37,12 @@ namespace Unity.Pipeline.Editor
 
         static PipelineServerStartup()
         {
+            // Seed the compile service's define snapshot while we're guaranteed on the main
+            // thread — a background compile fired before any main-thread parse would otherwise
+            // run with an empty define set (wrong #if branches). Before the worker-process
+            // early-out: costs one editor API call and holds everywhere.
+            Compilation.RoslynCompilationService.SnapshotProjectDefines();
+
             // Don't start server in AssetImportWorker processes
             if (!IsMainProcess())
                 return;
@@ -39,8 +52,16 @@ namespace Unity.Pipeline.Editor
             // Clean up any stale instance descriptor files from previous sessions
             CleanupStaleDescriptors();
 
+            var cfg = EditorPipelineManager.Load();
+
+            // Apply the local eval-usage telemetry config on EVERY domain reload, not only when
+            // the server starts (AUTHAPI-29): recording hooks eval itself, not the server
+            // lifecycle, so an AutoStart=false session must still honor the configured opt-outs
+            // instead of falling back to the hardcoded defaults.
+            ApplyEvalTelemetrySettings(cfg);
+
             // Start the pipeline server (respecting the settings asset's autoStart if one exists)
-            if (EditorPipelineManager.Load()?.AutoStart ?? true)
+            if (cfg?.AutoStart ?? true)
                 StartServer();
 
             // Handle domain reloads and editor shutdown
@@ -52,6 +73,7 @@ namespace Unity.Pipeline.Editor
             AssemblyReloadEvents.afterAssemblyReload += OnAfterAssemblyReload;
         }
 
+        /// <summary>Start the server if it isn't already running.</summary>
         public static void EnsureServerStarted()
         {
             StartServer();
@@ -136,6 +158,26 @@ namespace Unity.Pipeline.Editor
         }
 
         /// <summary>
+        /// Apply the local eval-usage telemetry config (AUTHAPI-29). Local-only, no transmission;
+        /// disabling it stops even local recording. StoreSource is the explicit opt-in for
+        /// persisting raw eval source (off by default). Resolving the directory primes the
+        /// dataPath-derived default on the main thread, so off-main-thread readers (report_evals)
+        /// and the background record task never touch Unity APIs.
+        ///
+        /// Internal (not private): this is the ONE place that knows how to turn the settings asset
+        /// into the static telemetry config, so every push site — the domain-reload static ctor,
+        /// server start, and <see cref="EditorPipelineManagerEditor"/>'s live inspector push — calls
+        /// through here rather than re-deriving the two-field mapping independently, which would
+        /// silently drift the moment a fourth push site (or a third telemetry field) showed up.
+        /// </summary>
+        internal static void ApplyEvalTelemetrySettings(EditorPipelineManager cfg)
+        {
+            EvalUsageTelemetry.Enabled = cfg?.EvalTelemetryEnabled ?? true;
+            EvalUsageTelemetry.StoreSource = cfg?.StoreEvalSource ?? false;
+            EvalUsageTelemetry.ResolveDirectory();
+        }
+
+        /// <summary>
         /// Start the Pipeline HTTP server, reading configuration from the EditorPipelineManager
         /// settings asset if one exists (otherwise using defaults).
         /// </summary>
@@ -154,12 +196,18 @@ namespace Unity.Pipeline.Editor
                     // wedge. Set before Start() (Start arms the watchdog).
                     WatchdogEnabled = cfg?.WatchdogEnabled ?? true,
                     WatchdogIntervalSeconds = cfg?.WatchdogIntervalSeconds ?? 5,
-                    LogRequestsResponses = cfg?.LogRequestsResponses ?? false
+                    LogRequestsResponses = cfg?.LogRequestsResponses ?? false,
+                    AllowSandboxedBrowserClients = cfg?.AllowBrowserClients ?? false,
+                    MaxRequestBodyBytes = 32L * 1024 * 1024
                 };
 
                 // Rotate the transaction log once per Unity session (main thread; SessionState-gated).
                 // The append path runs off-thread and can't touch SessionState.
                 PipelineTransactionLog.RotateForNewSession();
+
+                // Re-applied on every server start so inspector edits made this session stick
+                // even without a domain reload (the static ctor covers the reload path).
+                ApplyEvalTelemetrySettings(cfg);
 
                 m_Server.Start(cfg?.Port ?? 0); // 0 auto-assigns from the 7800-7849 range.
 
@@ -237,6 +285,14 @@ namespace Unity.Pipeline.Editor
         {
             // Server continues running through play mode changes
             // Status endpoint will reflect current play mode via EditorApplication.isPlaying
+
+            // RuntimePipelineDriver.Awake() switches CommandRegistry to reflection-based discovery
+            // on every Play Mode entry (a Player has no TypeCache). With Fast Enter Play Mode
+            // (domain reload disabled), nothing else runs this static constructor to switch it back
+            // on the way out — pre-FEPM, re-entering Edit mode via a domain reload did this for
+            // free. Restore TypeCache discovery explicitly here instead of relying on that reload.
+            if (state == PlayModeStateChange.EnteredEditMode)
+                CommandRegistry.SetDiscovery(new TypeCacheCommandDiscovery());
         }
 
         /// <summary>
@@ -245,6 +301,12 @@ namespace Unity.Pipeline.Editor
         private static void OnEditorQuitting()
         {
             StopServer(); // Stop() shuts down the server's own dispatcher.
+
+            // After StopServer, so the session is closed last. A command that finished in the same
+            // frame as the quit may still have its report queued on the dispatcher, and Shutdown
+            // drops it — a lost report is preferable to running arbitrary queued work while the
+            // Editor tears down.
+            PipelineAnalytics.SendSessionStoppedIfStarted();
         }
 
         /// <summary>
@@ -254,6 +316,7 @@ namespace Unity.Pipeline.Editor
         {
             // Server will be automatically recreated after reload due to [InitializeOnLoad]
             // Instance descriptor file will be cleaned up and recreated
+
         }
 
         /// <summary>

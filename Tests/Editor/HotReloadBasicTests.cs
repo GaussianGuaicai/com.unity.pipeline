@@ -10,7 +10,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// Basic tests for hot reload Pattern A method override functionality.
     /// Tests the end-to-end flow: mark method -> create override -> compile -> verify behavior.
     /// </summary>
-    public class HotReloadBasicTests
+    class HotReloadBasicTests
     {
         /// <summary>
         /// Test class with hot reloadable methods for testing.

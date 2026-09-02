@@ -14,7 +14,7 @@ namespace Unity.Pipeline.Tests.Editor.Animation
     /// float curves, the overwrite-not-duplicate behaviour, the destructive remove guard, dry_run, and
     /// the sandbox guard. Assets are generated in-test under a throwaway root and cleaned up.
     /// </summary>
-    public class AnimationClipCommandsTests
+    class AnimationClipCommandsTests
     {
         private const string Root = "Assets/__CLI214AnimTest";
 

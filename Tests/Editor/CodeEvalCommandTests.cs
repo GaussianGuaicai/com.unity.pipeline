@@ -1,7 +1,10 @@
 using NUnit.Framework;
+using System;
+using System.IO;
 using System.Text.RegularExpressions;
 using Unity.Pipeline.Models;
 using Unity.Pipeline.Runtime.Commands;
+using Unity.Pipeline.Telemetry;
 using Unity.Pipeline.Tests;
 using UnityEngine;
 using UnityEngine.TestTools;
@@ -12,8 +15,37 @@ namespace Unity.Pipeline.Tests.Editor
     /// Tests for the eval command (CodeEvalCommand), exercised directly and via PipelineClient.
     /// Compiler-level behavior (EvalCodeCompiler) is covered by EvalCodeCompilerTests.
     /// </summary>
-    public class CodeEvalCommandTests
+    class CodeEvalCommandTests
     {
+        // Eval now writes eval-usage telemetry (AUTHAPI-29). Redirect it to a throwaway temp directory
+        // so these tests never append to the real project's Library/Pipeline/eval-usage.jsonl, and
+        // restore the mutated statics afterwards.
+        private string m_TelemetryDir;
+        private string m_SavedOverrideDir;
+
+        [SetUp]
+        public void SetUp()
+        {
+            m_TelemetryDir = Path.Combine(Path.GetTempPath(), "CodeEvalTelemetry_" + Guid.NewGuid().ToString("N")[..8]);
+            m_SavedOverrideDir = EvalUsageTelemetry.OverrideDirectory;
+            EvalUsageTelemetry.OverrideDirectory = m_TelemetryDir;
+        }
+
+        [TearDown]
+        public void TearDown()
+        {
+            // Recording is fire-and-forget; drain in-flight background records before the redirect
+            // target is deleted (a late append would otherwise recreate the temp directory).
+            EvalUsageTelemetry.WaitForPendingRecords();
+
+            EvalUsageTelemetry.OverrideDirectory = m_SavedOverrideDir;
+            if (Directory.Exists(m_TelemetryDir))
+            {
+                try { Directory.Delete(m_TelemetryDir, true); }
+                catch { /* ignore cleanup failures */ }
+            }
+        }
+
         #region Direct
 
         [Test]

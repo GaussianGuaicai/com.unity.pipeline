@@ -13,7 +13,7 @@ namespace Unity.Pipeline.HotReload
     /// Pattern A: Attribute-Based Method Override
     /// - Individual methods can be surgically replaced
     /// - Hot reload methods must have same signature + instance parameter
-    /// - Access limited to public fields/properties for simplicity
+    /// - May access members of any accessibility (private/protected/internal included)
     /// - Best for: Quick gameplay tweaks, formula adjustments
     /// </summary>
     [AttributeUsage(AttributeTargets.Method, AllowMultiple = false)]
@@ -33,8 +33,10 @@ namespace Unity.Pipeline.HotReload
     }
 
     /// <summary>
-    /// Marks a method for the in-place hot reload workflow: the method body is edited directly
-    /// in the original source file and applied via the <c>reload_file</c> command.
+    /// Marks a method for the in-place hot reload workflow: the method body is
+    /// edited directly in the original source file and applied via the <c>reload_file</c> command.
+    /// Bodies may touch members of any accessibility, including
+    /// private/protected/internal ones of the target type.
     ///
     /// This attribute is exclusive to the in-place workflow and is independent of
     /// <see cref="HotReloadWithOverridesAttribute"/> / <see cref="HotReloadOverrideMethodAttribute"/>, which
@@ -54,6 +56,20 @@ namespace Unity.Pipeline.HotReload
         /// Defaults to true for Unity API safety.
         /// </summary>
         public bool RequireMainThread { get; set; } = true;
+    }
+
+    /// <summary>
+    /// Marks a parameterless instance method to be invoked after a hot reload is applied to its
+    /// declaring component. Fires once per <c>reload_file</c> (and <c>reload_file_override</c>) that
+    /// binds at least one override on the type, on every live instance — a place to re-initialize or
+    /// refresh state when the code is swapped (analogous to a domain-reload-free OnEnable). The method
+    /// runs on the main thread; exceptions are logged, not propagated. Only UnityEngine.Object-derived
+    /// types are supported (instances are discovered via FindObjectsByType).
+    /// </summary>
+    [AttributeUsage(AttributeTargets.Method, AllowMultiple = false)]
+    [JetBrains.Annotations.MeansImplicitUse]
+    public class OnHotReloadAttribute : Attribute
+    {
     }
 
     /// <summary>
@@ -78,6 +94,8 @@ namespace Unity.Pipeline.HotReload
         /// </summary>
         public string Description { get; set; }
 
+        /// <summary>Mark a method as the hot-reload override for the given target method.</summary>
+        /// <param name="targetMethodId">Target method identifier, "TypeName.MethodName".</param>
         public HotReloadOverrideMethodAttribute(string targetMethodId)
         {
             TargetMethodId = targetMethodId ?? throw new ArgumentNullException(nameof(targetMethodId));
@@ -128,6 +146,8 @@ namespace Unity.Pipeline.HotReload
         /// </summary>
         public string Description { get; set; }
 
+        /// <summary>Mark a class as the hot-reload implementation for the given component type.</summary>
+        /// <param name="targetType">Target component type to override.</param>
         public HotReloadComponentAttribute(Type targetType)
         {
             TargetType = targetType ?? throw new ArgumentNullException(nameof(targetType));
@@ -158,6 +178,8 @@ namespace Unity.Pipeline.HotReload
         /// </summary>
         public string Description { get; set; }
 
+        /// <summary>Mark a static method as a Pattern B hot-reload target.</summary>
+        /// <param name="targetId">Unique identifier matching a HotReloadMethod&lt;T&gt; wrapper registration.</param>
         public HotReloadTargetAttribute(string targetId)
         {
             TargetId = targetId ?? throw new ArgumentNullException(nameof(targetId));

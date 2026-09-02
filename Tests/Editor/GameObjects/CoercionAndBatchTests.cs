@@ -21,7 +21,7 @@ namespace Unity.Pipeline.Tests.Editor.GameObjects
     /// The guard is also pinned: a plain string param and an ObjectRef string handle ("/Name") must NOT
     /// be re-parsed.
     /// </summary>
-    public class CoercionAndBatchTests
+    class CoercionAndBatchTests
     {
         private readonly List<GameObject> m_Spawned = new List<GameObject>();
 

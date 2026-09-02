@@ -9,7 +9,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// <summary>
     /// Unit tests for MaxLengthStream - the size-limited read wrapper that caps HTTP request bodies.
     /// </summary>
-    public class MaxLengthStreamTests
+    class MaxLengthStreamTests
     {
         private static MemoryStream BytesOf(int count)
         {

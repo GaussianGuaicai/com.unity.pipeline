@@ -9,7 +9,7 @@ public class BossController : MonoBehaviour
         Screen.SetResolution(640, 480, FullScreenMode.Windowed);
     }
 
-    // No manual registration needed: RuntimePipelineManager auto-discovers [HotReloadWithOverrides] methods.
+    // No manual registration needed: the Pipeline runtime driver auto-discovers [HotReloadWithOverrides] methods.
 
     [HotReloadWithOverrides]
     void Update()

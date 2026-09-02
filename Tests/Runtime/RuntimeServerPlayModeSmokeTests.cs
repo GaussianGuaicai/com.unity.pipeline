@@ -14,29 +14,31 @@ namespace Unity.Pipeline.Tests.Runtime
     /// General command behavior is covered by the EditMode *CommandTests — this only covers
     /// play-mode-only paths and one end-to-end server check.
     /// </summary>
-    public class RuntimeServerPlayModeSmokeTests
+    class RuntimeServerPlayModeSmokeTests
     {
         [UnityTest]
         public IEnumerator AutoStart_StartsServer_AndServesRequest()
         {
-            var go = new GameObject("SmokeRuntimeManager");
-            var mgr = go.AddComponent<RuntimePipelineManager>();
-            mgr.enableInBuilds = true;
-            mgr.autoStart = true;
+            var config = ScriptableObject.CreateInstance<Unity.Pipeline.Config.RuntimePipelineConfig>();
+            config.enableInBuilds = true;
+            config.autoStart = true;
 
-            // Enabling the GameObject runs Start() -> autoStart -> StartServer.
-            go.SetActive(true);
+            var go = new GameObject("SmokeRuntimeDriver");
+            var driver = go.AddComponent<RuntimePipelineDriver>();
+            driver.Initialize(config, null);
 
+            // Start() -> autoStart -> StartServer runs on the next frame (MonoBehaviour lifecycle), not synchronously here.
             float t = 0f;
-            while (!mgr.IsServerRunning && t < 5f) { t += Time.unscaledDeltaTime; yield return null; }
-            Assert.IsTrue(mgr.IsServerRunning, "autoStart should start the runtime server");
+            while (!driver.IsServerRunning && t < 5f) { t += Time.unscaledDeltaTime; yield return null; }
+            Assert.IsTrue(driver.IsServerRunning, "autoStart should start the runtime server");
 
-            var serve = ServeStatus(mgr.ActualPort, SecurityTokenManager.GetOrCreateToken());
+            var serve = ServeStatus(driver.ActualPort, SecurityTokenManager.GetOrCreateToken());
             while (!serve.IsCompleted) yield return null;
             Assert.IsTrue(serve.Result, "runtime server should serve a runtime_status request");
 
-            mgr.StopServer();
+            driver.StopServer();
             Object.Destroy(go);
+            Object.Destroy(config);
         }
 
         static async Task<bool> ServeStatus(int port, string token)

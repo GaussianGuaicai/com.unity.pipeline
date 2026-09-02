@@ -14,7 +14,7 @@ namespace Unity.Pipeline.Runtime.Commands
     /// Provides runtime compilation and management of hot reload files.
     /// Follows existing [CliCommand] patterns and integrates with Pipeline Server.
     /// </summary>
-    public static class HotReloadCommands
+    static class HotReloadCommands
     {
         [CliCommand("reload_file_override", "Compile and apply hot reload file changes immediately", MainThreadRequired = true, Tags = new[] { "scripts/hotreload" })]
         internal static HotReloadResponse ReloadFileOverride(
@@ -105,6 +105,9 @@ namespace Unity.Pipeline.Runtime.Commands
                 if (result != null)
                 {
                     result.ExecutionTimeMs = stopwatch.ElapsedMilliseconds;
+
+                    if (result.Success)
+                        HotReloadRegistry.InvokeReloadCallbacks(result.Items);
                 }
 
                 Debug.Log($"HotReload: reload_file_override completed in {stopwatch.ElapsedMilliseconds}ms, success: {result?.Success}");
@@ -133,6 +136,23 @@ namespace Unity.Pipeline.Runtime.Commands
             [CliArg("timeout", "Compilation timeout in milliseconds")] int timeout = 30000,
             [CliArg("assemblyDir", "Directory to save compiled assemblies to disk (optional, default is in-memory only)")] string assemblyDir = null,
             [CliArg("pdb", "Emit debug symbols (portable PDB) mapped to the original source so breakpoints bind in your editor. Compiles unoptimized.")] bool pdb = false)
+        {
+            return ReloadFileCore("reload_file", filename, timeout, assemblyDir, pdb, useInterpreter: false);
+        }
+
+        [CliCommand("reload_file_editor_interpreter", "Compile in-place [HotReload] edits and run them through the IlInterpreter VM in this process instead of Assembly.Load (IL2CPP-safe; only a minimal host API + the target type are available)", MainThreadRequired = true, Tags = new[] { "scripts/hotreload" })]
+        public static HotReloadResponse ReloadFileEditorInterpreter(
+            [CliArg("filename", "Source file containing [HotReload] methods (e.g. Assets/Scripts/Player.cs)", Required = true)] string filename,
+            [CliArg("timeout", "Compilation timeout in milliseconds")] int timeout = 30000,
+            [CliArg("assemblyDir", "Directory to save compiled assemblies to disk (optional, default is in-memory only)")] string assemblyDir = null,
+            [CliArg("pdb", "Emit debug symbols (portable PDB) mapped to the original source so breakpoints bind in your editor. Compiles unoptimized.")] bool pdb = false)
+        {
+            return ReloadFileCore("reload_file_editor_interpreter", filename, timeout, assemblyDir, pdb, useInterpreter: true);
+        }
+
+        /// <summary>Shared body of <c>reload_file</c> and <c>reload_file_editor_interpreter</c>:
+        /// the two commands differ only in the backend the reloaded methods run on.</summary>
+        private static HotReloadResponse ReloadFileCore(string commandName, string filename, int timeout, string assemblyDir, bool pdb, bool useInterpreter)
         {
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
@@ -178,9 +198,9 @@ namespace Unity.Pipeline.Runtime.Commands
                     }
                 }
 
-                Debug.Log($"HotReload: Executing reload_file command: {fullPath}, timeout: {timeout}ms, assemblyDir: {assemblyDir ?? "in-memory"}, pdb: {pdb}");
+                Debug.Log($"HotReload: Executing {commandName} command: {fullPath}, timeout: {timeout}ms, assemblyDir: {assemblyDir ?? "in-memory"}, pdb: {pdb}, interpreter: {useInterpreter}");
 
-                var task = InPlaceReloadProcessor.ProcessSourceFileAsync(fullPath, assemblyDir, pdb);
+                var task = InPlaceReloadProcessor.ProcessSourceFileAsync(fullPath, assemblyDir, pdb, useInterpreter);
                 task.Wait();
                 var result = task.Result;
 
@@ -188,11 +208,54 @@ namespace Unity.Pipeline.Runtime.Commands
 
                 if (result.Success)
                 {
-                    return HotReloadResponse.CmdSuccess(
+                    // Everything matches the compiled baseline: an honest no-op success, not
+                    // "reload successful with 0 methods" against a null assembly name. Reverting
+                    // stale overrides (the edit was undone) is part of the outcome — say so
+                    // instead of unregistering silently.
+                    if (result.AllUpToDate)
+                    {
+                        var upToDate = HotReloadResponse.CmdSuccess(
+                            string.Empty,
+                            $"Up to date: all {result.UpToDateMethods.Count} [HotReload] method(s) match the compiled baseline — nothing reloaded" +
+                            (result.RevertedMethods.Count > 0
+                                ? $"; reverted {result.RevertedMethods.Count} stale override(s): {string.Join(", ", result.RevertedMethods)}"
+                                : "") + ".",
+                            result.RegisteredMethods,
+                            stopwatch.ElapsedMilliseconds);
+                        upToDate.Diagnostics = result.CompilationDiagnostics;
+                        return upToDate;
+                    }
+
+                    // "Compiled OK but bound nothing" is a failed reload in practice: the compile
+                    // succeeded but every method was skipped downstream (e.g. an interpreter-unsupported
+                    // construct, or no RuntimePipelineDriver registered the target). Surface the
+                    // reasons from CompilationDiagnostics as a failure instead of a silent success.
+                    if (result.RegisteredMethods.Count == 0 && result.ExtractedMethods.Count > 0)
+                    {
+                        var details = result.CompilationDiagnostics != null && result.CompilationDiagnostics.Count > 0
+                            ? "Compiled, but no methods were applied:\n- " + string.Join("\n- ", result.CompilationDiagnostics)
+                            : "Compiled, but no methods were applied. Is the target component in the scene " +
+                              "and in play mode (with the runtime Pipeline driver active)?";
+                        return HotReloadResponse.CmdFailure(
+                            "No Methods Applied",
+                            details,
+                            stopwatch.ElapsedMilliseconds,
+                            result.CompilationDiagnostics);
+                    }
+
+                    HotReloadRegistry.InvokeReloadCallbacks(result.RegisteredMethods);
+
+                    var response = HotReloadResponse.CmdSuccess(
                         result.AssemblyName,
-                        $"In-place hot reload successful: {result.AssemblyName} with {result.RegisteredMethods.Count} methods",
+                        $"In-place hot reload successful: {result.AssemblyName} with {result.RegisteredMethods.Count} methods" +
+                        (result.RevertedMethods.Count > 0
+                            ? $"; reverted {result.RevertedMethods.Count} stale override(s): {string.Join(", ", result.RevertedMethods)}"
+                            : ""),
                         result.RegisteredMethods,
                         stopwatch.ElapsedMilliseconds);
+                    // Surface partial-skip reasons (some methods bound, others skipped) on success too.
+                    response.Diagnostics = result.CompilationDiagnostics;
+                    return response;
                 }
 
                 return HotReloadResponse.CmdFailure(
@@ -204,7 +267,7 @@ namespace Unity.Pipeline.Runtime.Commands
             catch (Exception ex)
             {
                 stopwatch.Stop();
-                Debug.LogError($"HotReload: reload_file command failed: {ex.Message}");
+                Debug.LogError($"HotReload: {commandName} command failed: {ex.Message}");
                 Debug.LogError($"HotReload: Stack trace: {ex.StackTrace}");
 
                 return HotReloadResponse.CmdFailure(
@@ -491,7 +554,7 @@ namespace Unity.Pipeline.Runtime.Commands
     /// Response model for hot reload CLI commands.
     /// Provides consistent response format for all hot reload operations.
     /// </summary>
-    public class HotReloadResponse : CommandExecutionResponse
+    class HotReloadResponse : CommandExecutionResponse
     {
         /// <summary>
         /// Assembly name or operation identifier for successful operations.
@@ -546,7 +609,7 @@ namespace Unity.Pipeline.Runtime.Commands
     /// <see cref="ErrorDetails"/> the human-readable explanation, matching the shape consumed by
     /// <see cref="HotReloadResponse.CmdFailure"/>.
     /// </summary>
-    public class PathValidationResult
+    class PathValidationResult
     {
         public bool IsValid { get; private set; }
         public string Error { get; private set; }

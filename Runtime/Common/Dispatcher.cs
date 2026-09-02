@@ -12,7 +12,7 @@ namespace Unity.Pipeline.Threading
     ///
     /// Each pipeline server owns its own instance (no global singleton): it is initialized on Start
     /// and pumped from the main thread — auto-pumped via EditorApplication.update in the editor, and
-    /// by RuntimePipelineManager.Update in a player.
+    /// by RuntimePipelineDriver.Update in a player.
     /// </summary>
     public class Dispatcher
     {
@@ -20,6 +20,7 @@ namespace Unity.Pipeline.Threading
         private volatile bool m_IsInitialized;
         private int m_MainThreadId = -1;
 
+        /// <summary>True once <see cref="Initialize"/> has run and this dispatcher is pumping its queue.</summary>
         public bool IsInitialized => m_IsInitialized;
 
         /// <summary>
@@ -65,6 +66,10 @@ namespace Unity.Pipeline.Threading
         /// <summary>
         /// Execute a function on the main thread and return the result (synchronous wait).
         /// </summary>
+        /// <typeparam name="T">The function's return type.</typeparam>
+        /// <param name="function">Function to run on the main thread.</param>
+        /// <param name="timeoutMs">Time to wait before throwing <see cref="TimeoutException"/>.</param>
+        /// <returns>The function's result.</returns>
         public T Invoke<T>(Func<T> function, int timeoutMs = 60000)
         {
             if (!m_IsInitialized)
@@ -104,6 +109,8 @@ namespace Unity.Pipeline.Threading
         /// <summary>
         /// Execute an action on the main thread.
         /// </summary>
+        /// <param name="action">Action to run on the main thread.</param>
+        /// <param name="timeoutMs">Time to wait before throwing <see cref="TimeoutException"/>.</param>
         public void Invoke(Action action, int timeoutMs = 60000)
         {
             Invoke<object>(() =>
@@ -116,6 +123,10 @@ namespace Unity.Pipeline.Threading
         /// <summary>
         /// Execute a function on the main thread and return the result (async version).
         /// </summary>
+        /// <typeparam name="T">The function's return type.</typeparam>
+        /// <param name="function">Function to run on the main thread.</param>
+        /// <param name="timeoutMs">Time to wait before throwing <see cref="TimeoutException"/>.</param>
+        /// <returns>The function's result.</returns>
         public async Task<T> InvokeAsync<T>(Func<T> function, int timeoutMs = 60000)
         {
             return await Task.Run(() => Invoke(function, timeoutMs));
@@ -124,14 +135,46 @@ namespace Unity.Pipeline.Threading
         /// <summary>
         /// Execute an action on the main thread (async version).
         /// </summary>
+        /// <param name="action">Action to run on the main thread.</param>
+        /// <param name="timeoutMs">Time to wait before throwing <see cref="TimeoutException"/>.</param>
+        /// <returns>A task that completes once the action has run on the main thread.</returns>
         public async Task InvokeAsync(Action action, int timeoutMs = 60000)
         {
             await Task.Run(() => Invoke(action, timeoutMs));
         }
 
         /// <summary>
+        /// Queue an action to run on the main thread and return immediately.
+        ///
+        /// For work with no caller left to return to — reporting, logging, telemetry, anything
+        /// whose result nobody reads. <see cref="Invoke(Action, int)"/> is wrong for that: it parks
+        /// the calling thread until the next pump, and on a request thread that delay is paid by
+        /// whoever is waiting on the response. InvokeAsync only moves the same wait onto a
+        /// threadpool thread.
+        ///
+        /// The action always runs on a later pump, never inline, even when called from the main
+        /// thread, so posted work runs in the order it was posted. It has nowhere to report a
+        /// failure, so an exception is logged and swallowed rather than propagated. Work still
+        /// queued when the dispatcher shuts down is dropped, and posting to a dispatcher that is
+        /// not running is a no-op for the same reason — losing a report is always preferable to
+        /// throwing at a caller that was only trying to record something.
+        /// </summary>
+        /// <param name="action">Action to run on the main thread on a later pump.</param>
+        public void Post(Action action)
+        {
+            if (action == null)
+                throw new ArgumentNullException(nameof(action));
+
+            if (!m_IsInitialized)
+                return;
+
+            m_WorkQueue.Enqueue(new PostedWorkItem(action));
+        }
+
+        /// <summary>
         /// Check if we're currently on Unity's main thread.
         /// </summary>
+        /// <returns>True if the calling thread is the main thread captured by <see cref="Initialize"/>.</returns>
         public bool IsMainThread()
         {
             return m_MainThreadId != -1 && Thread.CurrentThread.ManagedThreadId == m_MainThreadId;
@@ -161,6 +204,7 @@ namespace Unity.Pipeline.Threading
             }
         }
 
+        /// <summary>Process queued work items, up to a default limit of 10 per call.</summary>
         public void ProcessWorkQueue()
         {
             ProcessWorkQueue(10);
@@ -187,6 +231,39 @@ namespace Unity.Pipeline.Threading
 
             protected abstract void ExecuteCore();
             public abstract void SetException(Exception exception);
+        }
+
+        /// <summary>
+        /// A <see cref="Post(Action)"/> work item. Unlike <see cref="WorkItem{T}"/> it carries no
+        /// TaskCompletionSource: nobody is waiting on the result, so a fault has nowhere to go but
+        /// the log — and faulting a TCS no one awaits would surface later as an unobserved task
+        /// exception. A shutdown cancellation simply drops the work.
+        /// </summary>
+        private class PostedWorkItem : WorkItem
+        {
+            private readonly Action m_Action;
+
+            public PostedWorkItem(Action action)
+            {
+                m_Action = action;
+            }
+
+            protected override void ExecuteCore()
+            {
+                try
+                {
+                    m_Action();
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"Dispatcher posted work failed: {ex.Message}");
+                }
+            }
+
+            public override void SetException(Exception exception)
+            {
+                // Nobody is waiting on this item, so there is nothing to hand the exception to.
+            }
         }
 
         private class WorkItem<T> : WorkItem

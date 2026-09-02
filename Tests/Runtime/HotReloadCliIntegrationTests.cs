@@ -17,10 +17,11 @@ namespace Unity.Pipeline.Tests.Runtime
     /// Tests the complete workflow: CLI commands → Pipeline Server → Hot Reload Compilation → Registry.
     /// </summary>
     [Ignore("HotReload in-place CLI workflow is deferred until the autonomous test loop is solid; it exercises the known transformation bug and starts its own server. Re-enable when revisiting in-place reload.")]
-    public class HotReloadCliIntegrationTests
+    class HotReloadCliIntegrationTests
     {
         private GameObject testGameObject;
-        private RuntimePipelineManager pipelineManager;
+        private RuntimePipelineDriver pipelineDriver;
+        private Unity.Pipeline.Config.RuntimePipelineConfig pipelineConfig;
         private string validToken;
         private string testHotReloadDir;
         private PipelineClient pipelineClient;
@@ -29,11 +30,12 @@ namespace Unity.Pipeline.Tests.Runtime
         public void SetUp()
         {
             // Setup pipeline server
-            testGameObject = new GameObject("TestHotReloadPipelineManager");
-            pipelineManager = testGameObject.AddComponent<RuntimePipelineManager>();
+            pipelineConfig = ScriptableObject.CreateInstance<Unity.Pipeline.Config.RuntimePipelineConfig>();
+            pipelineConfig.enableInBuilds = true;
 
-            // Configure for testing
-            pipelineManager.enableInBuilds = true;
+            testGameObject = new GameObject("TestHotReloadPipelineDriver");
+            pipelineDriver = testGameObject.AddComponent<RuntimePipelineDriver>();
+            pipelineDriver.Initialize(pipelineConfig, null);
 
             // Get security token
             SecurityTokenManager.ClearCache();
@@ -52,15 +54,20 @@ namespace Unity.Pipeline.Tests.Runtime
         {
             // Stop server and cleanup client
             pipelineClient?.Dispose();
-            if (pipelineManager?.IsServerRunning == true)
+            if (pipelineDriver?.IsServerRunning == true)
             {
-                pipelineManager.StopServer();
+                pipelineDriver.StopServer();
             }
 
             // Cleanup game objects
             if (testGameObject != null)
             {
                 Object.DestroyImmediate(testGameObject);
+            }
+
+            if (pipelineConfig != null)
+            {
+                Object.DestroyImmediate(pipelineConfig);
             }
 
             // Cleanup test files
@@ -111,13 +118,13 @@ public static class PlayerMovementHotReload
 }");
 
             // Start server
-            pipelineManager.StartServer();
+            pipelineDriver.StartServer();
             yield return new WaitForSeconds(1.0f);
 
-            Assert.IsTrue(pipelineManager.IsServerRunning, "Server should be running");
+            Assert.IsTrue(pipelineDriver.IsServerRunning, "Server should be running");
 
             // Create client
-            pipelineClient = new PipelineClient($"http://localhost:{pipelineManager.ActualPort}", validToken);
+            pipelineClient = new PipelineClient($"http://localhost:{pipelineDriver.ActualPort}", validToken);
 
             // Act - Execute reload_file_override command via CLI using coroutine
             PipelineResponse response = null;
@@ -143,10 +150,10 @@ public static class PlayerMovementHotReload
         public IEnumerator CLI_HotReloadStatus_ReturnsCorrectStats()
         {
             // Start server
-            pipelineManager.StartServer();
+            pipelineDriver.StartServer();
             yield return new WaitForSeconds(1.0f);
 
-            pipelineClient = new PipelineClient($"http://localhost:{pipelineManager.ActualPort}", validToken);
+            pipelineClient = new PipelineClient($"http://localhost:{pipelineDriver.ActualPort}", validToken);
 
             // Get initial status
             PipelineResponse initialResponse = null;
@@ -210,10 +217,10 @@ public static class TestHotReload
         public IEnumerator CLI_CleanupHotReload_ClearsRegistry()
         {
             // Start server and load a hot reload file
-            pipelineManager.StartServer();
+            pipelineDriver.StartServer();
             yield return new WaitForSeconds(1.0f);
 
-            pipelineClient = new PipelineClient($"http://localhost:{pipelineManager.ActualPort}", validToken);
+            pipelineClient = new PipelineClient($"http://localhost:{pipelineDriver.ActualPort}", validToken);
 
             // Load hot reload file to create some state
             var testFile = Path.Combine(testHotReloadDir, "CleanupTest.cs");
@@ -271,10 +278,10 @@ public static class CleanupTestHotReload
         public IEnumerator CLI_ReloadFile_WithInvalidFile_ReturnsError()
         {
             // Start server
-            pipelineManager.StartServer();
+            pipelineDriver.StartServer();
             yield return new WaitForSeconds(1.0f);
 
-            pipelineClient = new PipelineClient($"http://localhost:{pipelineManager.ActualPort}", validToken);
+            pipelineClient = new PipelineClient($"http://localhost:{pipelineDriver.ActualPort}", validToken);
 
             // Try to load non-existent file
             PipelineResponse response = null;
@@ -301,10 +308,10 @@ public static class CleanupTestHotReload
         public IEnumerator CLI_ReloadFile_WithInvalidToken_ReturnsUnauthorized()
         {
             // Start server
-            pipelineManager.StartServer();
+            pipelineDriver.StartServer();
             yield return new WaitForSeconds(1.0f);
 
-            pipelineClient = new PipelineClient($"http://localhost:{pipelineManager.ActualPort}", "invalid-token");
+            pipelineClient = new PipelineClient($"http://localhost:{pipelineDriver.ActualPort}", "invalid-token");
 
             // Try to reload with invalid token
             PipelineResponse response = null;
@@ -352,10 +359,10 @@ public static class SyntaxErrorHotReload
 }");
 
             // Start server
-            pipelineManager.StartServer();
+            pipelineDriver.StartServer();
             yield return new WaitForSeconds(1.0f);
 
-            pipelineClient = new PipelineClient($"http://localhost:{pipelineManager.ActualPort}", validToken);
+            pipelineClient = new PipelineClient($"http://localhost:{pipelineDriver.ActualPort}", validToken);
 
             // Try to reload file with syntax error
             PipelineResponse response = null;
@@ -403,10 +410,10 @@ public static class VersionTestHotReload
 }";
 
             // Start server
-            pipelineManager.StartServer();
+            pipelineDriver.StartServer();
             yield return new WaitForSeconds(1.0f);
 
-            pipelineClient = new PipelineClient($"http://localhost:{pipelineManager.ActualPort}", validToken);
+            pipelineClient = new PipelineClient($"http://localhost:{pipelineDriver.ActualPort}", validToken);
 
             // Load same file multiple times
             for (int i = 1; i <= 3; i++)

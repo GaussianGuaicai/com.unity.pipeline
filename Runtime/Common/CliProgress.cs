@@ -215,6 +215,11 @@ namespace Unity.Pipeline
         /// Safe to call from any thread, at any frequency (the server samples on poll). A no-op
         /// when called outside a command's own execution (no server to attribute it to).
         /// </summary>
+        /// <param name="title">Short title for the operation.</param>
+        /// <param name="info">Optional detail text (e.g. current step).</param>
+        /// <param name="current">Current progress amount, if determinate.</param>
+        /// <param name="total">Total amount, if determinate.</param>
+        /// <param name="progress">Progress in [0, 1], used instead of current/total when set.</param>
         public static void Report(string title, string info = null, long? current = null, long? total = null, double? progress = null)
         {
             BasePipelineServer.CurrentServer?.Progress.Report(title, info, current, total, progress);

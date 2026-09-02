@@ -26,7 +26,7 @@ namespace Unity.Pipeline.Editor.Commands.Scripts
     /// reachable directly: "myArray.Array.data[2]" sets the third element; "myArray.Array.size" sets
     /// the array length. Nested fields use dotted paths ("settings.speed").
     /// </summary>
-    public static class SerializedFieldCommands
+    static class SerializedFieldCommands
     {
         [CliCommand("set_serialized_field",
             "Set a serialized field on a component/asset. Supports primitives, enums, Vector/Color/Rect/Bounds, " +
@@ -70,15 +70,22 @@ namespace Unity.Pipeline.Editor.Commands.Scripts
 
         [CliCommand("get_serialized_fields",
             "Read serialized fields of a component/asset. Returns each top-level field's name, type and value " +
-            "(object references are returned as re-usable handles). Pass 'field' to read a single SerializedProperty path.",
+            "(object references are returned as re-usable handles). Pass 'field' to read a single SerializedProperty path. " +
+            "Pass format='value' to return just the value(s) — a token-efficient read for scalars.",
             Tags = new[] { "scripts", "gameobjects/components" })]
         public static object GetSerializedFields(
             [CliArg("target", "Reference to the component or asset to read (globalId/path/guid/instanceId/hierarchyPath). May be a GameObject when 'component' is given.", Required = true)] ObjectRef target,
             [CliArg("field", "Optional single SerializedProperty path to read (e.g. 'speed' or 'items.Array.data[0]'). Omit to read all top-level fields.")] string field = null,
-            [CliArg("component", "Component type name on the target GameObject (e.g. 'Rigidbody'). Use when 'target' is a GameObject; omit when 'target' is already a component handle.")] string component = null)
+            [CliArg("component", "Component type name on the target GameObject (e.g. 'Rigidbody'). Use when 'target' is a GameObject; omit when 'target' is already a component handle.")] string component = null,
+            [CliArg("format", "Output shape. Omit (default) for a full descriptor per field {name,path,propertyType,isArray,arrayLength,value}; 'value' returns just the value(s): the raw value for a single 'field', or a {name: value} map for all fields.")] string format = null)
         {
             if (target == null || target.IsEmpty)
                 throw new ArgumentException("get_serialized_fields 'target' is required.");
+
+            // Value projection (AUTHAPI-21): drop the per-field descriptor and return only the value(s)
+            // so a scalar read costs bytes, not an envelope. Anything other than 'value' is the default
+            // descriptor form, so existing callers are unaffected.
+            var valueOnly = string.Equals(format, "value", StringComparison.OrdinalIgnoreCase);
 
             var obj = ResolveSerializable(target, component);
             var so = new SerializedObject(obj);
@@ -89,6 +96,9 @@ namespace Unity.Pipeline.Editor.Commands.Scripts
                 if (prop == null)
                     throw new ArgumentException($"Field '{field}' was not found on '{obj.GetType().Name}'.");
 
+                if (valueOnly)
+                    return SerializedPropertyConverter.GetValue(prop);
+
                 return new
                 {
                     type = obj.GetType().Name,
@@ -96,7 +106,9 @@ namespace Unity.Pipeline.Editor.Commands.Scripts
                 };
             }
 
-            var fields = new List<object>();
+            // Each mode gets only its own container (the other stays null).
+            var fields = valueOnly ? null : new List<object>();
+            var values = valueOnly ? new Dictionary<string, object>() : null;
             var iterator = so.GetIterator();
             // enterChildren=true on the first MoveNext to step into the top level; then false to stay
             // at the top level and skip nested children (callers drill in via an explicit 'field').
@@ -109,10 +121,20 @@ namespace Unity.Pipeline.Editor.Commands.Scripts
                 if (iterator.propertyPath == "m_Script")
                     continue;
 
-                fields.Add(DescribeProperty(iterator));
+                if (valueOnly)
+                {
+                    // Degrade per-field rather than failing the whole map read (mirrors
+                    // get_component_properties' per-property guard in ComponentCommands).
+                    try { values[iterator.name] = SerializedPropertyConverter.GetValue(iterator); }
+                    catch (Exception ex) { values[iterator.name] = $"<error:{ex.Message}>"; }
+                }
+                else
+                {
+                    fields.Add(DescribeProperty(iterator));
+                }
             }
 
-            return new { type = obj.GetType().Name, fields };
+            return valueOnly ? (object)values : new { type = obj.GetType().Name, fields };
         }
 
         /// <summary>

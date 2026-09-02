@@ -3,7 +3,8 @@
     "rootNamespace": "Unity.Pipeline.Tests.Runtime",
     "references": [
         "UnityEngine.TestRunner",
-        "Unity.Pipeline"
+        "Unity.Pipeline",
+        "Unity.Pipeline.IlInterpreter"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],

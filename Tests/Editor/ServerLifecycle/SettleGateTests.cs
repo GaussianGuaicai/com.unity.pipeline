@@ -15,7 +15,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// (background commands, editor_status, /api/status, /api/editor_status) must stay servable so
     /// callers can observe the settling state and know when to retry.
     /// </summary>
-    public class SettleGateTests
+    class SettleGateTests
     {
         /// <summary>
         /// Isolated editor server (test port range, no descriptor — same isolation as
@@ -84,8 +84,15 @@ namespace Unity.Pipeline.Tests.Editor
         {
             // Act - log_editor is MainThreadRequired (the attribute default), like create_scene /
             // instantiate_prefab from the report. Parameters are valid so only the gate can reject.
-            var response = await m_PipelineClient.ExecuteCommandAsync("log_editor",
-                new { message = "should not run while settling" });
+            // Sent verbose: the busy reply is a standard exec envelope, so the lean default drops
+            // the command/executedAt metadata this test echoes back (AUTHAPI-21); a lean request
+            // is asserted separately below.
+            var response = await m_PipelineClient.PostJsonAsync("/api/exec", new
+            {
+                command = "log_editor",
+                parameters = new { message = "should not run while settling" },
+                verbose = true
+            });
 
             // Assert - rejected with 503 and the distinguishable, retryable busy envelope
             Assert.AreEqual(503, response.StatusCode,
@@ -94,12 +101,24 @@ namespace Unity.Pipeline.Tests.Editor
 
             var json = response.JsonResponse;
             Assert.IsFalse(json["success"].ToObject<bool>(), "Busy response should have success=false");
-            Assert.AreEqual("log_editor", json["command"]?.ToString(), "Busy response should echo the command");
+            Assert.AreEqual("log_editor", json["command"]?.ToString(), "Verbose busy response should echo the command");
             Assert.AreEqual("Server Busy", json["error"]?.ToString(), "Busy response should carry the busy error");
             Assert.AreEqual("busy", json["status"]?.ToString(), "Busy response should carry the machine-readable status marker");
+            Assert.AreEqual("settling", json["busyReason"]?.ToString(), "Busy response should carry the specific busy reason");
             Assert.IsTrue(json["retryable"].ToObject<bool>(), "Busy response should be marked retryable");
             StringAssert.Contains("settling", json["errorDetails"]?.ToString(),
                 "Busy details should explain the Editor is settling");
+
+            // The lean default carries the same machine-readable busy signal, minus the metadata.
+            var lean = await m_PipelineClient.ExecuteCommandAsync("log_editor",
+                new { message = "should not run while settling" });
+            Assert.AreEqual(503, lean.StatusCode, "Lean busy reply should still be a 503");
+            Assert.AreEqual("busy", lean.JsonResponse["status"]?.ToString(),
+                "Lean busy reply should keep the status marker");
+            Assert.IsTrue(lean.JsonResponse["retryable"].ToObject<bool>(),
+                "Lean busy reply should keep the retryable marker");
+            Assert.IsNull(lean.JsonResponse["command"],
+                "Lean busy reply drops the command echo like every lean envelope (AUTHAPI-21)");
         }
 
         [Test]
@@ -124,6 +143,7 @@ namespace Unity.Pipeline.Tests.Editor
             Assert.IsFalse(json["success"].ToObject<bool>(), "Busy response should have success=false");
             Assert.AreEqual("Server Busy", json["error"]?.ToString(), "Busy response should carry the busy error");
             Assert.AreEqual("busy", json["status"]?.ToString(), "Busy response should carry the status marker");
+            Assert.AreEqual("settling", json["busyReason"]?.ToString(), "Busy response should carry the specific busy reason");
             Assert.IsTrue(json["retryable"].ToObject<bool>(), "Busy response should be marked retryable");
             Assert.IsNull(json.SelectToken("result.jobId"),
                 "No job may be created while settling — the busy reply must carry no job handle");

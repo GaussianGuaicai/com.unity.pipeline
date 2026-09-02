@@ -14,7 +14,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// everywhere; tests that actually render are skipped under -nographics (no graphics device to
     /// render a RenderTexture), which is common in CI.
     /// </summary>
-    public class ScreenshotCommandTests
+    class ScreenshotCommandTests
     {
         const byte k_PngByte0 = 0x89;
         const byte k_PngByte1 = 0x50; // 'P'

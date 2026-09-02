@@ -14,7 +14,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// any Client call, so it never touches the real project). A confirmed add/remove would mutate the
     /// manifest and force a domain reload, so it is intentionally not exercised here.
     /// </summary>
-    public class PackageManagerCommandTests
+    class PackageManagerCommandTests
     {
         [SetUp]
         public void SetUp()

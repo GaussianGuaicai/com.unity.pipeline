@@ -24,7 +24,7 @@ namespace Unity.Pipeline.Tests.Editor.ServerLifecyle
     /// </summary>
     [Explicit("Starts its own server; conflicts with the live editor server. Run deliberately.")]
     [Category("ServerLifecycle")]
-    public class EndToEndTests
+    class EndToEndTests
     {
         [Test]
         public async Task CompleteWorkflow_DiscoverConnectExecute_WorksEndToEnd()
@@ -73,7 +73,7 @@ namespace Unity.Pipeline.Tests.Editor.ServerLifecyle
 
                     var execData = execResponse.JsonResponse;
                     Assert.IsTrue(execData["success"].ToObject<bool>(), "Command should execute successfully");
-                    Assert.AreEqual("log_editor", execData["command"]?.ToString());
+                    // Lean envelope omits the command echo (AUTHAPI-21); success is the signal.
                 }
             }
             finally

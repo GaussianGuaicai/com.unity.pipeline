@@ -15,7 +15,7 @@ namespace Unity.Pipeline.Tests.Runtime
     /// Tests the complete pipeline: source parsing -> validation -> transformation -> compilation.
     /// </summary>
     [Ignore("HotReload in-place editing is deferred until the autonomous test loop is solid; this path exercises the known instance-to-static transformation bug. Re-enable when revisiting in-place reload.")]
-    public class HotReloadInPlaceEditingTests
+    class HotReloadInPlaceEditingTests
     {
         private string _testFilePath;
 
@@ -88,9 +88,12 @@ public class HotReloadExampleComponent : MonoBehaviour
         }
 
         [UnityTest]
-        public IEnumerator InPlaceReload_PrivateMemberAccess_ShouldFail()
+        public IEnumerator InPlaceReload_PrivateMemberAccess_FailsValidationOnCompiledBackend()
         {
-            // Arrange: Create source file with [HotReloadWithOverrides] method trying to access private members
+            // The compiled (Assembly.Load) backend cannot reach non-public members at runtime — Mono
+            // JIT-enforces accessibility on the loaded override IL — so the reload is rejected up
+            // front by AccessibilityValidator. The interpreter backend supports private access (see
+            // IlInterpreterHotReloadInterpreterTests).
             var sourceCode = @"
 using UnityEngine;
 using Unity.Pipeline.HotReload;
@@ -120,12 +123,10 @@ public class HotReloadExampleComponent : MonoBehaviour
 
             yield return new WaitUntil(() => task.IsCompleted);
 
-            // Assert: Should fail due to private member access
-            Assert.IsFalse(task.Result.Success, "In-place reload should fail for private member access");
-            Assert.IsNotNull(task.Result.ErrorMessage, "Should have error message");
-            Assert.IsTrue(task.Result.ErrorMessage.Contains("privateSpeed") ||
-                         task.Result.ErrorMessage.Contains("private"),
-                         $"Error message should mention private member. Actual: {task.Result.ErrorMessage}");
+            Assert.IsFalse(task.Result.Success,
+                "In-place reload on the compiled backend should fail validation for private member access");
+            StringAssert.Contains("privateSpeed", task.Result.ErrorMessage,
+                "The validation error should name the offending member");
         }
 
         [UnityTest]
@@ -271,9 +272,10 @@ public static class TestOverrides
         }
 
         [UnityTest]
-        public IEnumerator AccessibilityValidation_MixedAccess_ShouldReportSpecificViolations()
+        public IEnumerator AccessibilityValidation_MixedAccess_FlagsOnlyNonPublic()
         {
-            // Arrange: Create source with both valid and invalid member access
+            // The compiled backend rejects non-public access up front (Mono JIT-enforces
+            // accessibility at dispatch); the violation must name only the private member.
             var sourceCode = @"
 using UnityEngine;
 using Unity.Pipeline.HotReload;
@@ -287,10 +289,7 @@ public class HotReloadExampleComponent : MonoBehaviour
     [HotReload]
     void Update()
     {
-        // Valid public access
         transform.position += Vector3.right * publicSpeed * Time.deltaTime;
-
-        // Invalid private access
         transform.position += Vector3.up * privateSpeed * Time.deltaTime;
     }
 }";
@@ -305,13 +304,12 @@ public class HotReloadExampleComponent : MonoBehaviour
 
             yield return new WaitUntil(() => task.IsCompleted);
 
-            // Assert: Should fail with specific violation details
-            Assert.IsFalse(task.Result.Success, "Should fail due to private member access");
-            Assert.IsTrue(task.Result.ValidationViolations.Count > 0, "Should have validation violations");
-
-            var violation = task.Result.ValidationViolations[0];
-            Assert.IsTrue(violation.MemberName.Contains("privateSpeed"), $"Should identify privateSpeed as violation. Got: {violation.MemberName}");
-            Assert.IsNotNull(violation.Suggestion, "Should provide suggestion for fix");
+            Assert.IsFalse(task.Result.Success,
+                "Mixed access should fail validation on the compiled backend (private member touched)");
+            StringAssert.Contains("privateSpeed", task.Result.ErrorMessage,
+                "The validation error should name the private member");
+            StringAssert.DoesNotContain("publicSpeed", task.Result.ErrorMessage,
+                "Public member access must not be flagged");
         }
 
         [UnityTest]

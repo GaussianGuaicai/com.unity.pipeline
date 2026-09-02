@@ -5,6 +5,9 @@ using System.Reflection;
 using Newtonsoft.Json;
 using Unity.Pipeline.Commands;
 using UnityEditor;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Editor.Commands
 {
@@ -34,7 +37,10 @@ namespace Unity.Pipeline.Editor.Commands
     /// (which tears the server down before it can reply). That is the nature of the invoked item;
     /// such cases are a known limitation of driving arbitrary menus over a request/response call.
     /// </summary>
-    public static class MenuItemCommand
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
+    static class MenuItemCommand
     {
         [CliCommand("menu", "Execute an Editor menu item by path, or list available items when no path is given", MainThreadRequired = true, Tags = new[] { "editor" })]
         public static MenuResponse ExecuteMenu(
@@ -219,7 +225,7 @@ namespace Unity.Pipeline.Editor.Commands
     /// available menu paths.
     /// </summary>
     [Serializable]
-    public class MenuResponse
+    class MenuResponse
     {
         [JsonProperty("success")]
         public bool Success { get; set; }

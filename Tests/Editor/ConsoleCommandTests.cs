@@ -17,7 +17,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// LogAssert on error-level logs. Each test tags its entries with a unique marker and filters on
     /// it, so unrelated editor logs captured concurrently don't affect assertions.
     /// </summary>
-    public class ConsoleCommandTests
+    class ConsoleCommandTests
     {
         string m_Marker;
 

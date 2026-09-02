@@ -27,7 +27,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// </remarks>
     [Explicit("Drives EditorApplication.isPlaying (flips the live editor into play mode). Run deliberately from the Test Runner window; PlayModeReloadGuard disables the domain reload that previously aborted the run.")]
     [Category("ServerLifecycle")]
-    public class PlayModeCommandsTests
+    class PlayModeCommandsTests
     {
         // Whether the live editor pipeline server was advertising before this test, so TearDown can
         // restore it (entering/exiting play mode tears it down; with "Reload Domain disabled" the
@@ -133,7 +133,7 @@ namespace Unity.Pipeline.Tests.Editor
                         $"editor_play command should execute successfully. Response: {response.RawResponse}");
 
                     Assert.IsTrue(response.JsonResponse["success"].ToObject<bool>(), "Command should report success");
-                    Assert.AreEqual("editor_play", response.JsonResponse["command"]?.ToString());
+                    // The lean envelope no longer echoes the command name (AUTHAPI-21); success is the signal.
 
                     // Assert - Editor should be in play mode
                     Assert.IsTrue(EditorApplication.isPlaying, "Editor should be in play mode after HTTP execution");

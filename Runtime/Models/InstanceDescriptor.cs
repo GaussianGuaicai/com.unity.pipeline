@@ -4,6 +4,9 @@ using System.Diagnostics;
 using Newtonsoft.Json;
 using UnityEngine;
 using Unity.Pipeline.Security;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Models
 {
@@ -13,9 +16,21 @@ namespace Unity.Pipeline.Models
     /// folder) for CLI tools to find running Editor instances.
     /// </summary>
     [Serializable]
-    public class InstanceDescriptor
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
+    class InstanceDescriptor
     {
         private const string DescriptorFileName = ".unity-pipeline-port";
+
+        /// <summary>
+        /// Corrective guidance surfaced via <see cref="Info"/> when the Editor is interactive and
+        /// wasn't launched with -automated (UUM-149977). Read by every client before it can even
+        /// connect (see <see cref="Info"/>), unlike a console warning which was logged once per
+        /// server instance and nobody watches anyway.
+        /// </summary>
+        private const string AutomationInfoMessage =
+            "This editor has not been opened in automated mode and therefore could get stuck on modal dialogs. Human intervention may be required.";
 
         /// <summary>
         /// Process ID of the Unity Editor
@@ -72,9 +87,38 @@ namespace Unity.Pipeline.Models
         public string EvalToken { get; set; }
 
         /// <summary>
+        /// Corrective guidance for the client, e.g. warning that this instance could get stuck on
+        /// a modal dialog. Null when there is nothing to say (launched with -automated, or
+        /// batchmode — which can't show modals regardless, see <see cref="Mode"/>) — omitted from
+        /// the JSON entirely, same convention as <see cref="BaseResponse.Warnings"/>. Read this
+        /// before issuing commands: it's the one piece of state every client sees, since reading
+        /// the descriptor is a mandatory first step just to connect (UUM-149977). There is no
+        /// separate "automated" flag: it would only ever disagree with a null/non-null `Info` for
+        /// batchmode instances, and that distinction carries no information — batchmode can't show
+        /// modal dialogs either way.
+        /// </summary>
+        [JsonProperty("info", NullValueHandling = NullValueHandling.Ignore)]
+        public string Info { get; set; }
+
+        /// <summary>
+        /// Optional wire features this server understands (e.g. <c>exec.argv</c>), mirrored from
+        /// <see cref="BasePipelineServer.Capabilities"/> so the two carriers cannot drift.
+        ///
+        /// Carried in the descriptor because every client already reads this file locally to
+        /// obtain the eval token, so negotiation costs no extra request. A descriptor with NO
+        /// capabilities key at all comes from a server too old to have the field, and a client
+        /// must then assume it supports none of these features.
+        /// </summary>
+        [JsonProperty("capabilities", NullValueHandling = NullValueHandling.Ignore)]
+        public string[] Capabilities { get; set; }
+
+        /// <summary>
         /// Create instance descriptor for current Editor session
         /// </summary>
-        public static InstanceDescriptor CreateCurrent(int port)
+        /// <param name="port">Port the server is listening on.</param>
+        /// <param name="automated">Whether the Editor was launched with -automated.</param>
+        /// <returns>A populated descriptor for this Editor session.</returns>
+        public static InstanceDescriptor CreateCurrent(int port, bool automated)
         {
             try
             {
@@ -89,6 +133,7 @@ namespace Unity.Pipeline.Models
 
                 return new InstanceDescriptor
                 {
+                    Capabilities = BasePipelineServer.Capabilities,
                     Pid = pid,
                     Port = port,
                     ProjectPath = projectPath,
@@ -97,7 +142,10 @@ namespace Unity.Pipeline.Models
                     Mode = isBatchMode ? "batchmode" : "editor",
                     StartedAt = DateTime.UtcNow,
                     LastHeartbeat = DateTime.UtcNow,
-                    EvalToken = evalToken
+                    EvalToken = evalToken,
+                    // Only in an interactive Editor: batchmode (CI, upm-pvp, UTR) can't show modal
+                    // popups, so the guidance would be pure noise there.
+                    Info = (!automated && !isBatchMode) ? AutomationInfoMessage : null
                 };
             }
             catch (Exception ex)
@@ -118,6 +166,7 @@ namespace Unity.Pipeline.Models
         /// <summary>
         /// Write instance descriptor to project root
         /// </summary>
+        /// <param name="descriptor">The descriptor to write.</param>
         public static void WriteToProjectRoot(InstanceDescriptor descriptor)
         {
             lock (m_WriteGate)
@@ -153,6 +202,8 @@ namespace Unity.Pipeline.Models
         /// <summary>
         /// Read instance descriptor from project root
         /// </summary>
+        /// <param name="projectPath">Absolute path to the Unity project.</param>
+        /// <returns>The descriptor, or null if missing/corrupted.</returns>
         public static InstanceDescriptor ReadFromProjectRoot(string projectPath)
         {
             var filePath = GetDescriptorFilePath(projectPath);
@@ -175,6 +226,7 @@ namespace Unity.Pipeline.Models
         /// <summary>
         /// Remove instance descriptor from project root
         /// </summary>
+        /// <param name="projectPath">Absolute path to the Unity project.</param>
         public static void RemoveFromProjectRoot(string projectPath)
         {
             var filePath = GetDescriptorFilePath(projectPath);
@@ -195,6 +247,7 @@ namespace Unity.Pipeline.Models
         /// <summary>
         /// Update heartbeat timestamp in existing descriptor file
         /// </summary>
+        /// <param name="projectPath">Absolute path to the Unity project.</param>
         public static void UpdateHeartbeat(string projectPath)
         {
             var descriptor = ReadFromProjectRoot(projectPath);
@@ -207,9 +260,11 @@ namespace Unity.Pipeline.Models
 
         /// <summary>
         /// Absolute path to the editor descriptor file for a project: the git-ignored
-        /// Library/Pipeline folder under the project root. Public so discovery code and tests
-        /// derive the location from one place.
+        /// Library/Pipeline folder under the project root. Kept in one place so discovery code
+        /// and tests can't drift from where this class itself reads/writes.
         /// </summary>
+        /// <param name="projectPath">Absolute path to the Unity project.</param>
+        /// <returns>The descriptor file's absolute path.</returns>
         public static string GetDescriptorFilePath(string projectPath)
         {
             return Path.Combine(projectPath, "Library", "Pipeline", DescriptorFileName);

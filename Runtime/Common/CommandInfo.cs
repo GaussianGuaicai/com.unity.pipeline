@@ -57,6 +57,14 @@ namespace Unity.Pipeline.Commands
         /// <summary>
         /// Create command information from discovery.
         /// </summary>
+        /// <param name="name">Unique name of the command for CLI execution.</param>
+        /// <param name="description">Human-readable description of the command.</param>
+        /// <param name="mainThreadRequired">Whether this command requires Unity main thread execution.</param>
+        /// <param name="method">Method that implements this command.</param>
+        /// <param name="parameters">Parameters that this command accepts.</param>
+        /// <param name="runtimeOnly">Whether this command is part of the runtime (Player) command surface only.</param>
+        /// <param name="tags">Hierarchical tags used to group and browse commands.</param>
+        /// <param name="package">Name of the assembly this command originates from.</param>
         public CommandInfo(string name, string description, bool mainThreadRequired,
             MethodInfo method, IReadOnlyList<CommandParameterInfo> parameters, bool runtimeOnly = false,
             IReadOnlyList<string> tags = null, string package = null)
@@ -71,6 +79,8 @@ namespace Unity.Pipeline.Commands
             Package = package;
         }
 
+        /// <summary>A short diagnostic summary of the command.</summary>
+        /// <returns>The summary string.</returns>
         public override string ToString()
         {
             return $"{Name} MainThreadRequired:{MainThreadRequired} Parameters:{Parameters.Count}";

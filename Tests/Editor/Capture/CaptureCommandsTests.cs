@@ -17,7 +17,7 @@ namespace Unity.Pipeline.Tests.Editor.Capture
     /// Render tests are GPU-gated: under batchmode/headless the graphics device is
     /// <see cref="GraphicsDeviceType.Null"/> and the tests self-ignore rather than fail.
     /// </summary>
-    public class CaptureCommandsTests
+    class CaptureCommandsTests
     {
         private const string CameraName = "CLI199_Cam";
         private const string SaveFolder = "Assets/CLI199_CaptureTests";

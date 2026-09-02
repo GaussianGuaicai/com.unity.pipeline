@@ -17,12 +17,14 @@ namespace Unity.Pipeline.Commands
     /// agents calling the package — directly or as MCP tools whose schemas come from
     /// <c>GET /api/commands</c> — can construct structured arguments reliably.
     /// </summary>
-    public static class JsonSchemaGenerator
+    static class JsonSchemaGenerator
     {
         /// <summary>
         /// Generate JSON Schema for a command.
         /// Returns standard JSON Schema format for CLI validation.
         /// </summary>
+        /// <param name="command">The command to generate a schema for.</param>
+        /// <returns>The generated JSON Schema document.</returns>
         public static string GenerateCommandSchema(CommandInfo command)
         {
             if (command == null)

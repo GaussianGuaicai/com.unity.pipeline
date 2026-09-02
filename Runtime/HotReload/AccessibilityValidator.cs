@@ -4,22 +4,40 @@ using System.Linq;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
-using Unity.Pipeline.Compilation;
 using UnityEngine;
 
 namespace Unity.Pipeline.HotReload
 {
     /// <summary>
-    /// Validates that [HotReload] method bodies only access PUBLIC instance members of the
-    /// declaring type. In-place overrides are compiled into a separate assembly, so they can only
-    /// reach public members of the original type; private/internal/protected access would fail to
-    /// compile. This check runs up front (via a Roslyn semantic model) to produce a clear message
-    /// instead of a raw compiler error.
+    /// Accessibility gate for [HotReload] method bodies on the compiled (Assembly.Load) backend.
+    ///
+    /// The compiled backend cannot use non-public members of the target type: even if the override
+    /// compiled with Roslyn's access checks relaxed, Unity's Mono enforces accessibility when
+    /// JIT-ing the loaded override IL and does not honor <c>[assembly: IgnoresAccessChecksTo]</c>
+    /// (verified on Mono 6.13) — the access would throw (e.g. <c>FieldAccessException</c>) on first
+    /// dispatch and silently fall back to the original body. Compiled-backend overrides therefore
+    /// compile with standard access checks (see
+    /// <c>RoslynCompilationService.AllowNonPublicMemberAccess</c>, interpreter-only), and this
+    /// validator runs up front — only when the compiled backend will execute the override — to turn
+    /// the eventual raw CS0122 into a clear reload error. The interpreter backend reaches
+    /// non-public members via reflection and must not be gated.
     /// </summary>
-    public static class AccessibilityValidator
+    static class AccessibilityValidator
     {
+        /// <summary>
+        /// Check that every [HotReload] method body only accesses public instance members of its
+        /// declaring type. Runs over an already-built semantic model + class declaration, so the
+        /// in-place reload path shares one compilation between validation and transformation
+        /// instead of building two.
+        /// </summary>
+        /// <param name="model">The semantic model built over the source containing the declaring type.</param>
+        /// <param name="classDecl">The declaring type's class declaration within <paramref name="model"/>.</param>
+        /// <param name="methodBodies">Map of method name to body source, for the methods being validated.</param>
+        /// <param name="originalTypeName">Name of the declaring type to validate against.</param>
+        /// <returns>The validation result, including any violations found.</returns>
         public static AccessibilityValidationResult ValidatePublicAccess(
-            string sourceCode,
+            SemanticModel model,
+            ClassDeclarationSyntax classDecl,
             Dictionary<string, string> methodBodies,
             string originalTypeName)
         {
@@ -31,26 +49,6 @@ namespace Unity.Pipeline.HotReload
 
             try
             {
-                var tree = CSharpSyntaxTree.ParseText(sourceCode);
-                var root = tree.GetRoot();
-
-                var compilation = CSharpCompilation.Create(
-                    "HotReloadInPlaceValidation",
-                    new[] { tree },
-                    RoslynCompilationService.GetMetadataReferences(),
-                    new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
-                var model = compilation.GetSemanticModel(tree);
-
-                var classDecl = root.DescendantNodes()
-                    .OfType<ClassDeclarationSyntax>()
-                    .FirstOrDefault(c => c.Identifier.ValueText == originalTypeName);
-                if (classDecl == null)
-                {
-                    result.IsValid = false;
-                    result.ValidationError = $"Could not find class '{originalTypeName}' in source.";
-                    return result;
-                }
-
                 var classSymbol = model.GetDeclaredSymbol(classDecl);
 
                 foreach (var method in classDecl.Members.OfType<MethodDeclarationSyntax>())
@@ -79,9 +77,10 @@ namespace Unity.Pipeline.HotReload
                                 ViolationType = AccessibilityViolationType.PrivateAccess,
                                 ErrorMessage = $"Cannot access non-public member '{symbol.Name}' " +
                                     $"({symbol.DeclaredAccessibility}) in [HotReload] method '{methodName}'",
-                                Suggestion = $"Make '{symbol.Name}' public in {originalTypeName}, or use a " +
-                                    "public property/method. In-place overrides compile in a separate assembly " +
-                                    "and can only access public members."
+                                Suggestion = $"Make '{symbol.Name}' public in {originalTypeName}, or reload " +
+                                    "through the interpreter backend (reload_file_editor_interpreter), which " +
+                                    "reaches non-public members. The compiled backend loads the override " +
+                                    "as a separate assembly and Mono enforces accessibility at dispatch."
                             });
                         }
                     }
@@ -143,12 +142,16 @@ namespace Unity.Pipeline.HotReload
     /// <summary>
     /// Result of accessibility validation for hot reload methods.
     /// </summary>
-    public class AccessibilityValidationResult
+    class AccessibilityValidationResult
     {
+        /// <summary>True when no accessibility violations were found.</summary>
         public bool IsValid { get; set; }
+        /// <summary>Violations found, if any.</summary>
         public List<AccessibilityViolation> Violations { get; set; } = new List<AccessibilityViolation>();
+        /// <summary>Set when validation itself could not run (e.g. a parse failure), rather than a violation being found.</summary>
         public string ValidationError { get; set; }
 
+        /// <summary>Human-readable summary of <see cref="ValidationError"/> or all <see cref="Violations"/>.</summary>
         public string GetFormattedErrorMessage()
         {
             if (!string.IsNullOrEmpty(ValidationError))
@@ -175,24 +178,34 @@ namespace Unity.Pipeline.HotReload
     /// <summary>
     /// Information about a specific accessibility violation in hot reload code.
     /// </summary>
-    public class AccessibilityViolation
+    class AccessibilityViolation
     {
+        /// <summary>Name of the non-public member that was accessed.</summary>
         public string MemberName { get; set; }
+        /// <summary>Name of the [HotReload] method containing the access.</summary>
         public string MethodName { get; set; }
+        /// <summary>The member's actual accessibility.</summary>
         public Accessibility AccessLevel { get; set; }
+        /// <summary>Category of violation.</summary>
         public AccessibilityViolationType ViolationType { get; set; }
+        /// <summary>Human-readable description of the violation.</summary>
         public string ErrorMessage { get; set; }
+        /// <summary>Suggested fix.</summary>
         public string Suggestion { get; set; }
     }
 
     /// <summary>
     /// Types of accessibility violations that can occur in hot reload methods.
     /// </summary>
-    public enum AccessibilityViolationType
+    enum AccessibilityViolationType
     {
+        /// <summary>A private member was accessed.</summary>
         PrivateAccess,
+        /// <summary>An internal member was accessed.</summary>
         InternalAccess,
+        /// <summary>A protected member was accessed.</summary>
         ProtectedAccess,
+        /// <summary>The source could not be parsed to determine accessibility.</summary>
         ParseError
     }
 }

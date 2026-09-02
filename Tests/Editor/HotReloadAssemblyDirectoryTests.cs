@@ -13,7 +13,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// Tests for the new assemblyDir parameter functionality in hot reload compilation.
     /// Verifies that assemblies are saved to disk when assemblyDir is specified, and remain in-memory when not specified.
     /// </summary>
-    public class HotReloadAssemblyDirectoryTests
+    class HotReloadAssemblyDirectoryTests
     {
         private string testHotReloadDir;
         private string testAssemblyDir;

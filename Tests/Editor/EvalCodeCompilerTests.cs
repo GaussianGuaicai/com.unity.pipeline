@@ -8,7 +8,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// eval is a MainThreadRequired command, so the server marshals to the main thread before
     /// invoking; the compiler runs synchronously on the caller (no background/dispatcher path).
     /// </summary>
-    public class EvalCodeCompilerTests
+    class EvalCodeCompilerTests
     {
         [Test]
         public void CompileAndExecuteOnMainThread_ReturnsValue()

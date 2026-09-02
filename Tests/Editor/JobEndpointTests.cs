@@ -9,6 +9,9 @@ using Unity.Pipeline.Commands;
 using Unity.Pipeline.Editor;
 using UnityEngine;
 using UnityEngine.TestTools;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Tests.Editor
 {
@@ -18,7 +21,10 @@ namespace Unity.Pipeline.Tests.Editor
     /// reattach after a client timeout; POST /api/job/cancel cancels a queued job outright and
     /// requests cooperative cancellation (PipelineCancellation) of a running one.
     /// </summary>
-    public class JobEndpointTests
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
+    class JobEndpointTests
     {
         private EditorPipelineServer m_Server;
         private Unity.Pipeline.Tests.Runtime.PipelineClient m_PipelineClient;
@@ -126,17 +132,38 @@ namespace Unity.Pipeline.Tests.Editor
             return null;
         }
 
+        /// <summary>
+        /// Assert a job field is EXPLICITLY null: /api/job includes null keys by default
+        /// (AUTHAPI-21 review) so "no value" is a present key with a JSON null, never an absent key.
+        /// </summary>
+        private static void AssertExplicitJsonNull(JObject json, string key, string message)
+        {
+            var token = json[key];
+            Assert.IsNotNull(token, $"{message} — and the '{key}' key must be present (nulls are explicit by default)");
+            Assert.AreEqual(JTokenType.Null, token.Type, message);
+        }
+
         [Test]
         public async Task DetachedJob_ReturnsIdImmediately_RunsAndRetainsResult()
         {
             var submitted = await SubmitJobAsync("job_test_wait");
             var jobId = submitted["jobId"].ToString();
 
-            // While the command is gated open, the job must report running — with the
-            // command's CliProgress snapshot attached.
-            var running = await WaitForStateAsync(jobId, "running");
-            Assert.IsNotNull(running["progress"], "Running job should carry the progress snapshot");
-            Assert.AreEqual("Job Test", running["progress"]["title"]?.ToString());
+            // While the command is gated open, the job must report running — with the command's
+            // CliProgress snapshot attached. Poll until the snapshot is an actual object: between
+            // MarkRunning and the command's first CliProgress.Report the endpoint answers
+            // "progress": null explicitly, and indexing that JSON-null token would throw (same
+            // race class as the ProgressEndpointTests CI failure).
+            await WaitForStateAsync(jobId, "running");
+            JObject runningProgress = null;
+            for (var attempt = 0; attempt < 100 && runningProgress == null; attempt++)
+            {
+                runningProgress = (await GetJobAsync(jobId))["progress"] as JObject;
+                if (runningProgress == null)
+                    await Task.Delay(50);
+            }
+            Assert.IsNotNull(runningProgress, "Running job never surfaced its progress snapshot");
+            Assert.AreEqual("Job Test", runningProgress["title"]?.ToString());
 
             m_ReleaseJobCommand.Set();
             var completed = await WaitForStateAsync(jobId, "completed");
@@ -162,7 +189,7 @@ namespace Unity.Pipeline.Tests.Editor
             await WaitForStateAsync(jobA, "completed");
 
             var runningB = await WaitForStateAsync(jobB, "running");
-            Assert.IsNull(runningB["progress"],
+            AssertExplicitJsonNull(runningB, "progress",
                 "Job B is running but hasn't reported yet — it must not surface job A's stale progress");
 
             m_ReleaseDelayedProgressCommand.Set();
@@ -184,7 +211,7 @@ namespace Unity.Pipeline.Tests.Editor
 
             m_ReleaseJobCommand.Set();
             var canceled = await WaitForStateAsync(jobB, "canceled");
-            Assert.IsNull(canceled["startedAt"], "A job canceled while queued must never start");
+            AssertExplicitJsonNull(canceled, "startedAt", "A job canceled while queued must never start");
             await WaitForStateAsync(jobA, "completed");
         }
 
@@ -202,7 +229,93 @@ namespace Unity.Pipeline.Tests.Editor
             Assert.IsTrue(cancelResponse.IsSuccess, $"Cancel should succeed: {cancelResponse.Error}");
 
             var canceled = await WaitForStateAsync(jobId, "canceled");
-            Assert.IsNull(canceled["result"], "A cooperatively canceled job must not report a result");
+            AssertExplicitJsonNull(canceled, "result", "A cooperatively canceled job must not report a result");
+        }
+
+        [Test]
+        public async Task JobResponse_IncludesNullsByDefault_OmitNullsParamDropsThem()
+        {
+            // /api/job has no envelope/payload split — every field is payload — so null keys are
+            // explicit by default and omitted only on request via omit_nulls=true (AUTHAPI-21).
+            var jobId = (await SubmitJobAsync("job_test_wait"))["jobId"].ToString();
+            await WaitForStateAsync(jobId, "running");
+
+            try
+            {
+                var explicitNulls = await GetJobAsync(jobId);
+                AssertExplicitJsonNull(explicitNulls, "completedAt", "A running job has no completion time yet");
+
+                var httpResponse = await m_PipelineClient.GetHttpAsync($"/api/job?id={jobId}&omit_nulls=true");
+                Assert.IsTrue(httpResponse.IsSuccessStatusCode, $"/api/job with omit_nulls should succeed, got: {httpResponse.StatusCode}");
+                var trimmed = JObject.Parse(await httpResponse.Content.ReadAsStringAsync());
+                Assert.IsNull(trimmed["completedAt"], "omit_nulls=true should drop null keys entirely");
+                Assert.AreEqual("running", trimmed["state"]?.ToString(), "Non-null fields must survive omit_nulls");
+            }
+            finally
+            {
+                m_ReleaseJobCommand.Set();
+                await WaitForStateAsync(jobId, "completed");
+            }
+        }
+
+        [Test]
+        public async Task OmitNullsUnrecognizedValue_YieldsWarningInsteadOfSilentCoercion()
+        {
+            // omit_nulls=1 is not silently treated as false: the reply keeps its explicit nulls
+            // AND carries a warnings array telling the agent the accepted spelling, so it can
+            // correct itself instead of guessing why nulls are still present (AUTHAPI-21 review).
+            var jobId = (await SubmitJobAsync("job_test_wait"))["jobId"].ToString();
+            await WaitForStateAsync(jobId, "running");
+
+            try
+            {
+                var httpResponse = await m_PipelineClient.GetHttpAsync($"/api/job?id={jobId}&omit_nulls=1");
+                Assert.IsTrue(httpResponse.IsSuccessStatusCode,
+                    $"/api/job with a bad omit_nulls value should still answer, got: {httpResponse.StatusCode}");
+                var json = JObject.Parse(await httpResponse.Content.ReadAsStringAsync());
+
+                AssertExplicitJsonNull(json, "completedAt", "Nulls stay explicit when omit_nulls could not be parsed");
+                var warnings = json["warnings"] as JArray;
+                Assert.IsNotNull(warnings, "The reply must carry a warnings array for the unrecognized value");
+                StringAssert.Contains("omit_nulls='1' ignored; expected 'true' or 'false'", warnings[0]?.ToString());
+
+                // A well-formed request has nothing to warn about — warnings is explicitly null.
+                var clean = await GetJobAsync(jobId);
+                AssertExplicitJsonNull(clean, "warnings", "No warnings expected on a well-formed request");
+            }
+            finally
+            {
+                m_ReleaseJobCommand.Set();
+                await WaitForStateAsync(jobId, "completed");
+            }
+        }
+
+        [Test]
+        public async Task OmitNullsBareFlag_YieldsWarningInsteadOfSilentFalse()
+        {
+            // "?omit_nulls" with no '=' is indistinguishable from absent via QueryString[key]
+            // (.NET files valueless tokens under the null key), so without a dedicated check the
+            // intended opt-in silently did nothing. It must warn like any other unparseable value.
+            var jobId = (await SubmitJobAsync("job_test_wait"))["jobId"].ToString();
+            await WaitForStateAsync(jobId, "running");
+
+            try
+            {
+                var httpResponse = await m_PipelineClient.GetHttpAsync($"/api/job?id={jobId}&omit_nulls");
+                Assert.IsTrue(httpResponse.IsSuccessStatusCode,
+                    $"/api/job with a bare omit_nulls flag should still answer, got: {httpResponse.StatusCode}");
+                var json = JObject.Parse(await httpResponse.Content.ReadAsStringAsync());
+
+                AssertExplicitJsonNull(json, "completedAt", "Nulls stay explicit when omit_nulls carried no value");
+                var warnings = json["warnings"] as JArray;
+                Assert.IsNotNull(warnings, "The reply must carry a warnings array for the valueless flag");
+                StringAssert.Contains("omit_nulls given without a value ignored; use omit_nulls=true", warnings[0]?.ToString());
+            }
+            finally
+            {
+                m_ReleaseJobCommand.Set();
+                await WaitForStateAsync(jobId, "completed");
+            }
         }
 
         [Test]
@@ -222,6 +335,35 @@ namespace Unity.Pipeline.Tests.Editor
                 timeout = 120000
             });
             Assert.IsTrue(response.IsSuccess, $"eval with a 120s timeout should be accepted: {response.Error}");
+        }
+
+        [Test]
+        public async Task DetachedJob_UnconvertibleParameter_KeepsParameterValidationCategory()
+        {
+            // The job path must classify an unconvertible argument the same way the synchronous
+            // /api/exec path does; RunJobDetached's generic catch would say "Command Execution
+            // Failed" instead. See the ArgumentException arm there.
+            var response = await m_PipelineClient.PostJsonAsync("/api/exec", new
+            {
+                command = "get_console_logs",
+                parameters = new { limit = "not-a-number" },
+                job = true
+            });
+
+            Assert.IsTrue(response.IsSuccess, $"Job submission should succeed: {response.Error}");
+            var jobId = response.JsonResponse["result"]?["jobId"]?.ToString();
+            Assert.IsNotNull(jobId, "Submission must return a job id immediately");
+
+            LogAssert.Expect(LogType.Error,
+                new Regex("^ExecuteCommandByName: Parameter conversion failed: Parameter 'limit'"));
+
+            var failed = await WaitForStateAsync(jobId, "failed");
+            Assert.AreEqual("Parameter Validation Failed", failed["error"]?.ToString(),
+                "Job path must keep the parameter-validation category rather than reporting a command execution failure");
+            Assert.That(failed["errorDetails"]?.ToString(), Contains.Substring("limit"),
+                "Details should name the offending parameter");
+            Assert.That(failed["errorDetails"]?.ToString(), Contains.Substring("Int32"),
+                "Details should name the type the value could not be converted to");
         }
     }
 }

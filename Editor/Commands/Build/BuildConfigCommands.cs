@@ -6,6 +6,9 @@ using Unity.Pipeline.Commands;
 using UnityEditor;
 using UnityEditor.Build;
 using UnityEngine;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Editor.Commands.Build
 {
@@ -15,7 +18,10 @@ namespace Unity.Pipeline.Editor.Commands.Build
     /// target switching are intentionally elsewhere (<c>add_scene_to_build</c>/<c>remove_scene_from_build</c>
     /// from CLI-189, and <c>switch_build_target</c>).
     /// </summary>
-    public static class BuildConfigCommands
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
+    static class BuildConfigCommands
     {
         [CliCommand("list_build_targets",
             "List the known BuildTarget values with their group and whether build support is installed.",

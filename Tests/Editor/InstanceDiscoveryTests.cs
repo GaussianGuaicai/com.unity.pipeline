@@ -22,7 +22,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// Tests for CLI instance discovery logic.
     /// These test the file-based discovery mechanism that CLI tools will use to find running Editor instances.
     /// </summary>
-    public class InstanceDiscoveryTests
+    class InstanceDiscoveryTests
     {
         // Non-null only when this suite started the server itself (no live server was running).
         private EditorPipelineServer m_OwnedServer;
@@ -311,7 +311,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// Mock implementation of CLI discovery logic.
     /// Simulates what the real unity-cli will do for instance discovery and connection validation.
     /// </summary>
-    public static class MockCliDiscovery
+    static class MockCliDiscovery
     {
         /// <summary>
         /// Read instance descriptor from a .unity-pipeline-port file.
@@ -411,7 +411,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// Represents a discovered Pipeline instance from CLI perspective.
     /// Contains both the descriptor data and validation status.
     /// </summary>
-    public class DiscoveredInstance
+    class DiscoveredInstance
     {
         public InstanceDescriptor Descriptor { get; set; }
         public bool IsRunning { get; set; }

@@ -27,7 +27,7 @@ namespace Unity.Pipeline.Editor.Commands.Animation
     /// Out of scope (v1): BlendTree authoring (assigning an EXISTING BlendTree as a state motion is
     /// allowed), StateMachineBehaviours, sub-state machines, and humanoid/avatar configuration.
     /// </summary>
-    public static class AnimatorControllerCommands
+    static class AnimatorControllerCommands
     {
         [CliCommand("create_animator_controller",
             "Create an .controller AnimatorController asset (with a default Base Layer) under the authoring root.",
@@ -718,7 +718,7 @@ namespace Unity.Pipeline.Editor.Commands.Animation
 
     /// <summary>A structured, non-throwing error envelope ({ error, code }) returned at HTTP 200.</summary>
     [Serializable]
-    public class ErrorResult
+    class ErrorResult
     {
         [JsonProperty("error")]
         public string Error { get; set; }
@@ -730,7 +730,7 @@ namespace Unity.Pipeline.Editor.Commands.Animation
     }
 
     [Serializable]
-    public class ParameterInfo
+    class ParameterInfo
     {
         [JsonProperty("name")]
         public string Name { get; set; }
@@ -743,14 +743,14 @@ namespace Unity.Pipeline.Editor.Commands.Animation
     }
 
     [Serializable]
-    public class AddParameterResult : AuthoringResult
+    class AddParameterResult : AuthoringResult
     {
         [JsonProperty("parameter")]
         public ParameterInfo Parameter { get; set; }
     }
 
     [Serializable]
-    public class LayerSummary
+    class LayerSummary
     {
         [JsonProperty("name")]
         public string Name { get; set; }
@@ -763,14 +763,14 @@ namespace Unity.Pipeline.Editor.Commands.Animation
     }
 
     [Serializable]
-    public class AddLayerResult : AuthoringResult
+    class AddLayerResult : AuthoringResult
     {
         [JsonProperty("layer")]
         public LayerSummary Layer { get; set; }
     }
 
     [Serializable]
-    public class StateSummary
+    class StateSummary
     {
         [JsonProperty("name")]
         public string Name { get; set; }
@@ -786,14 +786,14 @@ namespace Unity.Pipeline.Editor.Commands.Animation
     }
 
     [Serializable]
-    public class AddStateResult : AuthoringResult
+    class AddStateResult : AuthoringResult
     {
         [JsonProperty("state")]
         public StateSummary State { get; set; }
     }
 
     [Serializable]
-    public class TransitionSummary
+    class TransitionSummary
     {
         [JsonProperty("from")]
         public string From { get; set; }
@@ -806,14 +806,14 @@ namespace Unity.Pipeline.Editor.Commands.Animation
     }
 
     [Serializable]
-    public class AddTransitionResult : AuthoringResult
+    class AddTransitionResult : AuthoringResult
     {
         [JsonProperty("transition")]
         public TransitionSummary Transition { get; set; }
     }
 
     [Serializable]
-    public class AnimatorControllerInfo
+    class AnimatorControllerInfo
     {
         [JsonProperty("assetPath")]
         public string AssetPath { get; set; }
@@ -826,7 +826,7 @@ namespace Unity.Pipeline.Editor.Commands.Animation
     }
 
     [Serializable]
-    public class LayerInfo
+    class LayerInfo
     {
         [JsonProperty("name")]
         public string Name { get; set; }
@@ -845,7 +845,7 @@ namespace Unity.Pipeline.Editor.Commands.Animation
     }
 
     [Serializable]
-    public class StateInfo
+    class StateInfo
     {
         [JsonProperty("name")]
         public string Name { get; set; }
@@ -858,7 +858,7 @@ namespace Unity.Pipeline.Editor.Commands.Animation
     }
 
     [Serializable]
-    public class TransitionInfo
+    class TransitionInfo
     {
         [JsonProperty("from")]
         public string From { get; set; }
@@ -877,7 +877,7 @@ namespace Unity.Pipeline.Editor.Commands.Animation
     }
 
     [Serializable]
-    public class ConditionInfo
+    class ConditionInfo
     {
         [JsonProperty("parameter")]
         public string Parameter { get; set; }

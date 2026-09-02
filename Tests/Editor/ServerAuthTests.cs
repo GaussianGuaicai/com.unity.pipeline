@@ -9,7 +9,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// Verifies the server-level authentication and CORS gate that applies to every route:
     /// a bearer token is required, and any request carrying an Origin header is rejected.
     /// </summary>
-    public class ServerAuthTests
+    class ServerAuthTests
     {
         private static (int status, string body) Get(string url, string token = null, string origin = null)
         {

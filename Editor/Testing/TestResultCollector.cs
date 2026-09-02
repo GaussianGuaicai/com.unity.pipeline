@@ -10,19 +10,25 @@ namespace Unity.Pipeline.Editor.Testing
     /// Collects test results from Unity TestRunner API callbacks.
     /// Adapted from unity-tools implementation with sync/async mode support.
     /// </summary>
-    public class TestResultCollector : ICallbacks
+    class TestResultCollector : ICallbacks
     {
+        /// <summary>True once <see cref="RunFinished"/> has processed a (non-duplicate, non-cancelled) run.</summary>
         public bool IsComplete { get; private set; }
+        /// <summary>Set by <see cref="Cancel"/>; subsequent callbacks are ignored once true.</summary>
         public bool IsCancelled { get; set; }
+        /// <summary>Per-test results collected so far.</summary>
         public List<TestResult> Results { get; } = new List<TestResult>();
+        /// <summary>The completed run's root result tree, set by <see cref="RunFinished"/>.</summary>
         public ITestResultAdaptor RootResult { get; private set; }
 
         // For async mode
+        /// <summary>Invoked when <see cref="RunFinished"/> processes a completed run (async mode).</summary>
         public Action OnRunFinished { get; set; }
 
         // For sync mode
         private TaskCompletionSource<ITestResultAdaptor> m_CompletionSource;
 
+        /// <summary>Create a collector ready to receive callbacks for a new run.</summary>
         public TestResultCollector()
         {
             m_CompletionSource = new TaskCompletionSource<ITestResultAdaptor>();
@@ -31,11 +37,14 @@ namespace Unity.Pipeline.Editor.Testing
         /// <summary>
         /// Wait for test completion (sync mode)
         /// </summary>
+        /// <returns>The completed run's root result tree.</returns>
         public Task<ITestResultAdaptor> WaitForCompletionAsync()
         {
             return m_CompletionSource.Task;
         }
 
+        /// <summary>ICallbacks hook: a run has started.</summary>
+        /// <param name="testsToRun">The tests about to run.</param>
         public void RunStarted(ITestAdaptor testsToRun)
         {
             if (IsCancelled) return;
@@ -45,11 +54,15 @@ namespace Unity.Pipeline.Editor.Testing
             Debug.Log($"[TestResultCollector] Run started: {testsToRun.TestCaseCount} test(s)");
         }
 
+        /// <summary>ICallbacks hook: a single test has started. No-op.</summary>
+        /// <param name="test">The test about to run.</param>
         public void TestStarted(ITestAdaptor test)
         {
             // No action needed for test start
         }
 
+        /// <summary>ICallbacks hook: a single (non-suite) test has finished.</summary>
+        /// <param name="result">The finished test's result.</param>
         public void TestFinished(ITestResultAdaptor result)
         {
             if (IsCancelled) return;
@@ -58,6 +71,8 @@ namespace Unity.Pipeline.Editor.Testing
             Results.Add(BuildTestResult(result));
         }
 
+        /// <summary>ICallbacks hook: the run has finished.</summary>
+        /// <param name="result">The run's root result tree.</param>
         public void RunFinished(ITestResultAdaptor result)
         {
             if (IsCancelled)
@@ -93,8 +108,9 @@ namespace Unity.Pipeline.Editor.Testing
             // Notify async mode
             OnRunFinished?.Invoke();
 
-            // Notify sync mode
-            m_CompletionSource.SetResult(result);
+            // Notify sync mode (guard against double-complete if the task was already
+            // completed by SetError/Cancel, mirroring the guards in those methods)
+            m_CompletionSource.TrySetResult(result);
         }
 
         /// <summary>
@@ -112,6 +128,7 @@ namespace Unity.Pipeline.Editor.Testing
         /// <summary>
         /// Set error state and notify sync waiters
         /// </summary>
+        /// <param name="exception">The error to complete the sync waiter's task with.</param>
         public void SetError(Exception exception)
         {
             if (!m_CompletionSource.Task.IsCompleted)

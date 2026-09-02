@@ -10,7 +10,7 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
     /// representative per-level toggles (vSync, anti-aliasing). Level changes apply expensive changes
     /// so the switch takes full effect.
     /// </summary>
-    public static class QualitySettingsCommands
+    static class QualitySettingsCommands
     {
         const string Group = "quality";
 
@@ -81,7 +81,7 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
     }
 
     /// <summary>Quality settings to change. Null/omitted fields are left unchanged.</summary>
-    public class QualitySettingsInput : IStructuredCommandInput
+    class QualitySettingsInput : IStructuredCommandInput
     {
         [CliArg("level", "Quality level index (see levelNames from get_quality_settings).")]
         public int? Level { get; set; }

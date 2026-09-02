@@ -13,7 +13,7 @@ using Unity.Pipeline.Editor;
 /// still protecting the live server during the normal dogfood loop.
 /// </summary>
 [SetUpFixture]
-public sealed class PipelineWatchdogTestGuard
+sealed class PipelineWatchdogTestGuard
 {
     private bool m_WasEnabled;
     private bool m_HadServer;

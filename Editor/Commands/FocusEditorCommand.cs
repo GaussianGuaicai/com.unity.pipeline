@@ -3,6 +3,9 @@ using System.Reflection;
 using Unity.Pipeline.Commands;
 using UnityEditor;
 using UnityEngine;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Editor.Commands
 {
@@ -15,7 +18,10 @@ namespace Unity.Pipeline.Editor.Commands
     /// automation: the editor throttles/defers some work (notably script compilation) while
     /// unfocused, so a client can call this to bring it forward first.
     /// </summary>
-    public static class FocusEditorCommand
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
+    static class FocusEditorCommand
     {
         const BindingFlags k_All = BindingFlags.Static | BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
 

@@ -20,7 +20,7 @@ namespace Unity.Pipeline.Editor.Commands.Assets
     /// existing file requires an explicit <c>confirm</c> argument; <c>dry_run</c> is supported.
     /// Filesystem writes are not part of Unity's Undo system.
     /// </summary>
-    public static class TextFileCommands
+    static class TextFileCommands
     {
         [CliCommand("read_text_file", "Read a UTF-8 text file under the authoring root and return its contents.", MainThreadRequired = true, Tags = new[] { "assets/text" })]
         public static ReadTextFileResult ReadTextFile(
@@ -112,7 +112,7 @@ namespace Unity.Pipeline.Editor.Commands.Assets
 
     /// <summary>Result of <c>read_text_file</c>: the file contents plus its identity and size.</summary>
     [Serializable]
-    public class ReadTextFileResult
+    class ReadTextFileResult
     {
         [JsonProperty("assetPath")]
         public string AssetPath { get; set; }

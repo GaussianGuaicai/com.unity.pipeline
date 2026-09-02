@@ -25,7 +25,7 @@ namespace Unity.Pipeline.Editor.Commands.GameObjects
     /// <see cref="AuthoringResult"/> envelope (via <see cref="ObjectResolver.Describe"/>) so the
     /// agent can address the same object in a follow-up call.
     /// </summary>
-    public static class GameObjectCommands
+    static class GameObjectCommands
     {
         /// <summary>
         /// Create an empty GameObject or a built-in primitive in the active scene.

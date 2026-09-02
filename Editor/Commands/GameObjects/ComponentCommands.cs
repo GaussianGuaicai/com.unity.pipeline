@@ -21,7 +21,7 @@ namespace Unity.Pipeline.Editor.Commands.GameObjects
     /// name across all loaded assemblies (<see cref="TypeResolver"/>) so agents can use short or
     /// fully-qualified names.
     /// </summary>
-    public static class ComponentCommands
+    static class ComponentCommands
     {
         /// <summary>
         /// Add a component (resolved by type name) to a GameObject. Registered with

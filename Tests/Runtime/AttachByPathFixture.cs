@@ -13,7 +13,7 @@ namespace Unity.Pipeline.Tests.Runtime
     /// which also matches how agents author scripts under Assets/. The class name matches the file name
     /// (Unity requires that for a single-type script to be addable).
     /// </summary>
-    public class AttachByPathFixture : MonoBehaviour
+    class AttachByPathFixture : MonoBehaviour
     {
         [SerializeField] private int m_Value;
 

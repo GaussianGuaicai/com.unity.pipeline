@@ -8,6 +8,9 @@ using UnityEditor;
 using UnityEditor.TestTools.TestRunner.Api;
 using UnityEngine;
 using Newtonsoft.Json;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Editor.Testing
 {
@@ -15,7 +18,10 @@ namespace Unity.Pipeline.Editor.Testing
     /// Core test execution engine supporting both synchronous and asynchronous execution modes.
     /// Adapted from unity-tools with domain reload handling and dual mode support.
     /// </summary>
-    public static class PipelineTestRunner
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
+    static class PipelineTestRunner
     {
         private const string TestRequestFile = "Temp/pipeline_test_request.json";
         private const string TestStatusFile = "Temp/pipeline_test_status.json";
@@ -26,6 +32,13 @@ namespace Unity.Pipeline.Editor.Testing
         /// <summary>
         /// Execute tests with the given parameters
         /// </summary>
+        /// <param name="mode">"editor"/"editmode", "playmode"/"play", or "all".</param>
+        /// <param name="filter">Filter value to match against, per <paramref name="filterType"/>.</param>
+        /// <param name="filterType">"testname", "assembly", or "category".</param>
+        /// <param name="includeExplicit">Whether to include tests/fixtures marked [Explicit].</param>
+        /// <param name="asyncMode">Run asynchronously, returning immediately with a status path to poll.</param>
+        /// <param name="timeoutSeconds">Timeout for synchronous execution.</param>
+        /// <returns>The test execution response.</returns>
         public static async Task<TestExecutionResponse> ExecuteTestsAsync(
             string mode,
             string filter,
@@ -473,6 +486,7 @@ namespace Unity.Pipeline.Editor.Testing
             }
         }
 
+        /// <summary>Resume any test run that was in flight before a domain reload dropped it.</summary>
         public static void CheckForPendingTests()
         {
             if (!File.Exists(TestRequestFile)) return;
@@ -762,6 +776,7 @@ namespace Unity.Pipeline.Editor.Testing
         /// <summary>
         /// Get current test status (for async mode polling)
         /// </summary>
+        /// <returns>The status file's JSON contents, "running" if a request is pending, or null if there's no run.</returns>
         public static string GetTestStatus()
         {
             if (File.Exists(TestStatusFile))
@@ -774,6 +789,7 @@ namespace Unity.Pipeline.Editor.Testing
         /// <summary>
         /// Cancel running tests
         /// </summary>
+        /// <returns>A status payload confirming cancellation (or that there was nothing to cancel).</returns>
         public static object CancelTests()
         {
             if (m_ActiveCollector == null && !File.Exists(TestRequestFile) && !File.Exists(TestStatusFile))

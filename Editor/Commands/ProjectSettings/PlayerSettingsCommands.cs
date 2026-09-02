@@ -14,7 +14,7 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
     /// Icons and splash are intentionally out of this MVP set: they take <c>Texture2D</c> assets, not
     /// scalar JSON, so they need a dedicated asset-reference convention.
     /// </summary>
-    public static class PlayerSettingsCommands
+    static class PlayerSettingsCommands
     {
         const string Group = "player";
 
@@ -102,7 +102,7 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
     }
 
     /// <summary>Player settings to change. Null/omitted fields are left unchanged.</summary>
-    public class PlayerSettingsInput : IStructuredCommandInput
+    class PlayerSettingsInput : IStructuredCommandInput
     {
         [CliArg("companyName", "Company name.")]
         public string CompanyName { get; set; }

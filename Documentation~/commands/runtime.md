@@ -1,6 +1,6 @@
 # Runtime commands
 
-Commands served by the Player / dev-build server. Many require a Development build running `RuntimePipelineManager` — see [Runtime setup](../runtime-setup.md). Commands marked `RuntimeOnly` are only registered in a player build.
+Commands served by the Player / dev-build server. Many require a Development build with the runtime Pipeline enabled — see [Runtime setup](../runtime-setup.md). Commands marked `RuntimeOnly` are only registered in a player build.
 
 ### `runtime_status`
 Get comprehensive runtime application status.
@@ -115,6 +115,10 @@ a `Bad Request`.
 **Returns:** `EvalResponse`
 **Notes:** `MainThreadRequired = true`. Available on both editor and runtime.
 
+> For anything beyond an ad-hoc one-liner — bulk construction, builder scripts — prefer the
+> Editor-side [`run_script`](scripts.md#run_script) command, which compiles a versioned project
+> `.cs` file in memory and runs a named entry point instead of carrying code through the protocol.
+
 ### `reload_file`
 Compile and apply in-place [HotReload] edits from a source file.
 
@@ -124,6 +128,14 @@ Compile and apply in-place [HotReload] edits from a source file.
 | `timeout` | no | `30000` | Compilation timeout in milliseconds |
 | `assemblyDir` | no | `–` | Directory to save compiled assemblies to disk (optional, default is in-memory only) |
 | `pdb` | no | `false` | Emit debug symbols (portable PDB) mapped to the original source so breakpoints bind in your editor. Compiles unoptimized. |
+
+**Returns:** `HotReloadResponse`
+**Notes:** `MainThreadRequired = true`. See [Hot reload](../hot-reload.md).
+
+### `reload_file_editor_interpreter`
+Compile in-place [HotReload] edits and run them through the IlInterpreter VM in this process instead of `Assembly.Load` (IL2CPP-safe; only a minimal host API + the target type are available).
+
+Same parameters as [`reload_file`](#reload_file).
 
 **Returns:** `HotReloadResponse`
 **Notes:** `MainThreadRequired = true`. See [Hot reload](../hot-reload.md).

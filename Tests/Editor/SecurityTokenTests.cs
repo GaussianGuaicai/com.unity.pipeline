@@ -6,7 +6,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// <summary>
     /// Tests for security token generation and comparison.
     /// </summary>
-    public class SecurityTokenTests
+    class SecurityTokenTests
     {
         [SetUp]
         public void SetUp() => SecurityTokenManager.ClearCache();

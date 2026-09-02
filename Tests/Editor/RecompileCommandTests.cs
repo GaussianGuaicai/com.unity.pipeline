@@ -13,7 +13,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// <see cref="RecompileCommand.s_FocusAction"/> so these tests observe whether it ran without
     /// stealing the OS foreground window (or triggering a real domain reload).
     /// </summary>
-    public class RecompileCommandTests
+    class RecompileCommandTests
     {
         Action m_OriginalFocusAction;
 

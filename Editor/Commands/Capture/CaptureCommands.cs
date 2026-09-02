@@ -23,7 +23,7 @@ namespace Unity.Pipeline.Editor.Commands.Capture
     /// <see cref="GraphicsDeviceType.Null"/> and the commands throw so callers get a clear message
     /// instead of an empty image.
     /// </summary>
-    public static class CaptureCommands
+    static class CaptureCommands
     {
         private const int MaxDimension = 4096;
 
@@ -387,7 +387,7 @@ namespace Unity.Pipeline.Editor.Commands.Capture
     /// when a save_path result is path-only (AUTHAPI-8).
     /// </summary>
     [Serializable]
-    public class CaptureResult
+    class CaptureResult
     {
         /// <summary>Rendered width in pixels (after clamping).</summary>
         [JsonProperty("width")]

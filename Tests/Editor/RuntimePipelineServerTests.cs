@@ -17,7 +17,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// </remarks>
     [Explicit("Starts real servers in the production port ranges; would disturb the live server. Run manually from the Test Runner window.")]
     [Category("ServerLifecycle")]
-    public class RuntimePipelineServerTests
+    class RuntimePipelineServerTests
     {
         private RuntimePipelineConfig m_TestConfig;
         private RuntimePipelineServer m_RuntimeServer;
@@ -181,7 +181,7 @@ namespace Unity.Pipeline.Tests.Editor
         [Test]
         public void RuntimeServer_Configuration_ValidatesSecuritySettings()
         {
-            // Test that the server works with the same validation as RuntimePipelineManager
+            // Test that the server works with the same validation as RuntimePipelineDriver
             var validation = m_TestConfig.Validate();
             Assert.IsTrue(validation.IsValid, $"Test configuration should be valid: {validation.Message}");
 
