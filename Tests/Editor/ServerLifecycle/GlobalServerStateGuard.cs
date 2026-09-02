@@ -3,6 +3,9 @@ using Unity.Pipeline.Commands;
 using Unity.Pipeline.Editor;
 using Unity.Pipeline.Models;
 using UnityEngine;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Tests.Editor.ServerLifecyle
 {
@@ -11,10 +14,13 @@ namespace Unity.Pipeline.Tests.Editor.ServerLifecyle
     /// state in-process. Call Capture() in [SetUp] and Restore() in [TearDown].
     ///
     /// It records whether a live server was advertised before the test and restores command discovery
-    /// (RuntimePipelineManager.Awake switches it to reflection). The main-thread dispatcher is
+    /// (RuntimePipelineDriver.Awake switches it to reflection). The main-thread dispatcher is
     /// per-server now, so there is nothing global to swap.
     /// </summary>
-    public static class GlobalServerStateGuard
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
+    static class GlobalServerStateGuard
     {
         static string s_DescriptorPath;
         static bool s_HadLiveServer;
@@ -46,7 +52,7 @@ namespace Unity.Pipeline.Tests.Editor.ServerLifecyle
             }
             catch { /* best effort */ }
 
-            // RuntimePipelineManager.Awake switches discovery to reflection; restore TypeCache.
+            // RuntimePipelineDriver.Awake switches discovery to reflection; restore TypeCache.
             CommandRegistry.SetDiscovery(new TypeCacheCommandDiscovery());
         }
     }

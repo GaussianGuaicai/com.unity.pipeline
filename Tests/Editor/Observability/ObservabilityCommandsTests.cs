@@ -13,7 +13,7 @@ namespace Unity.Pipeline.Tests.Editor.Observability
     /// against a unique marker logged in-test; Application.logMessageReceivedThreaded fires
     /// synchronously on Debug.Log, so the entry is in the buffer immediately.
     /// </summary>
-    public class ObservabilityCommandsTests
+    class ObservabilityCommandsTests
     {
         #region Direct
 

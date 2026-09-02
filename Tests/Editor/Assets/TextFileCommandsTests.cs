@@ -10,7 +10,7 @@ namespace Unity.Pipeline.Tests.Editor.Assets
     /// <see cref="PipelineTestServer"/>. Covers round-tripping content, the overwrite-confirm guard, and
     /// the sandbox guard (out-of-project writes rejected).
     /// </summary>
-    public class TextFileCommandsTests
+    class TextFileCommandsTests
     {
         private const string Root = "Assets/__CLI191TextTest";
 

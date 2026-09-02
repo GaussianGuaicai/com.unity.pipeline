@@ -32,7 +32,7 @@ Set shader properties on a material (Float/Range/Int=number; Color=[r,g,b,a] or 
 ## Shaders
 
 ### `list_shaders`
-Discover available shaders so an agent can pick a valid name for set_material_properties / create_asset. Returns `[{ name, assetPath|null, isBuiltin, isSupported }]`.
+Discover available shaders so an agent can pick a valid name for set_material_properties / create_asset. Returns `[{ name, assetPath, isBuiltin, isSupported }]` — `assetPath` is omitted for built-in shaders in the default lean reply (pass `verbose: true` on the request for an explicit `assetPath: null`); use `isBuiltin` to classify.
 
 | Parameter | Required | Default | Description |
 |-----------|----------|---------|-------------|

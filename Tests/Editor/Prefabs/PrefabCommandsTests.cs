@@ -21,7 +21,7 @@ namespace Unity.Pipeline.Tests.Editor.Prefabs
     /// commands are not available here). Prefabs are written under a temp folder beneath the authoring
     /// root and cleaned up in teardown along with any scene objects created.
     /// </summary>
-    public class PrefabCommandsTests
+    class PrefabCommandsTests
     {
         private const string Root = "Assets/__CLI194Test";
 

@@ -8,7 +8,7 @@ namespace Unity.Pipeline.Editor.Commands
     /// Commands for controlling Unity Editor play mode state.
     /// Enables automation workflows to control Editor play/stop/pause from CLI tools.
     /// </summary>
-    public static class PlayModeCommands
+    static class PlayModeCommands
     {
         // TODO Pipeline: should all commands have name with namespace: editor.play build.generate instead of using _
 

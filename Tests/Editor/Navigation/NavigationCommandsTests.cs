@@ -14,7 +14,7 @@ namespace Unity.Pipeline.Tests.Editor.Navigation
     /// ViaClient style. Project contents are unknown, so search assertions check structural success
     /// rather than a specific count.
     /// </summary>
-    public class NavigationCommandsTests
+    class NavigationCommandsTests
     {
         private readonly List<GameObject> m_Temp = new List<GameObject>();
 

@@ -8,6 +8,9 @@ using Unity.Pipeline.Editor.Commands;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.TestTools;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Tests.Editor
 {
@@ -15,7 +18,10 @@ namespace Unity.Pipeline.Tests.Editor
     /// Tests for the <c>menu</c> command (CLI-110). Uses a test-only menu item so the positive path
     /// is deterministic and free of side effects, rather than relying on built-in Editor menus.
     /// </summary>
-    public class MenuCommandTests
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
+    class MenuCommandTests
     {
         const string k_TestMenuPath = "Window/Pipeline/Tests/Invoke Marker";
         static bool s_MarkerInvoked;

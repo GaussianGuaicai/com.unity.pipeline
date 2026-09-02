@@ -12,7 +12,7 @@ namespace Unity.Pipeline.Tests.Editor.Models
     /// lookup dropped those into an empty handle, which then resolved to nothing while the calling
     /// command still reported success.
     /// </summary>
-    public class ObjectRefConverterTests
+    class ObjectRefConverterTests
     {
         private static ObjectRef Parse(string json) => JsonConvert.DeserializeObject<ObjectRef>(json);
 

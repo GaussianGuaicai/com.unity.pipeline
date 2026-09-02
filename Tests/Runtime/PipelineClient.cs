@@ -13,7 +13,7 @@ namespace Unity.Pipeline.Tests.Runtime
     /// Unified client for making HTTP requests to Pipeline server in tests.
     /// Provides consistent JSON payload structure and response parsing.
     /// </summary>
-    public class PipelineClient : IDisposable
+    class PipelineClient : IDisposable
     {
         private readonly string m_BaseUrl;
         private readonly string m_AuthToken;
@@ -41,11 +41,11 @@ namespace Unity.Pipeline.Tests.Runtime
         }
 
         /// <summary>
-        /// Create a client for a runtime server owned by a <see cref="RuntimePipelineManager"/>.
-        /// The manager must have started its server.
+        /// Create a client for a runtime server owned by a <see cref="RuntimePipelineDriver"/>.
+        /// The driver must have started its server.
         /// </summary>
-        public PipelineClient(RuntimePipelineManager manager)
-            : this(manager.Server)
+        public PipelineClient(RuntimePipelineDriver driver)
+            : this(driver.Server)
         {
         }
 
@@ -250,7 +250,7 @@ namespace Unity.Pipeline.Tests.Runtime
     /// <summary>
     /// Standardized response from Pipeline server.
     /// </summary>
-    public class PipelineResponse
+    class PipelineResponse
     {
         /// <summary>
         /// Whether the HTTP request succeeded.
@@ -358,7 +358,7 @@ namespace Unity.Pipeline.Tests.Runtime
     /// <summary>
     /// Extension methods for common Pipeline operations.
     /// </summary>
-    public static class PipelineClientExtensions
+    static class PipelineClientExtensions
     {
         /// <summary>
         /// Execute code evaluation and get strongly-typed response (coroutine version).

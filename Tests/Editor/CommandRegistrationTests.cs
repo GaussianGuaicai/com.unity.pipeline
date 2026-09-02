@@ -12,7 +12,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// Tests for command registration system using [CliCommand] and [CliArg] attributes.
     /// These test the attribute-based command definition that CLI tools will discover.
     /// </summary>
-    public class CommandRegistrationTests
+    class CommandRegistrationTests
     {
         [SetUp]
         public void SetUp()
@@ -331,7 +331,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// <summary>
     /// Test commands for verifying command registration attributes.
     /// </summary>
-    public static class DummyCommands
+    static class DummyCommands
     {
         // Private on purpose: verifies the registry can discover and execute
         // non-public static methods (see CommandRegistry.CreateCommandInfo).
@@ -366,7 +366,7 @@ namespace Unity.Pipeline.Tests.Editor
     }
 
     /// <summary>Structured-input DTO used to verify nested object schema generation.</summary>
-    public class SampleStructuredInput : IStructuredCommandInput
+    class SampleStructuredInput : IStructuredCommandInput
     {
         [CliArg("name", "Display name", Required = true)]
         public string Name { get; set; }
@@ -381,7 +381,7 @@ namespace Unity.Pipeline.Tests.Editor
         public SampleNestedInput Nested { get; set; }
     }
 
-    public class SampleNestedInput : IStructuredCommandInput
+    class SampleNestedInput : IStructuredCommandInput
     {
         [CliArg("enabled", "Toggle")]
         public bool Enabled { get; set; }

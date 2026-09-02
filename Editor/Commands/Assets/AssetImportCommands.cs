@@ -6,6 +6,9 @@ using Unity.Pipeline.Commands;
 using Unity.Pipeline.Editor.Authoring;
 using Unity.Pipeline.Models;
 using UnityEditor;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Editor.Commands.Assets
 {
@@ -39,7 +42,10 @@ namespace Unity.Pipeline.Editor.Commands.Assets
     /// source file, so no <c>confirm</c> is required.
     /// </para>
     /// </summary>
-    public static class AssetImportCommands
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
+    static class AssetImportCommands
     {
         // Caller-facing platform names accepted by both commands. "Default" means the default platform
         // (top-level importer properties / default sample settings); the rest are real build platforms.
@@ -599,7 +605,7 @@ namespace Unity.Pipeline.Editor.Commands.Assets
     /// Result of <c>set_import_settings</c>: target platform plus which keys were applied vs. unknown.
     /// </summary>
     [Serializable]
-    public class SetImportSettingsResult
+    class SetImportSettingsResult
     {
         [Newtonsoft.Json.JsonProperty("assetPath")]
         public string AssetPath { get; set; }
@@ -623,7 +629,7 @@ namespace Unity.Pipeline.Editor.Commands.Assets
     /// non-import assets.
     /// </summary>
     [Serializable]
-    public class GetImportSettingsResult
+    class GetImportSettingsResult
     {
         [Newtonsoft.Json.JsonProperty("assetPath")]
         public string AssetPath { get; set; }
@@ -643,7 +649,7 @@ namespace Unity.Pipeline.Editor.Commands.Assets
 
     /// <summary>Structured error payload serialized into the thrown ArgumentException message.</summary>
     [Serializable]
-    public class ErrorResult
+    class ErrorResult
     {
         [Newtonsoft.Json.JsonProperty("code")]
         public string Code { get; set; }

@@ -18,7 +18,7 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
     /// and, for writes, <c>apply</c> (perform the mutation) plus a <c>plan</c> describing the intended
     /// effect. All run on the main thread (these commands are <c>MainThreadRequired = true</c>).
     /// </summary>
-    public static class ProjectSettingsCommand
+    static class ProjectSettingsCommand
     {
         /// <summary>
         /// Read-only path: build a success response carrying the group's current values.

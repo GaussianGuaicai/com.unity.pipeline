@@ -5,6 +5,9 @@ using Newtonsoft.Json.Linq;
 using NUnit.Framework;
 using Unity.Pipeline.Commands;
 using Unity.Pipeline.Editor;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Tests.Editor
 {
@@ -15,7 +18,10 @@ namespace Unity.Pipeline.Tests.Editor
     /// listener thread from CliProgress's snapshot, so it must answer while a command is
     /// executing — that concurrency is exactly what these tests exercise.
     /// </summary>
-    public class ProgressEndpointTests
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
+    class ProgressEndpointTests
     {
         private EditorPipelineServer m_Server;
         private Unity.Pipeline.Tests.Runtime.PipelineClient m_PipelineClient;
@@ -69,13 +75,25 @@ namespace Unity.Pipeline.Tests.Editor
             return JObject.Parse(jsonContent);
         }
 
+        /// <summary>
+        /// Assert the progress field is EXPLICITLY null: nulls are included by default (AUTHAPI-21
+        /// review), so an idle endpoint answers {"active":false,"progress":null} — a present key
+        /// with a JSON null, never an absent key (an empty object is maximally ambiguous).
+        /// </summary>
+        private static void AssertProgressExplicitlyNull(JObject json, string message)
+        {
+            var token = json["progress"];
+            Assert.IsNotNull(token, $"{message} — and the 'progress' key must be present (nulls are explicit by default)");
+            Assert.AreEqual(JTokenType.Null, token.Type, message);
+        }
+
         [Test]
         public async Task ApiProgress_NoExecInFlight_ReportsInactive()
         {
             var json = await GetProgressAsync();
 
             Assert.AreEqual(false, json["active"]?.Value<bool>(), "No exec in flight — active must be false");
-            Assert.IsNull(json["progress"], "No exec in flight — progress must be omitted");
+            AssertProgressExplicitlyNull(json, "No exec in flight — progress must be explicitly null");
         }
 
         [Test]
@@ -88,7 +106,7 @@ namespace Unity.Pipeline.Tests.Editor
             var json = await GetProgressAsync();
 
             Assert.AreEqual(false, json["active"]?.Value<bool>(), "No exec in flight — active must be false");
-            Assert.IsNull(json["progress"], "Progress must be omitted while inactive");
+            AssertProgressExplicitlyNull(json, "Progress must be explicitly null while inactive");
         }
 
         [Test]
@@ -102,7 +120,11 @@ namespace Unity.Pipeline.Tests.Editor
             for (var attempt = 0; attempt < 100; attempt++)
             {
                 var json = await GetProgressAsync();
-                if (json["active"]?.Value<bool>() == true && json["progress"] != null)
+                // `is JObject`, not `!= null`: nulls are explicit now, so between exec start and
+                // the command's first CliProgress.Report the endpoint answers
+                // {"active":true,"progress":null} — a present JSON-null token, which `!= null`
+                // would wrongly accept and then NRE on the field asserts below (seen on CI).
+                if (json["active"]?.Value<bool>() == true && json["progress"] is JObject)
                 {
                     during = json;
                     break;
@@ -137,7 +159,7 @@ namespace Unity.Pipeline.Tests.Editor
                 await Task.Delay(50);
             }
             Assert.IsNotNull(after, "Endpoint should report inactive after the exec completed");
-            Assert.IsNull(after["progress"], "Completed command's progress must not leak");
+            AssertProgressExplicitlyNull(after, "Completed command's progress must not leak");
         }
     }
 }

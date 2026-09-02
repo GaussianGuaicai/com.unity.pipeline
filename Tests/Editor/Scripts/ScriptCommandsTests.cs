@@ -30,8 +30,18 @@ namespace Unity.Pipeline.Tests.Editor.Scripts
     /// (<see cref="ScriptCommandTestBehaviour"/>) so the type exists without a reload. Attaching a
     /// type from a script create_script just wrote must still be verified in a live Editor (see PR notes).
     /// </summary>
-    public class ScriptCommandsTests
+    class ScriptCommandsTests
     {
+        // Shared with CreateScript_WritesFileAndReturnsAssetIdentity, whose own try/finally spans a
+        // real domain reload (WaitForDomainReload) and isn't reliably run when the test fails or is
+        // resumed across that reload — a leftover folder then fails the *next* run too (the script
+        // file it writes already exists). TearDown always runs, reload or not, so clean up there.
+        private const string k_CreateScriptTestFolder = "Assets/__CLI195Test";
+
+        // SessionState survives the domain reload below, unlike a field, so TearDown can tell "this test
+        // created the folder" apart from "it already existed" and only ever delete the one it owns.
+        private const string k_CreateScriptTestFolderOwnedKey = "Pipeline.Tests.CLI195TestFolderOwned";
+
         private GameObject m_Go;
         private GameObject m_RefTarget;
 
@@ -50,6 +60,16 @@ namespace Unity.Pipeline.Tests.Editor.Scripts
             m_Go = null;
             m_RefTarget = null;
             ProjectPaths.ResetAuthoringRoot();
+
+            if (SessionState.GetBool(k_CreateScriptTestFolderOwnedKey, false))
+            {
+                SessionState.EraseBool(k_CreateScriptTestFolderOwnedKey);
+                if (AssetDatabase.IsValidFolder(k_CreateScriptTestFolder))
+                {
+                    AssetDatabase.DeleteAsset(k_CreateScriptTestFolder);
+                    AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+                }
+            }
         }
 
         private static ObjectRef ById(Object o) => new ObjectRef { InstanceId = PipelineUtils.GetObjectId(o) };
@@ -274,50 +294,70 @@ namespace Unity.Pipeline.Tests.Editor.Scripts
         [UnityTest]
         public IEnumerator CreateScript_WritesFileAndReturnsAssetIdentity()
         {
-            const string folder = "Assets/__CLI195Test";
-            const string expectedAssetPath = folder + "/CLI195Generated.cs";
-            try
+            const string expectedAssetPath = k_CreateScriptTestFolder + "/CLI195Generated.cs";
+
+            if (!AssetDatabase.IsValidFolder(k_CreateScriptTestFolder))
             {
-                if (!AssetDatabase.IsValidFolder(folder))
-                {
-                    AssetDatabase.CreateFolder("Assets", "__CLI195Test");
-                    AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
-                }
-
-                var result = CreateScriptCommand.CreateScript("CLI195Generated", folder, "Game.Generated");
-                Assert.AreEqual(expectedAssetPath, result.AssetPath);
-
-                // create_script deliberately doesn't recompile (callers batch writes before paying
-                // that cost once, see CreateScriptCommand's doc comment) — so importing the real .cs
-                // file above just left Unity owing a compile pass. Left alone, that debt gets paid
-                // off whenever Unity next decides it's safe to check — empirically, the next Play
-                // Mode transition — landing mid-coroutine on an unrelated [UnityTest] elsewhere in
-                // the suite and hanging it to its timeout (UUM-148802). Force and wait out the reload
-                // right here instead, before anything else in the suite can be caught by it.
-                EditorUtility.RequestScriptReload();
-                yield return new WaitForDomainReload();
-
-                // Local state doesn't survive a real domain reload — the Test Runner resumes this
-                // coroutine at the right point, but every captured local (even a plain string, not
-                // just `result` itself) resets to its default. Re-derive what we check from the
-                // (const) inputs rather than anything captured before the yield.
-                Assert.IsTrue(System.IO.File.Exists(
-                    System.IO.Path.Combine(ProjectPaths.ProjectRoot, expectedAssetPath)),
-                    "The .cs file should be written to disk");
+                AssetDatabase.CreateFolder("Assets", "__CLI195Test");
+                AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+                SessionState.SetBool(k_CreateScriptTestFolderOwnedKey, true);
             }
-            finally
-            {
-                if (AssetDatabase.IsValidFolder(folder))
-                {
-                    AssetDatabase.DeleteAsset(folder);
-                    AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
-                }
-            }
+
+            var result = CreateScriptCommand.CreateScript("CLI195Generated", k_CreateScriptTestFolder, "Game.Generated");
+            Assert.AreEqual(expectedAssetPath, result.AssetPath);
+
+            // create_script deliberately doesn't recompile (callers batch writes before paying
+            // that cost once, see CreateScriptCommand's doc comment) — so importing the real .cs
+            // file above just left Unity owing a compile pass. Left alone, that debt gets paid
+            // off whenever Unity next decides it's safe to check — empirically, the next Play
+            // Mode transition — landing mid-coroutine on an unrelated [UnityTest] elsewhere in
+            // the suite and hanging it to its timeout (UUM-148802). Force and wait out the reload
+            // right here instead, before anything else in the suite can be caught by it.
+            EditorUtility.RequestScriptReload();
+            yield return new WaitForDomainReload();
+
+            // Local state doesn't survive a real domain reload — the Test Runner resumes this
+            // coroutine at the right point, but every captured local (even a plain string, not
+            // just `result` itself) resets to its default. Re-derive what we check from the
+            // (const) inputs rather than anything captured before the yield.
+            Assert.IsTrue(System.IO.File.Exists(
+                System.IO.Path.Combine(ProjectPaths.ProjectRoot, expectedAssetPath)),
+                "The .cs file should be written to disk");
+
+            // Cleanup lives in TearDown, not a local try/finally: a finally wrapping this yield
+            // isn't reliably run when the test fails or is resumed across the real domain reload
+            // above, and a leftover folder then fails the next run too (CreateScript refuses to
+            // overwrite an existing file).
         }
 
         #endregion
 
         #region ViaClient
+
+        [Test]
+        public void GetSerializedFields_ViaClient_NullValue_ReturnsExplicitNullResult()
+        {
+            // The full /api/exec path for a genuinely-null command result: a format="value" read
+            // of an unassigned object-reference field is a SUCCESS whose value is null, and the
+            // wire reply must carry an explicit "result":null — distinguishable from a reply with
+            // no result at all (AUTHAPI-21 review).
+            var comp = m_Go.AddComponent<ScriptCommandTestBehaviour>();
+            using (var server = new PipelineTestServer())
+            {
+                var response = server.Execute("get_serialized_fields", new
+                {
+                    target = new { instanceId = PipelineUtils.GetObjectId(comp) },
+                    field = "m_Target",
+                    format = "value"
+                });
+
+                Assert.IsTrue(response.IsSuccess, $"get should succeed: {response.Error} / {response.RawResponse}");
+                Assert.IsTrue(response.HasValidJson);
+                Assert.IsTrue(response.JsonResponse["success"].ToObject<bool>());
+                StringAssert.Contains("\"result\":null", response.RawResponse,
+                    "A null field value must arrive as an explicit null result on the wire");
+            }
+        }
 
         [Test]
         public void SetThenGet_ViaClient_RoundTrips()
@@ -552,6 +592,55 @@ namespace Unity.Pipeline.Tests.Editor.Scripts
         }
 
         #endregion
+
+        #region AUTHAPI-21 — value projection (format=value)
+
+        [Test]
+        public void GetSerializedFields_FormatValue_SingleField_ReturnsRawValue()
+        {
+            var comp = m_Go.AddComponent<ScriptCommandTestBehaviour>();
+            SerializedFieldCommands.SetSerializedField(ById(comp), "m_Speed",
+                Newtonsoft.Json.Linq.JToken.FromObject(9));
+
+            // format=value returns the scalar directly rather than a { type, fields:[{...}] } descriptor.
+            var read = SerializedFieldCommands.GetSerializedFields(ById(comp), "m_Speed", format: "value");
+
+            Assert.IsFalse(read is System.Collections.Generic.Dictionary<string, object>,
+                "A single-field value read should return the raw value, not a map");
+            Assert.AreEqual(9L, Convert.ToInt64(read), "value mode should return the raw field value");
+        }
+
+        [Test]
+        public void GetSerializedFields_FormatValue_AllFields_ReturnsNameValueMap()
+        {
+            var comp = m_Go.AddComponent<ScriptCommandTestBehaviour>();
+            SerializedFieldCommands.SetSerializedField(ById(comp), "m_Speed",
+                Newtonsoft.Json.Linq.JToken.FromObject(3));
+
+            var read = SerializedFieldCommands.GetSerializedFields(ById(comp), format: "value");
+
+            var map = read as System.Collections.Generic.Dictionary<string, object>;
+            Assert.IsNotNull(map, "value mode over all fields should return a name->value map");
+            Assert.IsTrue(map.ContainsKey("m_Speed"), "map should be keyed by field name");
+            Assert.AreEqual(3L, Convert.ToInt64(map["m_Speed"]), "map value should be the raw field value");
+        }
+
+        [Test]
+        public void GetSerializedFields_DefaultFormat_StillReturnsDescriptor()
+        {
+            // Back-compat: with no format arg the full per-field descriptor is unchanged.
+            var comp = m_Go.AddComponent<ScriptCommandTestBehaviour>();
+            SerializedFieldCommands.SetSerializedField(ById(comp), "m_Speed",
+                Newtonsoft.Json.Linq.JToken.FromObject(4));
+
+            var read = SerializedFieldCommands.GetSerializedFields(ById(comp), "m_Speed");
+            var json = Newtonsoft.Json.Linq.JObject.FromObject(read);
+
+            Assert.AreEqual("m_Speed", (string)json["fields"][0]["name"], "Descriptor should carry the field name");
+            Assert.AreEqual(4, (int)json["fields"][0]["value"], "Descriptor should carry the value");
+        }
+
+        #endregion
     }
 
     /// <summary>
@@ -559,7 +648,7 @@ namespace Unity.Pipeline.Tests.Editor.Scripts
     /// set/get/attach tests so they don't need a domain reload. Mirrors the kinds of fields an agent
     /// authors: a primitive, an enum, a Vector3, and a [SerializeField] object reference.
     /// </summary>
-    public class ScriptCommandTestBehaviour : MonoBehaviour
+    class ScriptCommandTestBehaviour : MonoBehaviour
     {
         public enum EnemyMode { Passive, Aggressive, Patrol }
 
@@ -584,7 +673,7 @@ namespace Unity.Pipeline.Tests.Editor.Scripts
     /// A trivial ScriptableObject fixture used to exercise the asset-target path of the serialized-field
     /// commands (an asset is neither a Component nor a GameObject).
     /// </summary>
-    public class ScriptCommandTestScriptable : ScriptableObject
+    class ScriptCommandTestScriptable : ScriptableObject
     {
         [SerializeField] private int m_Value;
         public int Value => m_Value;

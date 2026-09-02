@@ -17,7 +17,7 @@ namespace Unity.Pipeline.Tests.Editor.Baking
     /// and dry_run being a no-op. The full bake → completed acceptance flow is exercised live against a
     /// running Editor (it is too slow/platform-dependent for the unit suite).
     /// </summary>
-    public class LightingBakeCommandsTests
+    class LightingBakeCommandsTests
     {
         [SetUp]
         public void SetUp() => CommandRegistry.SetDiscovery(new TypeCacheCommandDiscovery());

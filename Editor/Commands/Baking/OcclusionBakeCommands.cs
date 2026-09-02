@@ -4,6 +4,9 @@ using Newtonsoft.Json;
 using Unity.Pipeline.Commands;
 using UnityEditor;
 using UnityEngine;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Editor.Commands.Baking
 {
@@ -18,7 +21,10 @@ namespace Unity.Pipeline.Editor.Commands.Baking
     /// static fields and reconciled against a Temp/ status file across domain reloads.
     /// </summary>
     [InitializeOnLoad]
-    public static class OcclusionBakeCommands
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
+    static class OcclusionBakeCommands
     {
         const string StatusFile = "Temp/pipeline_occlusion_bake_status.json";
 
@@ -234,7 +240,7 @@ namespace Unity.Pipeline.Editor.Commands.Baking
 
     /// <summary>Status/result payload for <c>bake_occlusion_culling</c> / <c>occlusion_bake_status</c>.</summary>
     [Serializable]
-    public class OcclusionBakeStatus
+    class OcclusionBakeStatus
     {
         [JsonProperty("status")]
         public string Status { get; set; }
@@ -257,7 +263,7 @@ namespace Unity.Pipeline.Editor.Commands.Baking
 
     /// <summary>Post-bake occlusion statistics (umbra data size in bytes).</summary>
     [Serializable]
-    public class OcclusionBakeStats
+    class OcclusionBakeStats
     {
         [JsonProperty("umbraDataSizeBytes")]
         public long UmbraDataSizeBytes { get; set; }

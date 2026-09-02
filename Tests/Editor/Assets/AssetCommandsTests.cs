@@ -13,7 +13,7 @@ namespace Unity.Pipeline.Tests.Editor.Assets
     /// A trivial ScriptableObject used by the asset-command tests to exercise create / find / move /
     /// delete with a real, project-resolvable type.
     /// </summary>
-    public class CLI191SampleAsset : ScriptableObject
+    class CLI191SampleAsset : ScriptableObject
     {
         public int Value;
     }
@@ -24,7 +24,7 @@ namespace Unity.Pipeline.Tests.Editor.Assets
     /// create ScriptableObject → find by type → move → delete), the sandbox guard (out-of-project
     /// writes rejected), and the destructive guard (delete without confirm rejected).
     /// </summary>
-    public class AssetCommandsTests
+    class AssetCommandsTests
     {
         private const string Root = "Assets/__CLI191Test";
 

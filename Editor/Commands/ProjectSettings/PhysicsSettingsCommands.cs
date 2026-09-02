@@ -9,7 +9,7 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
     /// Get/set a representative slice of 3D <see cref="Physics"/> settings (CLI-202): gravity (by
     /// component), default solver iterations, and the bounce threshold.
     /// </summary>
-    public static class PhysicsSettingsCommands
+    static class PhysicsSettingsCommands
     {
         const string Group = "physics";
 
@@ -78,7 +78,7 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
     }
 
     /// <summary>Physics settings to change. Null/omitted fields are left unchanged.</summary>
-    public class PhysicsSettingsInput : IStructuredCommandInput
+    class PhysicsSettingsInput : IStructuredCommandInput
     {
         [CliArg("gravityX", "Gravity X component.")]
         public float? GravityX { get; set; }

@@ -58,7 +58,7 @@ namespace Unity.Pipeline.Tests.Editor.E2E
     /// reference reads back. Blocked on CLI-191..195 (authoring commands not yet implemented); see
     /// docs/authoring/plans/CLI-196-docs-samples-e2e.md.
     /// </summary>
-    public class AgentAuthoringE2ETests
+    class AgentAuthoringE2ETests
     {
         [Test]
         [Ignore("CLI-196 blocked on CLI-191..195: authoring commands not yet implemented")]

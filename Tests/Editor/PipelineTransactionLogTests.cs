@@ -11,7 +11,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// session rotation. Exercises the directory-parameterized seams against an isolated temp
     /// directory so the real project Logs folder and the global SessionState gate are untouched.
     /// </summary>
-    public class PipelineTransactionLogTests
+    class PipelineTransactionLogTests
     {
         private string m_LogsDir;
 

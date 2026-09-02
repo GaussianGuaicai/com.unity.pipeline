@@ -12,7 +12,7 @@ namespace Unity.Pipeline.Tests.Editor.Assets
     /// on every AssetImporter — so the test is independent of any specific importer kind. Verifies the
     /// applied/unknown bookkeeping and that the setting actually persists on the importer.
     /// </summary>
-    public class AssetImportCommandsTests
+    class AssetImportCommandsTests
     {
         private const string Root = "Assets/__CLI191ImportTest";
 

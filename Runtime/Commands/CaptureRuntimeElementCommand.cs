@@ -17,7 +17,7 @@ namespace Unity.Pipeline.Runtime.Commands
     /// The panel is identified by name (the <see cref="PanelSettings"/> asset name or the host
     /// GameObject name) rather than an asset path, because a Player has no AssetDatabase.
     /// </summary>
-    public static class CaptureRuntimeElementCommand
+    static class CaptureRuntimeElementCommand
     {
         [CliCommand("capture_runtime_element",
             "Capture a UI Toolkit VisualElement (by selector) from a live runtime panel (UIDocument or PanelRenderer) to a PNG; returns path + base64.",

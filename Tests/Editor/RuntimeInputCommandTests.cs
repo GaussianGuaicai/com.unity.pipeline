@@ -12,7 +12,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// pumping the Input System here never leaks into the editor session. Only compiled when the Input System
     /// is present and active (ENABLE_INPUT_SYSTEM) — the same guard the command uses.
     /// </summary>
-    public class RuntimeInputCommandTests : InputTestFixture
+    class RuntimeInputCommandTests : InputTestFixture
     {
         [Test]
         public void SimulateKey_Down_PressesKey()

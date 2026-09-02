@@ -12,7 +12,7 @@ namespace Unity.Pipeline.Editor.Commands
     /// Returns rich Editor state including compilation, play mode, and project details.
     /// Accessible via "unity request editor_status" and "/api/editor_status" endpoint.
     /// </summary>
-    public static class EditorStatusCommand
+    static class EditorStatusCommand
     {
         [CliCommand("editor_status", "Get detailed Unity Editor status and state information", Tags = new[] { "editor" })]
         public static StatusResponse GetEditorStatus()

@@ -5,9 +5,9 @@ namespace Unity.Pipeline.Tests.Editor
 {
     /// <summary>
     /// Unit tests for <see cref="FrameStatsSampler"/>'s windowing math. These run in EditMode without a
-    /// Player or RuntimePipelineManager — the sampler is a plain class fed synthetic frame times.
+    /// Player or RuntimePipelineDriver — the sampler is a plain class fed synthetic frame times.
     /// </summary>
-    public class FrameStatsSamplerTests
+    class FrameStatsSamplerTests
     {
         private const float Tolerance = 0.001f;
 

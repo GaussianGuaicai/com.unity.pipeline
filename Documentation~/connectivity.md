@@ -79,7 +79,7 @@ The server is never exposed on a routable interface — it is reachable only fro
 
 Clients should connect to **`127.0.0.1`** explicitly rather than `localhost`. Unity's Mono `HttpListener` only reliably serves the IPv4 loopback: a request arriving over the IPv6 loopback (`::1`) is answered with `400` because Mono mis-parses the bracketed `[::1]` host. Since `localhost` resolves to `::1` or `127.0.0.1` non-deterministically (notably on Windows with Node's default DNS order), dialing `localhost` caused intermittent connection failures — dialing `127.0.0.1` avoids the IPv6 path entirely.
 
-In addition, the server refuses any request that carries an `Origin` header (legitimate CLI/CI clients never send one), which blocks a browser page from reaching the local server and short-circuits CORS preflights.
+In addition, the server refuses any request that carries an `Origin` header (legitimate CLI/CI clients never send one), which blocks a browser page from reaching the local server and short-circuits CORS preflights. The Editor server can opt into the single exception: enabling **Allow Browser Clients** in the pipeline settings asset (`Window/Pipeline/Settings...`, applies on next start) admits `Origin: null`, the opaque origin a sandboxed browser frame reports, and answers that client's CORS preflight. An ordinary page sends its real origin and is still refused, and a sandboxed one still needs the bearer token.
 
 ## Port ranges
 
@@ -122,7 +122,9 @@ The Runtime descriptor is written next to the Player, at `{Application.dataPath}
   "mode": "editor",
   "startedAt": "2026-06-25T10:00:00Z",
   "lastHeartbeat": "2026-06-25T10:05:00Z",
-  "evalToken": "<base64 token>"
+  "evalToken": "<base64 token>",
+  "capabilities": ["exec.argv", "exec.commandLine"],
+  "info": "This editor has not been opened in automated mode and therefore could get stuck on modal dialogs. Human intervention may be required."
 }
 ```
 
@@ -137,6 +139,8 @@ The Runtime descriptor is written next to the Player, at `{Application.dataPath}
 | `startedAt` | When the instance started (UTC). |
 | `lastHeartbeat` | Last heartbeat (UTC), refreshed on status calls. |
 | `evalToken` | Bearer token for authenticating requests. |
+| `capabilities` | Optional wire features this server understands (see [Capability negotiation](#capability-negotiation)). **An absent key means the server predates the field** — treat it as supporting none of them. |
+| `info` | Corrective guidance for the client, omitted when there is nothing to say. Currently only set when the Editor is interactive and wasn't launched with `-automated`: a blocking modal dialog can stall the Editor's main-thread update loop (and therefore all pipeline command processing) until a human dismisses it. Read this before issuing commands — it's the one field every client sees, since reading the descriptor is a mandatory first step just to connect. |
 
 ### Runtime descriptor fields
 
@@ -147,6 +151,8 @@ The runtime descriptor shares `pid`, `port`, `unityVersion`, `startedAt`, `lastH
 | `platform` | Unity runtime platform (e.g. `WindowsPlayer`). |
 | `buildGuid` | Unique build identifier (`Application.buildGUID`). |
 | `workingDirectory` | Directory the Player is running from. |
+
+The runtime descriptor also carries `capabilities`, with the same meaning and the same absent-key rule.
 
 (The runtime descriptor carries `platform`/`buildGuid`/`workingDirectory` in place of the editor's `projectPath`/`projectName`/`mode`.)
 
@@ -170,7 +176,7 @@ A client connects by:
 2. Taking the `port` and `evalToken` from it.
 3. Sending requests to `http://127.0.0.1:<port>/...` with `Authorization: Bearer <evalToken>`.
 
-Endpoints exposed by the server include `/api/status`, `/api/editor_status`, `/api/commands` (lists available commands), `/api/exec` (POST — runs a command), `/api/test-status`, and `/api/progress`.
+Endpoints exposed by the server include `/api/status`, `/api/editor_status`, `/api/dialog`, `/api/commands` (lists available commands), `/api/exec` (POST — runs a command), `/api/test-status`, and `/api/progress`.
 
 ### Command progress (`GET /api/progress`)
 
@@ -207,7 +213,8 @@ arrival order) and the client polls for the result — reattaching at any point:
 
 1. `POST /api/exec` with body `{"command": "…", "parameters": {…}, "job": true}` → the
    standard exec envelope, with the job handle as its `result`:
-   `{"success": true, "command": "…", "result": {"jobId": "…", "state": "queued"}}`.
+   `{"success": true, "result": {"jobId": "…", "state": "queued"}}` (lean by default —
+   add `"verbose": true` to get the `command`/`executedAt` metadata back, see AUTHAPI-21).
 2. `GET /api/job?id=<jobId>` → `{"jobId", "command", "state":
    "queued|running|completed|failed|canceled", "progress": {…}, "result", "error", …}`.
    `progress` mirrors `/api/progress` while the job runs; `result` is retained after
@@ -231,22 +238,38 @@ and gain CLI visibility. See [Creating commands](creating-commands.md).
 On a **cold project import** the editor server comes up (and its descriptor is written) while the Editor is still importing assets and compiling scripts, so the Editor is not yet able to service commands. Until the Editor is first seen idle after server start:
 
 - `/api/status` reports `"status": "settling"` instead of `"ready"`. Wait for `ready` before issuing commands.
-- `/api/exec` rejects **main-thread** commands with **HTTP 503** and a structured, retryable envelope — distinguishable from a genuine command failure. The gate applies before execution *and* before a detached job (`"job": true`) is created, so a job can't run into the half-ready Editor in the background either:
+- `/api/exec` rejects **main-thread** commands with **HTTP 503** and a structured, retryable envelope — distinguishable from a genuine command failure. The gate applies before execution *and* before a detached job (`"job": true`) is created, so a job can't run into the half-ready Editor in the background either. The busy reply is a standard exec envelope and follows the request's reply-shape flags: lean (the default, shown here) drops the envelope metadata; `"verbose": true` restores the `command` echo and `executedAt`:
 
   ```json
   {
     "success": false,
-    "command": "create_scene",
     "error": "Server Busy",
     "errorDetails": "The Editor is still settling after startup (importing assets / compiling scripts), so main-thread commands are not serviceable yet. Retry shortly, or poll /api/status until it reports 'ready'.",
     "status": "busy",
+    "busyReason": "settling",
     "retryable": true
   }
   ```
 
+  `busyReason` is the specific cause, matching `/api/status`'s own `status` values for the same conditions (`"settling"`, `"blocked_by_dialog"`) — branch on it directly rather than inferring the cause from whether `dialogs` happens to be populated.
+
 - Background commands (`recompile_status`, `package_status`, `console`, ...) and `editor_status` stay servable throughout, so progress remains observable.
 
 The settle gate is one-way and scoped to the **editor session**: once the Editor has been idle once after startup, the server reports `ready` and the gate never arms again for that session — including for server instances recreated by domain reloads and for servers started while a mid-session compile/import happens to be in flight. Warm starts settle immediately; only the cold-import window gates.
+
+### Modal dialogs and the dialog-busy gate
+
+A native modal dialog (e.g. "Save changes before quitting?") or an `EditorWindow` modal blocks the Editor's main thread inside a nested OS message loop, so no main-thread command can run until it's dismissed. The server mirrors these dialogs from `UnityEditor.EditorDialogEvents`:
+
+- `GET /api/dialog` reports the currently open dialog(s): `{"active": bool, "dialogs": [...]}`, each entry shaped `{id, source, title, message, level, buttons, openedAt, dismissedAt}`.
+- `/api/status` reports `"status": "blocked_by_dialog"` (instead of `"ready"`) with a `"dialog"` key carrying that same shape for the first open dialog — so the cheapest, most commonly polled probe doesn't claim readiness while every main-thread command is actually gated.
+- `/api/exec` rejects any **main-thread** command with **HTTP 503**, the same busy envelope shape as the settle gate's but with `"busyReason": "blocked_by_dialog"` and a `"dialogs"` array attached.
+
+  **Exception: `editor_status`.** Unlike every other main-thread command, `editor_status` still returns a normal **200** while a dialog is open, served from a snapshot taken the instant before the dialog blocked the thread — nothing it reports (compiling, domain reload, play mode) can change while the thread that would update it is stuck. The response carries `"status": "blocked_by_dialog"` and the same `"dialog"` payload as `/api/status`, so a caller can still tell it apart from a genuinely idle Editor.
+
+- A successful `/api/exec` response may carry `"dialogsDuringExecution"`: dialog(s) that opened and/or closed while the command was actually *executing* (not while it sat queued behind another command), so a caller learns about them without polling `/api/dialog` concurrently.
+
+Coverage is mechanism-based: native message boxes and `EditorWindow` modals are covered; OS file/folder pickers and other dialog mechanisms are not — a caller still needs a fallback signal (e.g. a command timeout) for uncovered cases.
 
 `/api/commands` accepts optional query parameters for discovery:
 
@@ -356,6 +379,160 @@ Under `group_by=tag` the same envelope carries a nested `groups` tree instead. T
 ```
 
 `group_by=package` uses the same envelope with flatter nodes — `{ "package": "Unity.Pipeline.Editor", "count": 2, "commands": [ ... ] }`, with no `children`.
+
+## Executing a command (`POST /api/exec`)
+
+A request carries the command in **exactly one** of three forms:
+
+```jsonc
+{"command": "reload_file", "parameters": {"path": "Assets/A.cs"}}  // structured
+{"commandLine": "reload_file Assets/A.cs"}                          // server tokenizes, then binds
+{"argv": ["eval", "return 2+2;"]}                                   // server binds directly
+```
+
+For the two raw forms the **first token is the command name**, and the server binds the rest
+against the command's declared parameters. This is what lets a client execute a command in a
+single request without knowing its schema — the structured form needs `GET /api/commands` first,
+the raw forms need nothing.
+
+**Prefer `argv` whenever you already have split tokens.** On POSIX a CLI never holds the original
+command *string* — the shell already split and unquoted argv — so re-quoting those tokens for the
+server to re-split is a lossy round-trip across two independently-versioned quoting dialects. Use
+`commandLine` only when you genuinely hold raw text (a chat message, an MCP argument, a pasted
+line).
+
+Supplying more than one form is an error, and so is sending `parameters` alongside `commandLine`
+or `argv`. The latter is **rejected rather than ignored**: silently dropping a payload makes "you
+sent it and we discarded it" indistinguishable from "you never sent it".
+
+`argv` and `commandLine` are exec-only. `batch` operations keep `command` + `params`.
+
+### Tokenizer dialect (`commandLine` only)
+
+This is a **versioned contract**, not an implementation detail. It is the pipeline's own dialect —
+identical on every OS, and deliberately *not* the caller's shell — so the same string tokenizes
+the same way from cmd.exe, bash, an MCP client, or a chat box.
+
+| Rule | Example | Tokens |
+|---|---|---|
+| Whitespace separates tokens; runs collapse | `a   b` | `a`, `b` |
+| `"…"` groups, `\` escapes the next character | `"a b"`, `"a\"b"` | `a b`, `a"b` |
+| `'…'` groups, with **no** escapes at all | `'a\b'` | `a\b` |
+| `\` escapes outside quotes | `a\ b` | `a b` |
+| Adjacent spans concatenate | `a"b c"d` | `ab cd` |
+| `""` yields one **empty** token | `--message ""` | `--message`, *(empty)* |
+| Unbalanced quote or dangling `\` | `"oops` | **error** |
+
+There is **no expansion of any kind** — no `$VAR`, globbing, `~`, comments, or operators. `&&`,
+`|` and `>` are ordinary characters.
+
+Two consequences worth stating explicitly:
+
+- **Single quotes are load-bearing.** They pass double quotes through untouched, which is the only
+  practical way to send `eval 'obj.name = "x";'` or `batch --operations '[{…}]'`.
+- **Windows `CommandLineToArgvW` rules do not apply.** `"a""b"` is `ab` here, not `a"b`. The usual
+  argument for Windows rules — that `\` is the path separator — does not hold, because every path
+  this API accepts is a forward-slashed Unity asset path.
+
+### Argument grammar (both raw forms)
+
+- `--key value`, `--key=value`, or a bare `--key` (which means `true`, and is an error on a
+  non-boolean parameter).
+- A follower is consumed as the value **unless it starts with `--`**, so `--path -foo` works.
+- `--` ends flag parsing; everything after it is a positional value, exempt from the `-foo` and
+  `key=value` checks.
+- Positionals fill **required parameters in declaration order, then optional parameters in
+  declaration order**. A slot already filled by an explicit flag is skipped, not overwritten.
+- Not supported, by design: short flags, `-abc` bundling, `--no-x`, repeated-flag-as-array,
+  flag-name abbreviation, and `@argfile`.
+
+> **Declaration order is wire API for raw clients.** Reordering a command's parameters — or
+> flipping one between required and optional — silently changes what a positional binds to. Append
+> new optional parameters at the end. See [Creating commands](creating-commands.md).
+
+### Successful replies echo the bound parameters
+
+```json
+{"success": true, "result": "pong", "parameters": {"message": "hi"}}
+```
+
+`parameters` is present **only** for `argv`/`commandLine` requests, so structured replies are
+unchanged. It reports exactly what the binder stored, so a client that no longer binds locally can
+still show the user what the server understood.
+
+### Argument errors
+
+```json
+{
+  "success": false,
+  "error": "Invalid Command Arguments",
+  "errorCode": "INVALID_COMMAND_ARGS",
+  "errorDetails": "log_editor has no parameter --mesage. Did you mean --message?",
+  "argProblems": [{"kind": "unknownName", "name": "mesage", "suggestion": "message"}],
+  "commandSchema": {"name": "log_editor", "parameters": [{"name": "message", "type": "String", "required": true}]}
+}
+```
+
+**`errorCode` is the discriminator, not the HTTP status.** Every `/api/exec` failure is already
+`400`, so status alone cannot separate "your arguments are wrong" from "the command threw".
+
+| `errorCode` | Meaning |
+|---|---|
+| `INVALID_COMMAND_ARGS` | The command resolved, but its arguments could not be bound. Nothing executed. |
+| *(absent)* | Any other failure — an unknown command, a validation error, or the command itself throwing. |
+
+A malformed *request shape* — two command forms at once, `parameters` beside `argv`, an empty
+`argv`, a `commandLine` that does not tokenize (unbalanced quote, dangling backslash), or a body
+using none of the three forms — is a `400` with `error: "Invalid Request"` and **no** `errorCode`,
+because no command was ever resolved. Such a reply carries neither `argProblems` nor
+`commandSchema`: there is no command to describe.
+
+`argProblems` is machine-readable and **accumulated**: every defect is reported, not just the
+first, so a user fixing a command line sees all of its problems at once. It is deliberately not
+pre-rendered English — the `unity` CLI renders *and localizes* these itself. Use `errorDetails` as
+the English fallback, and for any `kind` your client does not recognize.
+
+| `kind` | Meaning |
+|---|---|
+| `emptyName` | A flag with no name: `--=` or `--=value`. A bare `--` is the end-of-flags separator, never this. |
+| `emptyValue` | `--key=` with nothing after it, or a bare `--key` on a non-boolean parameter. |
+| `singleDash` | A `-x` token in positional position. |
+| `duplicate` | The same `--key` supplied more than once. |
+| `unknownName` | No such parameter. Carries `suggestion` when a close match exists. |
+| `bareAssignment` | A `key=value` positional whose left side names *the parameter that positional fills* — a misremembered `--key value`. A left side naming some other parameter is a value: `eval "timeout=5;"` binds as `code`. |
+| `excessPositional` | More positionals than there are slots left for them. `capacity` is the slots still free after the flags took theirs and `given` is the positionals supplied; `token` is the first one with no slot. |
+| `positionalConflict` | A positional whose own slot a flag already filled. Carries `name` (that parameter) and `token`. |
+| `typeMismatch` | The declared type cannot accept the token; carries `expectedType`. |
+
+`commandSchema` is the command's catalog entry, shaped like a `/api/commands` `commands[]`
+element (without the generated `schema`). It lets a client print usage without a separate schema
+fetch.
+
+### Capability negotiation
+
+Servers advertise optional wire features in `capabilities`, both on `GET /api/status` and in the
+**port descriptor**:
+
+```json
+"capabilities": ["exec.argv", "exec.commandLine"]
+```
+
+The descriptor is the carrier that matters: clients already read it locally to obtain `evalToken`,
+so negotiation costs **zero extra requests**.
+
+The rule for clients:
+
+- Token present → send that form.
+- Descriptor present but **no `capabilities` key at all** → the server predates this feature. Do
+  not send raw forms; tell the user to update the package.
+- Never sniff first. An older server receiving `{"argv":[…]}` fails deserialization (its `command`
+  field is required) and answers `400 {"error":"Invalid JSON"}` — which a client would otherwise
+  surface as a generic internal failure, making version skew look like a client bug.
+
+Because the descriptor file is writable by anything running as the user, treat a capability claim
+as a hint rather than a guarantee: a `400` carrying `error: "Invalid JSON"` or `"Invalid Request"`
+with **no** `errorCode`, in response to a request that used `argv`, means the same thing as an
+absent key. Degrade, don't crash.
 
 ## See also
 

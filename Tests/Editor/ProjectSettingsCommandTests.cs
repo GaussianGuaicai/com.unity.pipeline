@@ -11,7 +11,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// (read-back, dry-run preview, confirm gate, reload signalling) can be tested without touching
     /// real Unity project settings.
     /// </summary>
-    public class ProjectSettingsCommandTests
+    class ProjectSettingsCommandTests
     {
         [Test]
         public void Get_ReturnsValues_AndGroup()

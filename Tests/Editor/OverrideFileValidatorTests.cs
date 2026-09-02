@@ -7,7 +7,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// Unit tests for OverrideFileValidator - the up-front, parse-only validation used by the
     /// helper-workflow reload_file_override command.
     /// </summary>
-    public class OverrideFileValidatorTests
+    class OverrideFileValidatorTests
     {
         [Test]
         public void Validate_ProperOverrideFile_IsValid()

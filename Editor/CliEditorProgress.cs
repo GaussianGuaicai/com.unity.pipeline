@@ -21,6 +21,9 @@ namespace Unity.Pipeline.Editor
     public static class CliEditorProgress
     {
         /// <summary>Same as <see cref="EditorUtility.DisplayProgressBar"/>, plus CLI reporting.</summary>
+        /// <param name="title">Short title for the operation.</param>
+        /// <param name="info">Detail text (e.g. current step).</param>
+        /// <param name="progress">Progress in [0, 1].</param>
         public static void DisplayProgressBar(string title, string info, float progress)
         {
             CliProgress.Report(title, info, progress: progress);
@@ -28,6 +31,10 @@ namespace Unity.Pipeline.Editor
         }
 
         /// <summary>Same as <see cref="EditorUtility.DisplayCancelableProgressBar"/>, plus CLI reporting.</summary>
+        /// <param name="title">Short title for the operation.</param>
+        /// <param name="info">Detail text (e.g. current step).</param>
+        /// <param name="progress">Progress in [0, 1].</param>
+        /// <returns>True if the user clicked Cancel.</returns>
         public static bool DisplayCancelableProgressBar(string title, string info, float progress)
         {
             CliProgress.Report(title, info, progress: progress);

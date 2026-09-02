@@ -14,7 +14,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// <c>list_build_profiles</c>, and the <c>switch_build_target</c> command surface. The read-only
     /// commands are executed directly on the test (main) thread; nothing here triggers a build or switch.
     /// </summary>
-    public class BuildConfigCommandsTests
+    class BuildConfigCommandsTests
     {
         [SetUp]
         public void SetUp() => CommandRegistry.SetDiscovery(new TypeCacheCommandDiscovery());

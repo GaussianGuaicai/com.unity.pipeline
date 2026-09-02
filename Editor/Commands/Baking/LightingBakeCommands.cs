@@ -5,6 +5,9 @@ using Newtonsoft.Json.Linq;
 using Unity.Pipeline.Commands;
 using UnityEditor;
 using UnityEngine;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Editor.Commands.Baking
 {
@@ -26,7 +29,10 @@ namespace Unity.Pipeline.Editor.Commands.Baking
     /// <see cref="Lightmapping.isRunning"/> flipping false in <see cref="EditorApplication.update"/>.
     /// </summary>
     [InitializeOnLoad]
-    public static class LightingBakeCommands
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
+    static class LightingBakeCommands
     {
         const string StatusFile = "Temp/pipeline_lighting_bake_status.json";
 
@@ -538,7 +544,7 @@ namespace Unity.Pipeline.Editor.Commands.Baking
 
     /// <summary>Status/result payload for <c>bake_lighting</c> / <c>lighting_bake_status</c>.</summary>
     [Serializable]
-    public class LightingBakeStatus
+    class LightingBakeStatus
     {
         [JsonProperty("status")]
         public string Status { get; set; }
@@ -566,7 +572,7 @@ namespace Unity.Pipeline.Editor.Commands.Baking
 
     /// <summary>Post-bake lightmap statistics (CLI-215 acceptance: lightmapCount &gt;= 1, bakeTimeMs &gt; 0).</summary>
     [Serializable]
-    public class LightingBakeStats
+    class LightingBakeStats
     {
         [JsonProperty("lightmapCount")]
         public int LightmapCount { get; set; }
@@ -586,7 +592,7 @@ namespace Unity.Pipeline.Editor.Commands.Baking
 
     /// <summary>Result of <c>get_lighting_settings</c> (and the dry-run payload of bake_lighting).</summary>
     [Serializable]
-    public class LightingSettingsResult
+    class LightingSettingsResult
     {
         /// <summary>False when no LightingSettings could be read for the active scene.</summary>
         [JsonProperty("available")]

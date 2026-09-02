@@ -9,7 +9,7 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
     /// Get/set the project Time settings (CLI-202): fixed timestep, maximum allowed timestep, and the
     /// time scale.
     /// </summary>
-    public static class TimeSettingsCommands
+    static class TimeSettingsCommands
     {
         const string Group = "time";
 
@@ -66,7 +66,7 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
     }
 
     /// <summary>Time settings to change. Null/omitted fields are left unchanged.</summary>
-    public class TimeSettingsInput : IStructuredCommandInput
+    class TimeSettingsInput : IStructuredCommandInput
     {
         [CliArg("fixedDeltaTime", "Fixed timestep in seconds (e.g. 0.02).")]
         public float? FixedDeltaTime { get; set; }

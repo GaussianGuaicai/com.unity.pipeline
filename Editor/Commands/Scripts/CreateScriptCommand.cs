@@ -25,7 +25,7 @@ namespace Unity.Pipeline.Editor.Commands.Scripts
     /// identity. It does not trigger a recompile itself — the agent owns that step so it can batch
     /// multiple authoring writes before paying the domain-reload cost once.
     /// </summary>
-    public static class CreateScriptCommand
+    static class CreateScriptCommand
     {
         /// <summary>
         /// Default class body (the Start/Update stubs) written inside the generated class, matching

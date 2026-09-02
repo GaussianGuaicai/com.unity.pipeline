@@ -28,7 +28,7 @@ namespace Unity.Pipeline.Editor.Commands.Animation
     /// rather than wrapped in an <see cref="AuthoringUndoScope"/>. Only float curves are supported in
     /// v1 (object-reference / PPtr curves are out of scope).
     /// </summary>
-    public static class AnimationClipCommands
+    static class AnimationClipCommands
     {
         [CliCommand("create_animation_clip",
             "Create an empty .anim AnimationClip asset under the authoring root, with an optional frame rate and loop flag.",
@@ -345,7 +345,7 @@ namespace Unity.Pipeline.Editor.Commands.Animation
     /// with the affected binding and its key count.
     /// </summary>
     [Serializable]
-    public class SetAnimationCurveResult : AuthoringResult
+    class SetAnimationCurveResult : AuthoringResult
     {
         [JsonProperty("binding")]
         public CurveBinding Binding { get; set; }
@@ -356,7 +356,7 @@ namespace Unity.Pipeline.Editor.Commands.Animation
 
     /// <summary>A curve binding's address: GameObject path, component type, and property name.</summary>
     [Serializable]
-    public class CurveBinding
+    class CurveBinding
     {
         [JsonProperty("path")]
         public string Path { get; set; }
@@ -370,7 +370,7 @@ namespace Unity.Pipeline.Editor.Commands.Animation
 
     /// <summary>Result of <c>get_animation_clip</c>: clip metadata and its curve bindings.</summary>
     [Serializable]
-    public class AnimationClipInfo
+    class AnimationClipInfo
     {
         [JsonProperty("assetPath")]
         public string AssetPath { get; set; }
@@ -390,7 +390,7 @@ namespace Unity.Pipeline.Editor.Commands.Animation
 
     /// <summary>A single curve binding in <see cref="AnimationClipInfo"/>, optionally with its keys.</summary>
     [Serializable]
-    public class CurveBindingInfo
+    class CurveBindingInfo
     {
         [JsonProperty("path")]
         public string Path { get; set; }
@@ -410,7 +410,7 @@ namespace Unity.Pipeline.Editor.Commands.Animation
 
     /// <summary>A single keyframe in a curve binding.</summary>
     [Serializable]
-    public class KeyframeInfo
+    class KeyframeInfo
     {
         [JsonProperty("time")]
         public float Time { get; set; }

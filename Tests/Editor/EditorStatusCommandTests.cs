@@ -8,7 +8,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// Tests for the editor_status command (EditorStatusCommand), exercised directly and via
     /// PipelineClient.
     /// </summary>
-    public class EditorStatusCommandTests
+    class EditorStatusCommandTests
     {
         #region Direct
 

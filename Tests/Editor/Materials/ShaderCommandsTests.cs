@@ -13,7 +13,7 @@ namespace Unity.Pipeline.Tests.Editor.Materials
     /// get_shader_properties). URP-specific assertions are guarded with Assert.Ignore so the suite runs
     /// on a Built-in RP project too.
     /// </summary>
-    public class ShaderCommandsTests
+    class ShaderCommandsTests
     {
         private bool m_HasUrpLit;
 

@@ -10,7 +10,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// <summary>
     /// Tests for the log command (RuntimeLogCommand), exercised directly and via PipelineClient.
     /// </summary>
-    public class RuntimeLogCommandTests
+    class RuntimeLogCommandTests
     {
         #region Direct
 

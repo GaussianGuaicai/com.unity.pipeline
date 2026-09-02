@@ -11,7 +11,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// Integration tests for hot reload end-to-end functionality.
     /// Tests the complete workflow: register methods → create overrides → compile → verify runtime behavior.
     /// </summary>
-    public class HotReloadIntegrationTests
+    class HotReloadIntegrationTests
     {
         /// <summary>
         /// Test component that properly integrates hot reload pattern.

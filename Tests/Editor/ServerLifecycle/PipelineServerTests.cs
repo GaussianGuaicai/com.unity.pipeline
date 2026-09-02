@@ -20,7 +20,7 @@ namespace Unity.Pipeline.Tests.Editor.ServerLifecyle
     /// </summary>
     [Explicit("Server-lifecycle test; conflicts with the live editor server. Run deliberately.")]
     [Category("ServerLifecycle")]
-    public class PipelineServerTests
+    class PipelineServerTests
     {
         // These tests start/stop their own EditorPipelineServer, which writes/deletes the shared
         // `.unity-pipeline-port` descriptor and would corrupt the live editor server. Guard it.

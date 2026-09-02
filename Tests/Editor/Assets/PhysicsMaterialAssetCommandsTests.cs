@@ -3,11 +3,6 @@ using Unity.Pipeline.Editor.Authoring;
 using Unity.Pipeline.Editor.Commands.Assets;
 using UnityEditor;
 using UnityEngine;
-#if UNITY_6000_0_OR_NEWER
-using PhysicsMaterial = UnityEngine.PhysicsMaterial;
-#else
-using PhysicsMaterial = UnityEngine.PhysicMaterial;
-#endif
 
 namespace Unity.Pipeline.Tests.Editor.Assets
 {
@@ -23,7 +18,7 @@ namespace Unity.Pipeline.Tests.Editor.Assets
     /// a ".physicsMaterial" request to ".physicMaterial", so the created path is asserted via the
     /// command result rather than the requested path.
     /// </summary>
-    public class PhysicsMaterialAssetCommandsTests
+    class PhysicsMaterialAssetCommandsTests
     {
         private const string Root = "Assets/__CLI221_222Test";
 
