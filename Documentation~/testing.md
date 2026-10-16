@@ -71,7 +71,7 @@ public PipelineTestServer()
 {
     m_Server = new TestEditorPipelineServer();
     m_Server.Start(); // auto-assigns a port in 7850-7899; writes no descriptor
-    m_Client = new PipelineClient($"http://localhost:{m_Server.Port}", SecurityTokenManager.GetOrCreateToken());
+    m_Client = new PipelineClient($"http://127.0.0.1:{m_Server.Port}", SecurityTokenManager.GetOrCreateToken());
 }
 ```
 

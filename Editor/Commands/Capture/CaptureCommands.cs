@@ -13,10 +13,11 @@ using Object = UnityEngine.Object;
 namespace Unity.Pipeline.Editor.Commands.Capture
 {
     /// <summary>
-    /// Visual-feedback commands (CLI-199): render a camera, the Scene View, or the composited game view
-    /// screen to a PNG and return it base64-encoded, so an agent can "see" the editor without a display.
-    /// The screen source (AUTHAPI-10) also captures Screen Space - Overlay UI (HUDs) that never renders
-    /// through a camera. Optionally writes the PNG under the project (sandboxed via
+    /// Visual-feedback commands (CLI-199): render the composited game view, a specific camera, or the
+    /// Scene View to a PNG and return it base64-encoded, so an agent can "see" the editor without a
+    /// display. The default game-view source is the screen — the game view's own render target, which
+    /// is what the Game window actually shows, including Screen Space - Overlay UI (HUDs) that never
+    /// renders through a camera. Optionally writes the PNG under the project (sandboxed via
     /// <see cref="ProjectPaths"/>) and refreshes the AssetDatabase.
     ///
     /// Captures require a GPU; in batchmode/headless the device type is
@@ -27,7 +28,7 @@ namespace Unity.Pipeline.Editor.Commands.Capture
     {
         private const int MaxDimension = 4096;
 
-        [CliCommand("capture_game_view", "Render the game view to a PNG. source=camera (default) renders a camera and misses Screen Space - Overlay UI; source=screen captures the composited backbuffer incl. overlay canvases (Play Mode only). Returns it inline as base64, unless save_path is set (path-only result; pass include_inline_image=true to get both).", Tags = new[] { "capture" })]
+        [CliCommand("capture_game_view", "Capture the game view as a PNG. source=screen (default) captures what the Game window shows, incl. Screen Space - Overlay UI; source=camera renders a single camera instead and misses overlay UI. Returns it inline as base64, unless save_path is set (path-only result; pass include_inline_image=true to get both).", Tags = new[] { "capture" })]
         public static CaptureResult CaptureGameView(
             [CliArg("width", "Output width in px (default 1280; capped 4096).")] int width = 1280,
             [CliArg("height", "Output height in px (default 720; capped 4096).")] int height = 720,
@@ -35,9 +36,15 @@ namespace Unity.Pipeline.Editor.Commands.Capture
             [CliArg("save_path", "Optional project-relative path to write the PNG (e.g. Screenshots/foo.png). When set, the result omits the inline base64 image unless include_inline_image=true.")] string savePath = null,
             [CliArg("include_inline_image", "Also return the image inline as base64 when save_path is set (default false: path-only result). Only meaningful together with save_path.")] bool includeInlineImage = false,
             [CliArg("max_resolution", "Cap on the inline image's longest edge (e.g. 512). Only applies when an inline image is returned (no save_path, or save_path + include_inline_image=true); the save_path file keeps the requested resolution.")] int maxResolution = 0,
-            [CliArg("source", "What to capture: 'camera' (default) renders a camera (misses Screen Space - Overlay UI); 'screen' captures the composited game view incl. overlay canvases (HUDs), Play Mode only.")] string source = "camera")
+            [CliArg("source", "What to capture: 'screen' (default) captures the game view's own render target — what the Game window shows, incl. Screen Space - Overlay UI (HUDs) in Play Mode; 'camera' renders a single camera off-screen instead and never sees overlay canvases. Defaults to 'camera' when a camera name is given.")] string source = null)
         {
-            var src = (source ?? "camera").Trim().ToLowerInvariant();
+            // An omitted, empty or whitespace source means the default rather than an error: the
+            // no-argument call is the common one and should just capture the game view. Naming a
+            // camera states the intent unambiguously, so it selects the camera source rather than
+            // being silently ignored by a screen capture.
+            var src = string.IsNullOrWhiteSpace(source)
+                ? (string.IsNullOrEmpty(camera) ? "screen" : "camera")
+                : source.Trim().ToLowerInvariant();
             switch (src)
             {
                 case "camera":
@@ -53,12 +60,6 @@ namespace Unity.Pipeline.Editor.Commands.Capture
                 }
                 case "screen":
                 {
-                    // Overlay UI only composites to the backbuffer at runtime, so screen capture is a
-                    // Play-Mode operation; guard before touching the GPU so the message is deterministic.
-                    if (!Application.isPlaying)
-                        throw new InvalidOperationException(
-                            "capture_game_view with source=\"screen\" requires Play Mode: Screen Space - Overlay UI only composites to the backbuffer at runtime. Use source=\"camera\" in Edit Mode.");
-
                     GuardHasGpu();
 
                     return Capture(EncodeScreenToPng, "screen",
@@ -95,8 +96,8 @@ namespace Unity.Pipeline.Editor.Commands.Capture
         /// is otherwise path-only, so agent tool results stay small (AUTHAPI-8).
         /// <paramref name="maxResolution"/> caps the inline image's longest edge (no-op when no inline
         /// image is returned); the saved file keeps the requested resolution. <paramref name="renderPng"/>
-        /// is the source-specific encoder — camera render (source=camera / scene view) or screen
-        /// backbuffer (source=screen, incl. overlay canvases, AUTHAPI-10).
+        /// is the source-specific encoder — the game view's render target (source=screen, incl.
+        /// overlay canvases) or an off-screen camera render (source=camera / scene view).
         /// </summary>
         private static CaptureResult Capture(Func<int, int, byte[]> renderPng, string source,
             int width, int height, string savePath, bool includeInlineImage, int maxResolution)
@@ -221,8 +222,9 @@ namespace Unity.Pipeline.Editor.Commands.Capture
 
         /// <summary>
         /// Capture the composited game view — including Screen Space - Overlay canvases and other
-        /// screen-space UI that never render through a camera (AUTHAPI-10) — and encode it to PNG,
-        /// scaled to the requested size.
+        /// screen-space UI that never render through a camera — and encode it to PNG, scaled to the
+        /// requested size. Works in Edit Mode as well as Play Mode: the game view keeps a render
+        /// target either way, and overlay UI simply does not exist yet outside Play Mode.
         ///
         /// The primary source is the game view's own render target (see
         /// <see cref="GetGameViewTargetTexture"/>): the most recently rendered game frame at its true
@@ -239,12 +241,22 @@ namespace Unity.Pipeline.Editor.Commands.Capture
             RenderTexture fallbackRt = null;
             try
             {
-                var source = GetGameViewTargetTexture();
+                var source = GetGameViewTargetTexture(out var lookupSucceeded);
+                if (ShouldRefuseScreenCapture(source != null, lookupSucceeded))
+                {
+                    // With no game view render target the ScreenCapture fallback below has nothing
+                    // game-shaped to return: it hands back whichever editor view renders next
+                    // (Hierarchy, Inspector). Refuse instead of returning a wrong image.
+                    throw new InvalidOperationException(
+                        "No Game view render target to capture: open a Game view window, or pass source=\"camera\" to render a camera instead.");
+                }
+
                 if (source == null)
                 {
-                    // Fallback when the internal PlayModeView API is unavailable: ask ScreenCapture for
-                    // the composited view. Less deterministic — when the editor runs unfocused it can
-                    // capture whichever editor view renders next — but keeps the command functional.
+                    // Reached only when the internal PlayModeView API is unavailable, so nothing is
+                    // known about the game view: ask ScreenCapture for the composited view. Less
+                    // deterministic — when the editor runs unfocused it can capture whichever editor
+                    // view renders next — but keeps the command working across API changes.
                     var (screenW, screenH) = GetGameViewTargetSize();
                     fallbackRt = RenderTexture.GetTemporary(screenW, screenH, 0, RenderTextureFormat.ARGB32);
 
@@ -293,33 +305,56 @@ namespace Unity.Pipeline.Editor.Commands.Capture
         }
 
         /// <summary>
+        /// Whether a screen capture must refuse rather than fall back to <c>ScreenCapture</c>: the
+        /// <c>PlayModeView</c> lookup answered and there is no game view render target, so the
+        /// fallback would return an editor panel labelled as a game view capture. A failed lookup
+        /// proves nothing and keeps the fallback.
+        /// </summary>
+        internal static bool ShouldRefuseScreenCapture(bool hasTarget, bool lookupSucceeded)
+            => !hasTarget && lookupSucceeded;
+
+        /// <summary>
         /// The game view's own render target (via the internal <c>PlayModeView</c> API), or null when
-        /// unavailable. This is the most reliable "what the game view shows" source: the
+        /// there is none or the API is unavailable — <paramref name="lookupSucceeded"/> tells the two
+        /// apart. This is the most reliable "what the game view shows" source: the
         /// <c>ScreenCapture</c> APIs capture whichever editor view happens to render, which is
         /// focus-dependent — an unfocused/background editor (the normal state for an agent-driven
         /// editor) can hand back an editor panel (Hierarchy, Inspector) instead of the game. The
         /// target texture holds the game view's most recently rendered frame — overlay canvases
         /// included — at its true pixel resolution, independent of focus and display scaling.
         /// </summary>
-        private static RenderTexture GetGameViewTargetTexture()
+        private static RenderTexture GetGameViewTargetTexture(out bool lookupSucceeded)
         {
+            lookupSucceeded = false;
             try
             {
                 var playModeView = Type.GetType("UnityEditor.PlayModeView,UnityEditor");
                 var getMain = playModeView?.GetMethod("GetMainPlayModeView",
                     BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
-                var view = getMain?.Invoke(null, null);
-                if (view == null)
+                if (getMain == null)
                     return null;
+
+                var view = getMain.Invoke(null, null);
+                if (view == null)
+                {
+                    // The API answered: there is no game view window at all.
+                    lookupSucceeded = true;
+                    return null;
+                }
 
                 var field = playModeView.GetField("m_TargetTexture",
                     BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
-                var rt = field?.GetValue(view) as RenderTexture;
+                if (field == null)
+                    return null;
+
+                lookupSucceeded = true;
+                var rt = field.GetValue(view) as RenderTexture;
                 return rt != null && rt.IsCreated() ? rt : null;
             }
             catch
             {
                 // Internal API changed — callers fall back to the ScreenCapture path.
+                lookupSucceeded = false;
                 return null;
             }
         }

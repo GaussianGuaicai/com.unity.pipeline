@@ -64,7 +64,7 @@ Status of the last async package operation (add/remove/resolve): idle | in_progr
 
 No parameters.
 
-**Returns:** `string`
+**Returns:** `object`
 **Notes:** `MainThreadRequired = false`. Reads a Temp status file that survives the domain reload an add/remove/resolve triggers, so a lost synchronous reply or an interrupted async op is recoverable by polling. Returns `{"status":"idle"}` when no operation has run.
 
 See [Creating commands](../creating-commands.md) and [Connectivity](../connectivity.md).

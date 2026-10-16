@@ -10,11 +10,12 @@ development Player) over a local HTTP API by executing registered commands.
 | [Creating commands](creating-commands.md) | The command-authoring API: `[CliCommand]`/`[CliArg]`, the handler + response pattern, and the `MainThreadRequired` / `RuntimeOnly` flags. |
 | [Creating authoring commands](authoring-commands.md) | Building content-authoring commands: the authoring root sandbox, `ObjectRef` in / `AuthoringResult` out, and undo grouping — with a worked example for a new content type. |
 | [Safety & mutations](safety-and-mutations.md) | Conventions shared by state-changing commands: the `confirm`/`dry_run` gate, Undo grouping via `AuthoringUndoScope`, and the path sandbox. |
-| [Connectivity](connectivity.md) | How servers bind localhost, the port ranges, the port/descriptor file, and the bearer-token auth workflow. |
+| [Connectivity](connectivity.md) | How servers bind the loopback address, the port ranges, the port/descriptor file, and the bearer-token auth workflow. |
 | [Runtime connection & setup](runtime-setup.md) | Running the server in a development Player via Project Settings → Pipeline → Runtime and the dev-build gating. |
-| [Hot reload](hot-reload.md) | The two hot-reload flavors (in-place and override) with examples, plus the Roslyn / in-memory-assembly architecture. |
+| [Reloading code](code-reload.md) | Updating `[CodeReload]` methods in a running game: the `Assembly.Load` and interpreter backends, supported changes, the watcher, and how the woven dispatch works. |
 | [Tests architecture](testing.md) | Writing command tests via `PipelineClient` (over HTTP) and via direct command calls. |
 | [Analytics](analytics.md) | The three usage events the Editor server reports, what each field means, and what is deliberately not collected. |
+| [Samples](samples.md) | Where the samples live (`com.unity.pipeline.samples`), how to add the package and import a sample, and what each one demonstrates. |
 
 ## Command reference
 
@@ -34,7 +35,7 @@ development Player) over a local HTTP API by executing registered commands.
 | [Project settings commands](commands/project-settings.md) | Read / change Audio, Graphics, Input, Physics, Player, Quality, Tags & Layers, and Time settings (`get_*`/`set_*`, gated by `confirm`/`dry_run`). |
 | [Package Manager commands](commands/package-manager.md) | List / search / add / remove / resolve UPM packages and poll operation status. |
 | [Editor lifecycle & observability commands](commands/editor-lifecycle-and-observability.md) | Play / stop / pause, focus, menus, screenshots, console logs, performance stats, authoring root. |
-| [Runtime commands](commands/runtime.md) | Player-side commands: status, quit, frame rate, time scale, log, console, eval, hot reload. |
+| [Runtime commands](commands/runtime.md) | Player-side commands: status, quit, frame rate, time scale, log, console, eval, code reload. |
 
 ## Command index
 
@@ -174,7 +175,7 @@ Every available command, grouped by area. Each name links to its full reference 
 
 | Command | Description |
 |---------|-------------|
-| [`capture_game_view`](commands/capture.md#capture_game_view) | Render a camera to a PNG (base64). |
+| [`capture_game_view`](commands/capture.md#capture_game_view) | Capture the game view to a PNG (base64). |
 | [`capture_scene_view`](commands/capture.md#capture_scene_view) | Render the Scene View to a PNG (base64). |
 | [`capture_editor_element`](commands/capture.md#capture_editor_element) | Capture a UI Toolkit element from an EditorWindow (6000.7+). |
 | [`capture_runtime_element`](commands/capture.md#capture_runtime_element) | Capture a UI Toolkit element from a runtime panel (6000.7+). |
@@ -242,8 +243,6 @@ Every available command, grouped by area. Each name links to its full reference 
 | [`menu`](commands/editor-lifecycle-and-observability.md#menu) | Execute (or list) Editor menu items. |
 | [`screenshot`](commands/editor-lifecycle-and-observability.md#screenshot) | Capture Scene / Game view to a PNG file. |
 | [`set_autotick`](commands/editor-lifecycle-and-observability.md#set_autotick) | Keep the editor ticking while unfocused. |
-| [`get_console_logs`](commands/editor-lifecycle-and-observability.md#get_console_logs) | Read captured Editor console logs. |
-| [`clear_console`](commands/editor-lifecycle-and-observability.md#clear_console) | Clear the console / log buffer. |
 | [`get_performance_stats`](commands/editor-lifecycle-and-observability.md#get_performance_stats) | Read render / memory / frame stats. |
 | [`audit`](commands/editor-lifecycle-and-observability.md#audit) | Run a Project Auditor scan, producing a CSV of issues. |
 | [`audit_status`](commands/editor-lifecycle-and-observability.md#audit_status) | Poll the audit scan; returns the CSV path + issue count. |
@@ -263,10 +262,12 @@ Every available command, grouped by area. Each name links to its full reference 
 | [`simulate_pointer`](commands/runtime.md#simulate_pointer) | Simulate a pointer event (Input System). |
 | [`log`](commands/runtime.md#log) | Write a message to the Unity console. |
 | [`console`](commands/runtime.md#console) | Read captured console output. |
+| [`console_status`](commands/runtime.md#console_status) | Console counters and compile-failure flag, without the entries. |
+| [`clear_console`](commands/runtime.md#clear_console) | Clear the console / log buffer. |
 | [`eval`](commands/runtime.md#eval) | Evaluate C# via Roslyn. |
 | [`eval_file`](commands/runtime.md#eval_file) | Evaluate C# from a .cs file. |
-| [`reload_file`](commands/runtime.md#reload_file) | Apply in-place [HotReload] edits from a file. |
+| [`reload_file`](commands/runtime.md#reload_file) | Apply [CodeReload] edits from a file. |
 | [`reload_file_editor_interpreter`](commands/runtime.md#reload_file_editor_interpreter) | Same, on the IlInterpreter backend (IL2CPP-safe). |
-| [`reload_file_override`](commands/runtime.md#reload_file_override) | Compile & apply override hot reload. |
-| [`hotreload_status`](commands/runtime.md#hotreload_status) | Hot reload registry status. |
-| [`cleanup_hotreload`](commands/runtime.md#cleanup_hotreload) | Clear old hot reload DLLs / registry. |
+| [`reload_file_player_interpreter`](commands/runtime.md#reload_file_player_interpreter) | Compile in the Editor and push [CodeReload] edits to connected players (IL2CPP-safe). |
+| [`codereload_status`](commands/runtime.md#codereload_status) | Code reload registry status. |
+| [`cleanup_codereload`](commands/runtime.md#cleanup_codereload) | Clear old code reload DLLs / registry. |

@@ -18,9 +18,9 @@ namespace Unity.Pipeline.Editor.BuildProcessors
     ///    RuntimePipelineConfig.Load()) before allowing builds with runtime Pipeline enabled.
     ///  - Bakes the current settings into a transient RuntimePipelineConfig Resources asset so a
     ///    Player build can find them (the authored copy stays in ProjectSettings/, never here).
-    ///  - Bakes the project's hot reload scope (Assets + loaded package locations) into a
+    ///  - Bakes the project's code reload scope (Assets + loaded package locations) into a
     ///    generated RuntimePipelineBuildInfo asset. A running Player cannot resolve the project
-    ///    layout, so the absolute roots it is allowed to hot reload from must be captured at build
+    ///    layout, so the absolute roots it is allowed to code reload from must be captured at build
     ///    time.
     ///  Both generated assets are purged at the very start of every build (before either is
     ///  possibly rewritten) and deleted again after a successful build, so machine-specific/
@@ -40,11 +40,11 @@ namespace Unity.Pipeline.Editor.BuildProcessors
         private const string ConfigAssetPath = "Assets/Settings/Pipeline/Resources/RuntimePipelineConfig.asset";
         private const string BuildInfoAssetPath = "Assets/Settings/Pipeline/Resources/RuntimePipelineBuildInfo.asset";
 
-        // EditorUtility.DisplayDialogComplex's choice indices, deliberately untested: popping the
-        // real dialog from an EditMode test would block the live Editor waiting for a click nobody
-        // can give. Verified manually instead.
-        private const int DialogChoiceCancel = 1;
-        private const int DialogChoiceDisablePipeline = 2;
+        // Opt-in symbol that puts the Pipeline into a build that is not a Development Build. Kept in
+        // step with the defineConstraints on Unity.Pipeline / Unity.Pipeline.IlInterpreter and on the
+        // bundled DLLs under Runtime/Plugins/CodeAnalysis: if this file and those disagree, a player
+        // gets settings assets no code can read, or Pipeline code with no settings to start from.
+        private const string EnableSymbol = "ENABLE_RUNTIME_PIPELINE";
 
         /// <summary>Verify bundled DLL integrity and validate runtime pipeline configuration before a build.</summary>
 #if UNITY_6000_3_OR_NEWER
@@ -56,9 +56,9 @@ namespace Unity.Pipeline.Editor.BuildProcessors
 #endif
         {
             // Purge any leftovers from a previous, interrupted build before anything else in this
-            // method — every exit path below (no config, disabled, validation failure, dialog
-            // Cancel, dialog "Disable Pipeline") must start from a clean slate. OnPostprocessBuild
-            // is not invoked for a failed/cancelled build, so it can never be relied on for this;
+            // method — every exit path below (no config, disabled, not a development build,
+            // validation failure) must start from a clean slate. OnPostprocessBuild is not invoked
+            // for a failed/cancelled build, so it can never be relied on for this;
             // this purge is the only mechanism that actually guarantees it. Without it, a stale
             // *enabled* asset left by an earlier interrupted build would still get packaged into a
             // build that is supposed to have Pipeline disabled.
@@ -82,6 +82,16 @@ namespace Unity.Pipeline.Editor.BuildProcessors
                     return;
                 }
 
+                // A build that will not contain the Pipeline assemblies cannot read the generated
+                // Resources assets, so baking them would ship dead, machine-specific data.
+                if (!PipelineIsInBuild())
+                {
+                    Debug.Log("Pipeline: enableInBuilds is on, but this build is neither a Development " +
+                        $"Build nor defines {EnableSymbol}, so the Pipeline assemblies and settings are " +
+                        "excluded from it.");
+                    return;
+                }
+
                 var validationResult = config.Validate();
                 if (!validationResult.IsValid)
                 {
@@ -93,51 +103,14 @@ namespace Unity.Pipeline.Editor.BuildProcessors
                     Debug.LogWarning($"Pipeline: Runtime configuration warning: {validationResult.Message}");
                 }
 
-                // Independent of config validity: enableInBuilds ships the Pipeline HTTP server
-                // (including remote code execution) in whatever build this is. A non-development
-                // build is a release build, so warn regardless of whether the port/etc. also
-                // happened to warn.
-                if (!EditorUserBuildSettings.development)
-                {
-                    const string message = "SECURITY RISK: enableInBuilds is on but this is not a Development " +
-                        "Build. The Pipeline HTTP server, including remote code execution, will ship in this " +
-                        "RELEASE build.";
-                    Debug.LogWarning($"Pipeline: {message}");
-
-                    // A modal dialog would hang forever in a headless/CI build (this package's
-                    // primary use case), so only prompt for an interactive, human-triggered build.
-                    if (!Application.isBatchMode)
-                    {
-                        var choice = EditorUtility.DisplayDialogComplex("Pipeline: Security Risk", message,
-                            "Continue", "Cancel", "Disable Pipeline");
-
-                        if (choice == DialogChoiceCancel)
-                        {
-                            throw new BuildFailedException(
-                                "Pipeline: build cancelled — enableInBuilds was on without a Development Build.");
-                        }
-
-                        if (choice == DialogChoiceDisablePipeline)
-                        {
-                            config.enableInBuilds = false;
-                            config.Save();
-                            Debug.LogWarning("Pipeline: Runtime server disabled for this build (and persisted " +
-                                "to Project Settings > Pipeline > Runtime) in response to the security dialog.");
-                            return;
-                        }
-
-                        // DialogChoiceContinue: fall through and build with the Pipeline enabled as configured.
-                    }
-                }
-
                 // Push signing: ensure the project key exists and bake its public half into the
-                // build info, so the player rejects any hot-reload push not signed by the matching
+                // build info, so the player rejects any code-reload push not signed by the matching
                 // private key. Log the fingerprint so a later key mismatch is diagnosable from the
                 // build log alone.
                 var privateKey = PushSigningKey.LoadOrCreate(PushSigningKey.DefaultDirectory, out var keyCreated);
-                var pushPublicKey = Unity.Pipeline.HotReload.PushEnvelope.DerivePublicKey(privateKey);
+                var pushPublicKey = Unity.Pipeline.CodeReload.PushEnvelope.DerivePublicKey(privateKey);
                 Debug.Log($"Pipeline: push-signing key {(keyCreated ? "GENERATED" : "loaded")} " +
-                          $"(fingerprint {Unity.Pipeline.HotReload.PushEnvelope.Fingerprint(pushPublicKey)}, " +
+                          $"(fingerprint {Unity.Pipeline.CodeReload.PushEnvelope.Fingerprint(pushPublicKey)}, " +
                           $"Library/Pipeline/{PushSigningKey.KeyFileName}). This build only accepts pushes signed with it.");
 
                 WriteConfigAsset(config);
@@ -151,13 +124,46 @@ namespace Unity.Pipeline.Editor.BuildProcessors
             }
         }
 
+        /// <summary>
+        /// Whether this build will contain the Pipeline runtime assemblies, i.e. whether it satisfies
+        /// their <c>UNITY_EDITOR || ENABLE_PROFILER || ENABLE_RUNTIME_PIPELINE</c> define
+        /// constraint. A scripted build (the <c>build</c> command, which calls BuildPlayer with
+        /// <see cref="BuildOptions.Development"/>) is a development build even when the Build
+        /// Settings toggle is off, so the command's active options count too.
+        /// </summary>
+        private static bool PipelineIsInBuild()
+        {
+            var namedTarget = NamedBuildTarget.FromBuildTargetGroup(
+                BuildPipeline.GetBuildTargetGroup(EditorUserBuildSettings.activeBuildTarget));
+
+            if (EditorUserBuildSettings.development)
+                return true;
+
+            if (Commands.Build.BuildCommand.ActiveScriptedBuildOptions is { } scriptedOptions
+                && (scriptedOptions & BuildOptions.Development) != 0)
+                return true;
+
+#if UNITY_6000_6_OR_NEWER
+            // ENABLE_PROFILER is emitted for "buildingForEditor || developmentBuild ||
+            // buildingWithInstrumentation", and from 6000.6 that last term is the managed code
+            // variant -- set independently of the Development Build toggle above, and carrying
+            // instrumentation for Debug, Checked and Instrumented alike. It defaults to Release, so
+            // this only admits a project that opted into one of the other three.
+            if (PlayerSettings.GetManagedCodeVariant(namedTarget) <= ManagedCodeVariant.Instrumented)
+                return true;
+#endif
+
+            var defines = PlayerSettings.GetScriptingDefineSymbols(namedTarget);
+            return defines != null && defines.Split(';').Any(d => d.Trim() == EnableSymbol);
+        }
+
         public void OnPostprocessBuild(BuildReport report)
         {
             DeleteGeneratedAssetsIfPresent();
         }
 
         /// <summary>
-        /// Absolute roots considered in-scope for runtime hot reload: the project's Assets folder
+        /// Absolute roots considered in-scope for runtime code reload: the project's Assets folder
         /// plus the resolved location of every package loaded into the project (a local package may
         /// live anywhere on disk, not only under Packages).
         /// </summary>
@@ -260,24 +266,42 @@ namespace Unity.Pipeline.Editor.BuildProcessors
         /// </summary>
         public static void VerifyBundledChecksums()
         {
-            var packageInfo = UnityEditor.PackageManager.PackageInfo.FindForAssembly(
-                typeof(PipelineRuntimeBuildProcessor).Assembly);
-
-            if (packageInfo == null || string.IsNullOrEmpty(packageInfo.resolvedPath))
+            if (!TryGetBundledCodeAnalysisPaths(out var codeAnalysisDir, out var checksumsPath))
             {
                 throw new BuildFailedException(
                     "Pipeline: could not locate the com.unity.pipeline package on disk to verify " +
                     "bundled Roslyn DLL integrity. Aborting build.");
             }
 
-            var codeAnalysisDir = Path.Combine(packageInfo.resolvedPath, CodeAnalysisRelDir);
-            var checksumsPath = Path.Combine(codeAnalysisDir, ChecksumsFileName);
-
             var error = VerifyChecksums(codeAnalysisDir, checksumsPath);
             if (error != null)
             {
                 throw new BuildFailedException($"Pipeline: bundled Roslyn DLL integrity check failed. {error}");
             }
+        }
+
+        /// <summary>
+        /// Resolve the bundled Roslyn DLL folder and its CHECKSUMS manifest from this package's
+        /// location on disk. Returns false when the package cannot be located, in which case both
+        /// out parameters are null.
+        /// </summary>
+        /// <param name="codeAnalysisDir">Directory holding the bundled Roslyn DLLs.</param>
+        /// <param name="checksumsPath">Path to the CHECKSUMS manifest inside that directory.</param>
+        /// <returns>True when the package was located and both paths were resolved.</returns>
+        public static bool TryGetBundledCodeAnalysisPaths(out string codeAnalysisDir, out string checksumsPath)
+        {
+            codeAnalysisDir = null;
+            checksumsPath = null;
+
+            var packageInfo = UnityEditor.PackageManager.PackageInfo.FindForAssembly(
+                typeof(PipelineRuntimeBuildProcessor).Assembly);
+
+            if (packageInfo == null || string.IsNullOrEmpty(packageInfo.resolvedPath))
+                return false;
+
+            codeAnalysisDir = Path.Combine(packageInfo.resolvedPath, CodeAnalysisRelDir);
+            checksumsPath = Path.Combine(codeAnalysisDir, ChecksumsFileName);
+            return true;
         }
 
         /// <summary>

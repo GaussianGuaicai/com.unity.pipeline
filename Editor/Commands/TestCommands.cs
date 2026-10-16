@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using Newtonsoft.Json.Linq;
 using Unity.Pipeline.Commands;
 using Unity.Pipeline.Editor.Testing;
 using Unity.Pipeline.Models;
@@ -97,10 +98,12 @@ namespace Unity.Pipeline.Editor.Commands
         /// Get current test status for async test execution
         /// </summary>
         [CliCommand("test_status", "Get status of running async test execution", MainThreadRequired = false, Tags = new[] { "tests" })]
-        public static string GetTestStatus()
+        public static JToken GetTestStatus()
         {
             var status = PipelineTestRunner.GetTestStatus();
-            return status ?? "{\"status\":\"no_tests\",\"message\":\"No test run in progress\"}";
+            return status != null
+                ? StatusFileReader.Parse(status)
+                : new JObject { ["status"] = "no_tests", ["message"] = "No test run in progress" };
         }
 
         /// <summary>

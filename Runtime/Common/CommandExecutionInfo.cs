@@ -44,7 +44,7 @@ namespace Unity.Pipeline
 
         /// <summary>
         /// Whether the command reported success. False when it threw AND when it returned a
-        /// response carrying its own failure (eval, hot reload and test runs all do the latter).
+        /// response carrying its own failure (eval, code reload and test runs all do the latter).
         /// Meaningless when <see cref="Command"/> is null.
         /// </summary>
         public bool Success { get; }

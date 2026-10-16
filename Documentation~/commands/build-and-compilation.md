@@ -25,7 +25,7 @@ Status of the current/most recent build: idle | queued | building | completed, w
 
 No parameters.
 
-**Returns:** `string` (JSON). `idle` when no build has run; `queued`/`building` (the latter with live `elapsedMs`) while in progress; a full `BuildReportResult` once `completed`.
+**Returns:** `object`. `idle` when no build has run; `queued`/`building` (the latter with live `elapsedMs`) while in progress; a full `BuildReportResult` once `completed`.
 
 `BuildReportResult` fields (returned when `status` is `completed`):
 
@@ -63,7 +63,7 @@ Status of the last target switch: idle | switching | completed (with success + a
 
 No parameters.
 
-**Returns:** `string` (JSON). `idle`, `switching`, or `completed` (with `success` and `activeBuildTarget`, or `errors` on failure).
+**Returns:** `object`. `idle`, `switching`, or `completed` (with `success` and `activeBuildTarget`, or `errors` on failure).
 **Notes:** `MainThreadRequired = false`. Reads a Temp status file off-thread, so it keeps answering while the switch holds the main thread.
 
 ### `list_build_targets`
@@ -141,7 +141,7 @@ Get the status of the last recompile: idle | triggered | compiling | completed |
 
 No parameters.
 
-**Returns:** `string`
+**Returns:** `object` — `status`, `failed`, `errors`, `compilationFailed`.
 **Notes:** `MainThreadRequired = false`.
 
 ### `list_tests`
@@ -174,7 +174,7 @@ Get status of running async test execution.
 
 No parameters.
 
-**Returns:** `string`
+**Returns:** `object` — the run's status payload, or `{"status":"no_tests"}` when no run is in progress.
 **Notes:** `MainThreadRequired = false`.
 
 ### `cancel_tests`

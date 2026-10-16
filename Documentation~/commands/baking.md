@@ -17,7 +17,7 @@ Trigger an async lightmap bake of the open scene(s) via Lightmapping.BakeAsync()
 ### `lighting_bake_status`
 Get the status of the last lighting bake: idle | baking | completed.
 
-**Returns:** `string`
+**Returns:** `object` — the bake's status payload, or `{"status":"idle"}` before the first bake.
 
 ### `cancel_lighting_bake`
 Cancel an in-progress lighting bake (Lightmapping.Cancel()).
@@ -65,7 +65,7 @@ Trigger an async legacy NavMesh bake of the open scene(s) via UnityEditor.AI.Nav
 ### `navmesh_bake_status`
 Get the status of the last NavMesh bake: idle | baking | completed.
 
-**Returns:** `string`
+**Returns:** `object` — the bake's status payload, or `{"status":"idle"}` before the first bake.
 
 ### `cancel_navmesh_bake`
 Cancel an in-progress NavMesh bake (NavMeshBuilder.Cancel()).
@@ -120,7 +120,7 @@ Trigger an async occlusion-culling bake of the open scene(s) via StaticOcclusion
 ### `occlusion_bake_status`
 Get the status of the last occlusion bake: idle | baking | completed.
 
-**Returns:** `string`
+**Returns:** `object` — the bake's status payload, or `{"status":"idle"}` before the first bake.
 
 ### `cancel_occlusion_bake`
 Cancel an in-progress occlusion bake (StaticOcclusionCulling.Cancel()).

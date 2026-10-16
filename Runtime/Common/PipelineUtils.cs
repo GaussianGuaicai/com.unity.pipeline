@@ -2,9 +2,6 @@ using System.Collections.Generic;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using UnityEngine;
-#if UNITY_6000_3_OR_NEWER
-using UnityEngine.Assemblies;
-#endif
 
 namespace Unity.Pipeline
 {
@@ -163,7 +160,7 @@ namespace Unity.Pipeline
 #endif
         }
 
-        /// <summary>Load a compiled assembly from raw bytes (used by the hot-reload/eval compilers).</summary>
+        /// <summary>Load a compiled assembly from raw bytes (used by the code-reload/eval compilers).</summary>
         /// <param name="bytes">The assembly image.</param>
         /// <param name="pdb">The matching portable PDB, if any.</param>
         /// <returns>The loaded assembly.</returns>
@@ -193,7 +190,7 @@ namespace Unity.Pipeline
         public static IReadOnlyList<System.Reflection.Assembly> GetLoadedAssemblies()
         {
 #if UNITY_6000_5_OR_NEWER
-            return CurrentAssemblies.GetLoadedAssemblies();
+            return UnityEngine.Assemblies.CurrentAssemblies.GetLoadedAssemblies();
 #else
             return System.AppDomain.CurrentDomain.GetAssemblies();
 #endif

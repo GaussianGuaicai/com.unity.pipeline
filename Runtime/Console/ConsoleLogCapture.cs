@@ -1,4 +1,6 @@
 using System;
+using System.Threading;
+using Unity.Pipeline.Models;
 using UnityEngine;
 #if UNITY_6000_5_OR_NEWER
 using Unity.Scripting.LifecycleManagement;
@@ -36,9 +38,24 @@ namespace Unity.Pipeline.Console
     {
         static readonly ConsoleLogBuffer s_Buffer = new ConsoleLogBuffer();
         static readonly object s_SubscriptionLock = new object();
+        static ConsoleGroundTruth s_GroundTruth;
 
         /// <summary>The shared buffer holding captured console entries.</summary>
         internal static ConsoleLogBuffer Buffer => s_Buffer;
+
+        /// <summary>
+        /// The last Editor ground-truth sample, or null outside the Editor and before the first
+        /// sample. Written on the main thread by the Editor sampler and read from request threads,
+        /// so the console command can report it while staying off the main thread — which is the
+        /// point, since clients poll it while the Editor is busy compiling or importing. The
+        /// snapshot is immutable once published, so a reference swap is all the synchronization a
+        /// reader needs.
+        /// </summary>
+        internal static ConsoleGroundTruth GroundTruth
+        {
+            get => Volatile.Read(ref s_GroundTruth);
+            set => Volatile.Write(ref s_GroundTruth, value);
+        }
 
         /// <summary>
         /// Player entry point. Runs as the application boots so console output is captured from the

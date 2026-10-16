@@ -67,19 +67,40 @@ The [port descriptor file](#port-descriptor-file) is the primary discovery chann
 
 ## Loopback-only binding
 
-Both the Editor and Runtime servers bind to the **IPv4 loopback** (`127.0.0.1`) — plus the `localhost` hostname for compatibility:
+Both the Editor and Runtime servers register a single listener prefix, the **IPv4 loopback literal**:
 
 ```csharp
-if (Socket.OSSupportsIPv4)
-    m_HttpListener.Prefixes.Add($"http://127.0.0.1:{m_Port}/");
-m_HttpListener.Prefixes.Add($"http://localhost:{m_Port}/");
+m_HttpListener.Prefixes.Add($"http://127.0.0.1:{m_Port}/");
 ```
 
-The server is never exposed on a routable interface — it is reachable only from the same machine.
+The socket is therefore bound to `127.0.0.1` and is not reachable from another machine. This matters
+more than it would for most servers, because `/api/exec` runs arbitrary code.
 
-Clients should connect to **`127.0.0.1`** explicitly rather than `localhost`. Unity's Mono `HttpListener` only reliably serves the IPv4 loopback: a request arriving over the IPv6 loopback (`::1`) is answered with `400` because Mono mis-parses the bracketed `[::1]` host. Since `localhost` resolves to `::1` or `127.0.0.1` non-deterministically (notably on Windows with Node's default DNS order), dialing `localhost` caused intermittent connection failures — dialing `127.0.0.1` avoids the IPv6 path entirely.
+The prefix host is what chooses the socket address, and only an IP literal is safe. Unity's Mono ships
+`HttpListener` as managed code over a plain socket, with no http.sys and therefore no URL ACL to fall
+back on: `+` and `*` both resolve to `IPAddress.Any` — a bind on **every** interface — and a
+hostname such as `localhost` is resolved through DNS, falling back to `IPAddress.Any` when resolution
+fails.
 
-In addition, the server refuses any request that carries an `Origin` header (legitimate CLI/CI clients never send one), which blocks a browser page from reaching the local server and short-circuits CORS preflights. The Editor server can opt into the single exception: enabling **Allow Browser Clients** in the pipeline settings asset (`Window/Pipeline/Settings...`, applies on next start) admits `Origin: null`, the opaque origin a sandboxed browser frame reports, and answers that client's CORS preflight. An ordinary page sends its real origin and is still refused, and a sandboxed one still needs the bearer token.
+As a second line of defence the server also rejects any request whose remote endpoint is not a loopback
+address, before authentication and before routing. With the socket bound to `127.0.0.1` that check
+should never fire; it covers a widened prefix and a hop that re-sources a connection as loopback.
+
+In addition, the server refuses any request that carries an `Origin` header (legitimate CLI/CI clients never send one), which blocks a browser page from reaching the local server and short-circuits CORS preflights. The Editor server can opt into the single exception: enabling **Allow Browser Clients** in **Project Settings > Pipeline > Editor** (applies on next start) admits `Origin: null`, the opaque origin a sandboxed browser frame reports, and answers that client's CORS preflight. An ordinary page sends its real origin and is still refused, and a sandboxed one still needs the bearer token.
+
+### Clients must dial `127.0.0.1`
+
+Mono matches a request's `Host` header **literally** against the registered prefix, so `127.0.0.1` is
+the only spelling the server answers. A request carrying `Host: localhost` is answered `400`, even
+though it arrived on the loopback.
+
+Compose the base URL as `http://127.0.0.1:<port>/` from the descriptor's `port` — never from
+`localhost`, whichever way the host happens to resolve it.
+
+IPv6 plays no part: Mono mis-parses a bracketed `[::1]` host and cannot serve the IPv6 loopback
+whichever prefix is registered. Since `localhost` resolves to `::1` or `127.0.0.1` non-deterministically
+(notably on Windows with Node's default DNS order), dialing it was already a source of intermittent
+connection failures — `127.0.0.1` avoids the IPv6 path entirely.
 
 ## Port ranges
 
@@ -107,6 +128,7 @@ The Runtime descriptor is written next to the Player, at `{Application.dataPath}
 
 - **Windows / Linux** — beside the executable, e.g. `C:\Builds\MyGame\.unity-pipeline-runtime-port`.
 - **macOS** — `Application.dataPath` is `<Game>.app/Contents`, so the descriptor lands at the **`.app` bundle root**: `MyGame.app/.unity-pipeline-runtime-port`. (The file is inside the `.app` bundle.) This is why `unity command --runtime-path` takes the `.app` bundle path on macOS — see [Runtime connection & setup](runtime-setup.md).
+- **Android** — `Application.dataPath` points inside the read-only APK install directory, so the descriptor is written to `Application.persistentDataPath` instead: `<persistentDataPath>/.unity-pipeline-runtime-port`.
 
 > Test servers do **not** write a descriptor (they override `WritesDescriptor => false`) — the test already knows its port, so it never clobbers the live server's file. See [Tests architecture](testing.md).
 
@@ -174,7 +196,7 @@ A client connects by:
 
 1. Reading the descriptor file (editor: `Library/Pipeline/.unity-pipeline-port`).
 2. Taking the `port` and `evalToken` from it.
-3. Sending requests to `http://127.0.0.1:<port>/...` with `Authorization: Bearer <evalToken>`.
+3. Sending requests to `http://127.0.0.1:<port>/...` with `Authorization: Bearer <evalToken>`. The host must be `127.0.0.1`.
 
 Endpoints exposed by the server include `/api/status`, `/api/editor_status`, `/api/dialog`, `/api/commands` (lists available commands), `/api/exec` (POST — runs a command), `/api/test-status`, and `/api/progress`.
 
@@ -273,11 +295,11 @@ Coverage is mechanism-based: native message boxes and `EditorWindow` modals are 
 
 `/api/commands` accepts optional query parameters for discovery:
 
-- `detail` — `full` (the **default**) returns the complete command metadata including `parameters` and the generated `schema`; `compact` returns a lightweight index per command (`name`, `description`, `tags`, `package`). The recommended discovery flow is to browse the compact index first, then request full detail only for the few commands you intend to invoke.
+- `detail` — `full` (the **default**) returns the complete command metadata including `parameters` and the generated `schema`; `compact` returns a lightweight index per command (`name`, `description`, `tags`, `package`); `tags` returns a **tag index** instead of commands (see below). The recommended discovery flow is to start from the tag index, list one tag's commands with `tag=`, then request full detail only for the few commands you intend to invoke.
 - `query` — case-insensitive substring match on a command's name, description, or any tag.
 - `tag` — scope results to a tag subtree via segment-aware prefix match (`tag=assets` matches `assets` and `assets/import`, not `assetsx`).
-- `group_by` — `flat` (the default) returns a `commands` array; `package` or `tag` return a `groups` array instead (`tag` is a nested tree mirroring the tag/subtag hierarchy; untagged commands land in a node with an empty tag).
-- `sort` — `name` (the default) or `package` (originating package, with name as tiebreak).
+- `group_by` — `flat` (the default) returns a `commands` array; `package` or `tag` return a `groups` array instead (`tag` is a nested tree mirroring the tag/subtag hierarchy; untagged commands land in a node with an empty tag). Combining it with `detail=tags` is rejected with `400`: a tag index is already one row per tag.
+- `sort` — `name` (the default) or `package` (originating package, with name as tiebreak). Combining `package` with `detail=tags` is rejected with `400`: a tag is not owned by a package.
 - `order` — `asc` (the default) or `desc`. Applies to the chosen `sort`; sorting happens on the flat list before pagination and grouping.
 - `offset` / `limit` — paginate the filtered, sorted list. Both apply to the flat list *before* grouping, so pages stay deterministic. `offset` skips that many matches (default `0`); `limit` caps how many are returned (default: no cap). A client has seen everything once `offset + count` reaches `total`.
 
@@ -289,10 +311,11 @@ Every response carries the pagination counters plus a `server` block. The comman
 
 | Field | Meaning |
 |---|---|
-| `commands` | The page of commands. Present only when `group_by=flat` (the default). |
+| `commands` | The page of commands. Present only when `group_by=flat` (the default) and `detail` is not `tags`. |
 | `groups` | Present *instead of* `commands` when `group_by=package` or `group_by=tag`. |
-| `count` | How many commands this page actually returned. |
-| `total` | How many commands matched the filters, **before** `offset`/`limit` were applied. |
+| `tags` | Present *instead of* `commands` when `detail=tags`: one `{tag, count}` row per distinct tag. |
+| `count` | How many rows this page actually returned — commands, or tags under `detail=tags`. |
+| `total` | How many rows matched the filters, **before** `offset`/`limit` were applied — matching commands, or distinct tags under `detail=tags`. |
 | `offset` | Echo of the requested `offset` (`0` when not supplied). |
 | `limit` | Echo of the requested `limit` (`null` when not supplied — no cap). |
 | `server` | The responding server's `version`, `port`, and `startTime`. |
@@ -379,6 +402,30 @@ Under `group_by=tag` the same envelope carries a nested `groups` tree instead. T
 ```
 
 `group_by=package` uses the same envelope with flatter nodes — `{ "package": "Unity.Pipeline.Editor", "count": 2, "commands": [ ... ] }`, with no `children`.
+
+`detail=tags` answers "what is there to browse" in one small response. Each row is a distinct tag
+path and its **subtree** count, so a row's `count` is exactly what a follow-up `tag=<that tag>`
+request returns. The rows are ordinal-sorted (`order=desc` reverses them) and `offset`/`limit`
+page them; the other filters compose, so `detail=tags&query=prefab` answers "which tags have
+prefab-ish commands". `GET /api/commands?detail=tags`:
+
+```json
+{
+  "tags": [
+    { "tag": "assets", "count": 12 },
+    { "tag": "assets/import", "count": 3 },
+    { "tag": "assets/text", "count": 2 }
+  ],
+  "count": 50,
+  "total": 50,
+  "offset": 0,
+  "limit": null,
+  "server": { "version": "0.7.0", "port": 7801, "startTime": "..." }
+}
+```
+
+A command carrying several tags is counted under each of them, so the counts do not sum to the
+catalog size.
 
 ## Executing a command (`POST /api/exec`)
 

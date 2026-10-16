@@ -31,7 +31,7 @@ namespace Unity.Pipeline.Runtime.Commands
     static class RuntimeInputCommand
     {
         [CliCommand("simulate_key", "Simulate a keyboard key event (Input System). Drives the running app.",
-            MainThreadRequired = true, RuntimeOnly = true,
+            MainThreadRequired = true,
             Tags = new[] { "runtime/input" })]
         public static InputSimulationResponse SimulateKey(
             [CliArg("key", "Input System Key name, e.g. Space, W, Enter, LeftArrow", Required = true)] string key,
@@ -72,7 +72,7 @@ namespace Unity.Pipeline.Runtime.Commands
         }
 
         [CliCommand("simulate_pointer", "Simulate a mouse/pointer event at screen coordinates (Input System).",
-            MainThreadRequired = true, RuntimeOnly = true,
+            MainThreadRequired = true,
             Tags = new[] { "runtime/input" })]
         public static InputSimulationResponse SimulatePointer(
             [CliArg("x", "Screen X in pixels (origin bottom-left)", Required = true)] float x,
@@ -175,8 +175,24 @@ namespace Unity.Pipeline.Runtime.Commands
             {
                 Success = false,
                 Command = command,
-                Error = "Input simulation requires the Input System package to be present and active " +
-                        "(ENABLE_INPUT_SYSTEM). Legacy input injection is not supported."
+                Error = UnavailableReason
             };
+
+        // Two causes, two different remedies, so they get two different messages.
+        // PIPELINE_HAS_INPUT_SYSTEM_PACKAGE comes from the versionDefines entry on
+        // Unity.Pipeline.asmdef and means com.unity.inputsystem is installed. ENABLE_INPUT_SYSTEM is
+        // Unity's own define, set only when Active Input Handling actually includes the new system.
+        // The package installed but excluded by the handler is a settings fix, not an install.
+        internal static readonly string UnavailableReason =
+#if PIPELINE_HAS_INPUT_SYSTEM_PACKAGE
+            "Input simulation requires Active Input Handling to include the Input System. The " +
+            "com.unity.inputsystem package is installed but inactive: set Project Settings > Player > " +
+            "Active Input Handling to 'Input System Package' or 'Both'. Legacy input injection is " +
+            "not supported.";
+#else
+            "Input simulation requires the com.unity.inputsystem package, which is not installed in " +
+            "this project. Install it, then set Project Settings > Player > Active Input Handling to " +
+            "'Input System Package' or 'Both'. Legacy input injection is not supported.";
+#endif
     }
 }

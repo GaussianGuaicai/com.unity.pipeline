@@ -3,10 +3,10 @@ using System.Collections.Generic;
 using System.Reflection;
 using Unity.Pipeline.Config;
 using Unity.Pipeline.Commands;
-using Unity.Pipeline.HotReload;
+using Unity.Pipeline.CodeReload;
 using Unity.Pipeline.Runtime.Telemetry;
 using UnityEngine;
-#if (UNITY_EDITOR || DEVELOPMENT_BUILD)
+#if (UNITY_EDITOR || ENABLE_PROFILER || ENABLE_RUNTIME_PIPELINE)
 using UnityEngine.Networking.PlayerConnection;
 #endif
 
@@ -34,7 +34,7 @@ namespace Unity.Pipeline
 
         // Public half of the project's push-signing key. Baked at build time into the
         // RuntimePipelineBuildInfo asset (from Library/Pipeline/signing.key in the editor) and
-        // supplied via Initialize — a player build rejects every hot-reload push that is not signed
+        // supplied via Initialize — a player build rejects every code-reload push that is not signed
         // by the matching private key; empty means "reject all pushes" (strict policy, no fallback).
         private string m_PushPublicKey = "";
         private bool m_OwnsSampler;
@@ -43,7 +43,7 @@ namespace Unity.Pipeline
         private bool m_PreviousRunInBackground;
 
         // True only between something overriding Application.runInBackground (StartServer, or
-        // DrainPendingReloads reacting to a hot-reload push that arrived with no HTTP server
+        // DrainPendingReloads reacting to a code-reload push that arrived with no HTTP server
         // running) and StopServer restoring it. Both writers check this before saving
         // m_PreviousRunInBackground, so whichever gets there first "owns" the saved value — the
         // other must not clobber it with the already-overridden "true". Gating the restore on this
@@ -64,15 +64,15 @@ namespace Unity.Pipeline
         /// <summary>The configuration this driver was initialized with.</summary>
         public RuntimePipelineConfig Config => m_Config;
 
-        /// <summary>Absolute roots this build may hot reload source files from. Baked at build time.</summary>
+        /// <summary>Absolute roots this build may code reload source files from. Baked at build time.</summary>
         public IReadOnlyList<string> AllowedReloadRoots => m_AllowedReloadRoots;
 
         /// <summary>
-        /// Supply configuration and baked hot-reload roots. Must be called once, immediately after
+        /// Supply configuration and baked code-reload roots. Must be called once, immediately after
         /// AddComponent (before the end of the current frame, i.e. before Start runs).
         /// </summary>
         /// <param name="config">The configuration to run with.</param>
-        /// <param name="allowedReloadRoots">Absolute roots this build may hot reload source files from.</param>
+        /// <param name="allowedReloadRoots">Absolute roots this build may code reload source files from.</param>
         /// <param name="pushPublicKey">Public half of the push-signing key pushes must be signed with; empty rejects all pushes.</param>
         public void Initialize(RuntimePipelineConfig config, IReadOnlyList<string> allowedReloadRoots,
             string pushPublicKey = "")
@@ -98,10 +98,10 @@ namespace Unity.Pipeline
             // Set up command discovery (the server owns its own dispatcher, initialized on Start).
             CommandRegistry.SetDiscovery(null); // Triggers reflection-based discovery
 
-            // Auto-discover and register hot-reloadable methods. Hot reload requires this driver to
+            // Auto-discover and register reloadable methods. Code reload requires this driver to
             // be present (it owns the communication workflow), so discovery lives here rather than in
             // each gameplay script's Awake.
-            RegisterDiscoveredHotReloadMethods();
+            RegisterDiscoveredCodeReloadMethods();
 
             // Own the process-wide frame-stats sampler. A Player has no profiler window or
             // EditorApplication.update to drive sampling, so the driver feeds it from Update (below) and
@@ -124,30 +124,123 @@ namespace Unity.Pipeline
                 StartServer();
             }
 
-#if (UNITY_EDITOR || DEVELOPMENT_BUILD)
-            // Independent of the HTTP server: hot-reload IL pushed from the editor arrives over
+#if (UNITY_EDITOR || ENABLE_PROFILER || ENABLE_RUNTIME_PIPELINE)
+            // Independent of the HTTP server: code-reload IL pushed from the editor arrives over
             // PlayerConnection (the Profiler's channel — no open port needed, tunnels over USB).
             RegisterReloadReceiver();
 
-            if (ShowReloadOverlay && GetComponent<HotReloadStatusOverlay>() == null)
-                gameObject.AddComponent<HotReloadStatusOverlay>();
+            if (ShowReloadOverlay && GetComponent<CodeReloadStatusOverlay>() == null)
+                gameObject.AddComponent<CodeReloadStatusOverlay>();
 #endif
         }
 
+        // Guards the scan and its "already ran" latch. Discovery can now be reached from two
+        // directions at once — eagerly from Awake / the bootstrap on the main thread, and on demand
+        // from the reload path, which compiles on a background thread — and the registry's
+        // per-id method lists are not themselves thread-safe to append to.
+        //
+        // The latch is a plain static, so AutoStaticsCleanup clears it on Play Mode entry in step
+        // with the registry it describes (see CodeReloadRegistry's remarks) — a latch that outlived
+        // the registry would claim targets are registered after they had been wiped. The lock
+        // object only has to exist; it carries no state across sessions.
+        private static readonly object s_DiscoveryLock = new object();
+        private static bool s_Discovered;
+
         /// <summary>
-        /// Scan loaded user assemblies for methods tagged [HotReload] (in-place workflow) and
-        /// [HotReloadWithOverrides] (helper workflow) and register them as reload targets.
+        /// Register the project's reload targets unless a scan already did it this session.
+        ///
+        /// Called from the reload path, so a reload finds its targets whether or not anything
+        /// discovered them first. Eager discovery only happens on Play Mode entry (Awake, or
+        /// RuntimePipelineBootstrap when it creates no driver), and an editor reload does not
+        /// require Play Mode: without this, applying a reload from Edit Mode found an empty
+        /// registry and reported every target as missing.
+        ///
+        /// Deliberately does NOT consult <c>Application.isPlaying</c> to skip Edit Mode — reloads
+        /// compile on a background thread, where that property throws. Whether a reload makes sense
+        /// in the current play state is the caller's question to ask, on the main thread.
         /// </summary>
-        private static void RegisterDiscoveredHotReloadMethods()
+        internal static void EnsureDiscoveredCodeReloadMethods()
+        {
+            lock (s_DiscoveryLock)
+            {
+                if (s_Discovered)
+                    return;
+
+                DiscoverAndRegisterCodeReloadMethods();
+            }
+        }
+
+        /// <summary>
+        /// Scan loaded user assemblies for [CodeReload] methods and register them as reload
+        /// targets, whether or not a scan already ran. Runs from Awake, and from
+        /// RuntimePipelineBootstrap in the Editor when the runtime server is disabled and no driver
+        /// is created — both want the targets ready before the first pushed reload can land, rather
+        /// than on first use. Re-running is harmless:
+        /// <see cref="CodeReloadRegistry.RegisterReloadableMethod"/> ignores a method it already holds.
+        /// </summary>
+        internal static void RegisterDiscoveredCodeReloadMethods()
+        {
+            lock (s_DiscoveryLock)
+                DiscoverAndRegisterCodeReloadMethods();
+        }
+
+        /// <summary>Forget that the scan ran, so the next <see cref="EnsureDiscoveredCodeReloadMethods"/>
+        /// repeats it. Called when the registry is cleared, which would otherwise leave the latch
+        /// claiming targets are registered when they are not.</summary>
+        internal static void ResetCodeReloadDiscoveryLatch()
+        {
+            lock (s_DiscoveryLock)
+                s_Discovered = false;
+        }
+
+        /// <summary>The scan itself. Callers hold <see cref="s_DiscoveryLock"/>.</summary>
+        private static void DiscoverAndRegisterCodeReloadMethods()
+        {
+            int registered = 0;
+
+            foreach (var method in GetCodeReloadCandidateMethods())
+            {
+                var reloadable = method.GetCustomAttribute<CodeReloadAttribute>();
+                if (reloadable == null)
+                    continue;
+
+                // The weaver keys dispatch on TypeName.MethodName, so register with the
+                // default id (ignore any custom Id) to match.
+                CodeReloadRegistry.RegisterReloadableMethod(
+                    method, new CodeReloadAttribute { RequireMainThread = reloadable.RequireMainThread });
+                registered++;
+            }
+
+            s_Discovered = true;
+
+            // The count only matters once someone tries to reload, so it joins the first-reload
+            // summary instead of the startup noise (this runs on every Play Mode entry). That holds
+            // for zero too: the summary prints on the first reload ATTEMPT, so a project that never
+            // reloads stays quiet, and one that does sees the stripping/attribute hint right next to
+            // the "target not registered" reasons.
+            CodeReloadRegistry.NoteForFirstReload($"{registered} reloadable method(s) registered" +
+                (registered == 0
+                    ? " (if methods were expected: are the [CodeReload] attributes in this build, and did the owning assembly survive stripping?)"
+                    : ""));
+        }
+
+        private static IEnumerable<MethodInfo> GetCodeReloadCandidateMethods()
+        {
+#if UNITY_EDITOR
+            return UnityEditor.TypeCache.GetMethodsWithAttribute<CodeReloadAttribute>();
+#else
+            return GetCodeReloadCandidateMethodsViaReflection();
+#endif
+        }
+
+        private static IEnumerable<MethodInfo> GetCodeReloadCandidateMethodsViaReflection()
         {
             const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic
                 | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly;
 
-            int registered = 0;
-
             foreach (var assembly in PipelineUtils.GetLoadedAssemblies())
             {
-                if (!ShouldScanForHotReload(assembly))
+                if (!ShouldScanForCodeReload(assembly))
                     continue;
 
                 Type[] types;
@@ -166,38 +259,13 @@ namespace Unity.Pipeline
                         continue;
 
                     foreach (var method in type.GetMethods(flags))
-                    {
-                        var inPlace = method.GetCustomAttribute<HotReloadAttribute>();
-                        if (inPlace != null)
-                        {
-                            // The weaver keys dispatch on TypeName.MethodName, so register with the
-                            // default id (no custom Id) to match.
-                            HotReloadRegistry.RegisterReloadableMethod(
-                                method, new HotReloadWithOverridesAttribute { RequireMainThread = inPlace.RequireMainThread });
-                            registered++;
-                            continue;
-                        }
-
-                        var reloadable = method.GetCustomAttribute<HotReloadWithOverridesAttribute>();
-                        if (reloadable != null)
-                        {
-                            HotReloadRegistry.RegisterReloadableMethod(method, reloadable);
-                            registered++;
-                        }
-                    }
+                        yield return method;
                 }
             }
-
-            // Always log, including 0: a zero count on device is the primary stripping/attribute
-            // diagnostic, and its absence is ambiguous with the log line being suppressed.
-            Debug.Log($"Pipeline: Auto-discovered and registered {registered} hot-reloadable method(s)." +
-                (registered == 0
-                    ? " If methods were expected: are the [HotReload] attributes in this build, and did the owning assembly survive stripping?"
-                    : ""));
         }
 
-        /// <summary>Skip engine/framework assemblies that cannot contain user hot-reload methods.</summary>
-        private static bool ShouldScanForHotReload(Assembly assembly)
+        /// <summary>Skip engine/framework assemblies that cannot contain user code-reload methods.</summary>
+        private static bool ShouldScanForCodeReload(Assembly assembly)
         {
             if (assembly.IsDynamic)
                 return false;
@@ -206,7 +274,7 @@ namespace Unity.Pipeline
             if (string.IsNullOrEmpty(name))
                 return false;
 
-            foreach (var prefix in s_HotReloadSkipPrefixes)
+            foreach (var prefix in s_CodeReloadSkipPrefixes)
             {
                 if (name.StartsWith(prefix, StringComparison.Ordinal))
                     return false;
@@ -215,7 +283,7 @@ namespace Unity.Pipeline
             return true;
         }
 
-        private static readonly string[] s_HotReloadSkipPrefixes =
+        private static readonly string[] s_CodeReloadSkipPrefixes =
         {
             "System", "mscorlib", "netstandard", "Microsoft", "Mono.", "nunit",
             "UnityEngine", "UnityEditor", "Unity.Collections", "Unity.Burst",
@@ -255,7 +323,7 @@ namespace Unity.Pipeline
             // server's watchdog is enabled and armed.
             m_Server?.WatchdogTick();
 
-#if (UNITY_EDITOR || DEVELOPMENT_BUILD)
+#if (UNITY_EDITOR || ENABLE_PROFILER || ENABLE_RUNTIME_PIPELINE)
             DrainPendingReloads();
 #endif
         }
@@ -278,13 +346,13 @@ namespace Unity.Pipeline
                 FrameStatsSampler.Shared?.Dispose();
                 FrameStatsSampler.Shared = null;
             }
-#if (UNITY_EDITOR || DEVELOPMENT_BUILD)
+#if (UNITY_EDITOR || ENABLE_PROFILER || ENABLE_RUNTIME_PIPELINE)
             UnregisterReloadReceiver();
 #endif
         }
 
-#if (UNITY_EDITOR || DEVELOPMENT_BUILD)
-        // ---- PlayerConnection hot-reload receiver (editor pushes compiled override IL to this player) ----
+#if (UNITY_EDITOR || ENABLE_PROFILER || ENABLE_RUNTIME_PIPELINE)
+        // ---- PlayerConnection code-reload receiver (editor pushes compiled override IL to this player) ----
 
         // Pushes arrive on the connection message pump (not guaranteed main thread); enqueue here and
         // apply in Update() where the interpreter + Unity APIs are safe to touch.
@@ -300,10 +368,10 @@ namespace Unity.Pipeline
         {
             try
             {
-                PlayerConnection.instance.Register(PipelineHotReloadConnect.ApplyReloadMsg, OnApplyReloadMessage);
-                PlayerConnection.instance.Register(PipelineHotReloadConnect.ReloadPendingMsg, OnReloadPendingMessage);
-                PlayerConnection.instance.Register(PipelineHotReloadConnect.ReloadFailedMsg, OnReloadFailedMessage);
-                PlayerConnection.instance.Register(PipelineHotReloadConnect.RequestHandshakeMsg, OnRequestHandshakeMessage);
+                PlayerConnection.instance.Register(PipelineCodeReloadConnect.ApplyReloadMsg, OnApplyReloadMessage);
+                PlayerConnection.instance.Register(PipelineCodeReloadConnect.ReloadPendingMsg, OnReloadPendingMessage);
+                PlayerConnection.instance.Register(PipelineCodeReloadConnect.ReloadFailedMsg, OnReloadFailedMessage);
+                PlayerConnection.instance.Register(PipelineCodeReloadConnect.RequestHandshakeMsg, OnRequestHandshakeMessage);
                 PlayerConnection.instance.RegisterConnection(OnPushPeerConnected);
                 m_ReloadReceiverRegistered = true;
 
@@ -312,14 +380,14 @@ namespace Unity.Pipeline
                 // Editor play mode is not a network surface for pushes (they originate in this same
                 // process, and remote access goes through the token-authenticated HTTP server), so
                 // signing is not enforced here — see DrainPendingReloads.
-                Debug.Log("Pipeline: PlayerConnection hot-reload receiver ready (editor play mode — push signing not enforced).");
+                CodeReloadRegistry.NoteForFirstReload("PlayerConnection receiver ready (editor play mode, push signing not enforced)");
 #else
                 if (!string.IsNullOrEmpty(m_PushPublicKey))
                 {
                     m_PushVerifier = new PushVerifier(m_PushPublicKey, m_PushSessionNonce);
                     var fingerprint = PushEnvelope.Fingerprint(m_PushPublicKey);
                     if (PushEnvelope.VerifySelfTest(m_PushPublicKey, out var selfTestError))
-                        Debug.Log($"Pipeline: PlayerConnection hot-reload receiver ready — signed pushes only (key {fingerprint}, verify self-test OK). Push IL from the editor via 'reload_file_player_interpreter'.");
+                        Debug.Log($"Pipeline: PlayerConnection code-reload receiver ready — signed pushes only (key {fingerprint}, verify self-test OK). Push IL from the editor via 'reload_file_player_interpreter'.");
                     else
                         Debug.LogError($"Pipeline: push-signature verify self-test FAILED on this platform ({selfTestError}) — every push will be rejected as CryptoUnavailable.");
                 }
@@ -328,7 +396,7 @@ namespace Unity.Pipeline
                     // Strict policy: a receiver without a baked key accepts nothing. The only way to
                     // get here is a build whose RuntimePipelineBuildInfo carries no key (e.g. an older
                     // build, or one produced without the build processor running).
-                    Debug.LogWarning("Pipeline: hot-reload push receiver has NO baked signing key — all pushes will be rejected. " +
+                    Debug.LogWarning("Pipeline: code-reload push receiver has NO baked signing key — all pushes will be rejected. " +
                         "Rebuild with the Pipeline build processor enabled (it generates the key and bakes the public half into RuntimePipelineBuildInfo).");
                 }
 #endif
@@ -345,10 +413,10 @@ namespace Unity.Pipeline
             if (!m_ReloadReceiverRegistered) return;
             try
             {
-                PlayerConnection.instance.Unregister(PipelineHotReloadConnect.ApplyReloadMsg, OnApplyReloadMessage);
-                PlayerConnection.instance.Unregister(PipelineHotReloadConnect.ReloadPendingMsg, OnReloadPendingMessage);
-                PlayerConnection.instance.Unregister(PipelineHotReloadConnect.ReloadFailedMsg, OnReloadFailedMessage);
-                PlayerConnection.instance.Unregister(PipelineHotReloadConnect.RequestHandshakeMsg, OnRequestHandshakeMessage);
+                PlayerConnection.instance.Unregister(PipelineCodeReloadConnect.ApplyReloadMsg, OnApplyReloadMessage);
+                PlayerConnection.instance.Unregister(PipelineCodeReloadConnect.ReloadPendingMsg, OnReloadPendingMessage);
+                PlayerConnection.instance.Unregister(PipelineCodeReloadConnect.ReloadFailedMsg, OnReloadFailedMessage);
+                PlayerConnection.instance.Unregister(PipelineCodeReloadConnect.RequestHandshakeMsg, OnRequestHandshakeMessage);
                 PlayerConnection.instance.UnregisterConnection(OnPushPeerConnected);
             }
             catch { }
@@ -362,8 +430,8 @@ namespace Unity.Pipeline
             try
             {
                 var fingerprint = string.IsNullOrEmpty(m_PushPublicKey) ? "" : PushEnvelope.Fingerprint(m_PushPublicKey);
-                PlayerConnection.instance.Send(PipelineHotReloadConnect.HandshakeMsg,
-                    PipelineHotReloadConnect.EncodeHandshake(PushEnvelope.ProtocolVersion, fingerprint, m_PushSessionNonce));
+                PlayerConnection.instance.Send(PipelineCodeReloadConnect.HandshakeMsg,
+                    PipelineCodeReloadConnect.EncodeHandshake(PushEnvelope.ProtocolVersion, fingerprint, m_PushSessionNonce));
             }
             catch { /* no connection yet — the connect callback will re-announce */ }
         }
@@ -378,12 +446,12 @@ namespace Unity.Pipeline
             lock (m_PendingReloads) m_PendingReloads.Add(args.data);
         }
 
-        // Connection-thread handlers: HotReloadActivity is thread-safe, no marshalling needed.
+        // Connection-thread handlers: CodeReloadActivity is thread-safe, no marshalling needed.
         private void OnReloadPendingMessage(MessageEventArgs args) =>
-            HotReloadActivity.ReportCompileStarted(PipelineHotReloadConnect.DecodeText(args?.data));
+            CodeReloadActivity.ReportCompileStarted(PipelineCodeReloadConnect.DecodeText(args?.data));
 
         private void OnReloadFailedMessage(MessageEventArgs args) =>
-            HotReloadActivity.ReportFailed(PipelineHotReloadConnect.DecodeText(args?.data));
+            CodeReloadActivity.ReportFailed(PipelineCodeReloadConnect.DecodeText(args?.data));
 
         private void DrainPendingReloads()
         {
@@ -395,7 +463,7 @@ namespace Unity.Pipeline
                 m_PendingReloads.Clear();
             }
 
-            // A player that received a hot-reload push must keep ticking while unfocused, otherwise
+            // A player that received a code-reload push must keep ticking while unfocused, otherwise
             // Update() (which drains + applies these pushes, and runs the reloaded code) pauses the
             // moment the window loses focus. Force it on once, on first receipt — reusing StartServer/
             // StopServer's own save/restore bookkeeping (rather than writing Application.runInBackground
@@ -406,7 +474,7 @@ namespace Unity.Pipeline
                 m_PreviousRunInBackground = Application.runInBackground;
                 Application.runInBackground = true;
                 m_RunInBackgroundOverridden = true;
-                Debug.Log("Pipeline: forced Application.runInBackground = true (hot-reload push received)");
+                Debug.Log("Pipeline: forced Application.runInBackground = true (code-reload push received)");
             }
 
             foreach (var data in batch)
@@ -425,7 +493,7 @@ namespace Unity.Pipeline
                     if (PushEnvelope.LooksLikeEnvelope(data))
                     {
                         if (!PushEnvelope.TryParse(data, out _, out _, out payload))
-                            rejectAck = "malformed hot-reload push";
+                            rejectAck = "malformed code-reload push";
                     }
                     else
                     {
@@ -461,25 +529,25 @@ namespace Unity.Pipeline
                     {
                         summary = rejectAck;
                     }
-                    else if (!PipelineHotReloadConnect.TryDecode(payload, out var typeName, out var methodNames, out var il))
+                    else if (!PipelineCodeReloadConnect.TryDecode(payload, out var typeName, out var methodNames, out var il))
                     {
-                        summary = "malformed hot-reload push";
+                        summary = "malformed code-reload push";
                     }
                     else
                     {
-                        var registered = Unity.Pipeline.Compilation.InterpreterHotReloadExecutor.Register(
+                        var registered = Unity.Pipeline.Compilation.InterpreterCodeReloadExecutor.Register(
                             il, typeName, methodNames, out var skipped, out var warnings);
-                        HotReloadRegistry.InvokeReloadCallbacks(registered);
+                        CodeReloadRegistry.InvokeReloadCallbacks(registered);
                         // Full warning text (unbound host members) goes to the device log; the ack
                         // summary the editor shows carries just the count so it stays one line.
                         foreach (var w in warnings)
-                            Debug.LogWarning($"Pipeline: hot-reload {typeName} — {w}");
+                            Debug.LogWarning($"Pipeline: code-reload {typeName} — {w}");
                         // Same for per-method skip reasons: the summary carries only the count, but a
                         // method that didn't apply (e.g. SetupUI referencing a member the running
                         // build stripped) is only diagnosable if the reason reaches the device log —
                         // "skipped 1" alone gives the user nothing to act on.
                         foreach (var s in skipped)
-                            Debug.LogWarning($"Pipeline: hot-reload {typeName} — skipped {s}");
+                            Debug.LogWarning($"Pipeline: code-reload {typeName} — skipped {s}");
                         ok = registered.Count > 0;
                         summary = ok
                             ? $"applied {registered.Count} method(s) on {typeName}" +
@@ -503,13 +571,13 @@ namespace Unity.Pipeline
                     summary = $"apply failed: {root.GetType().Name}: {root.Message}";
                 }
 
-                Debug.Log($"Pipeline: hot-reload push — {summary}");
-                if (ok) HotReloadActivity.ReportApplied(summary);
-                else HotReloadActivity.ReportFailed(summary);
+                Debug.Log($"Pipeline: code-reload push — {summary}");
+                if (ok) CodeReloadActivity.ReportApplied(summary);
+                else CodeReloadActivity.ReportFailed(summary);
                 try
                 {
                     PlayerConnection.instance.Send(
-                        PipelineHotReloadConnect.ResultMsg, PipelineHotReloadConnect.EncodeResult(ok, summary));
+                        PipelineCodeReloadConnect.ResultMsg, PipelineCodeReloadConnect.EncodeResult(ok, summary));
                 }
                 catch { }
             }
@@ -537,14 +605,14 @@ namespace Unity.Pipeline
             m_RejectsInWindow++;
             if (m_RejectsInWindow <= RejectLogBurst)
             {
-                Debug.LogWarning($"Pipeline: hot-reload push rejected — {detail}");
+                Debug.LogWarning($"Pipeline: code-reload push rejected — {detail}");
                 return;
             }
 
             m_SuppressedRejects++;
             if (now - m_LastRejectSummaryTime >= RejectWindowSeconds)
             {
-                Debug.LogWarning($"Pipeline: {m_SuppressedRejects} further hot-reload push(es) rejected in the last minute " +
+                Debug.LogWarning($"Pipeline: {m_SuppressedRejects} further code-reload push(es) rejected in the last minute " +
                     $"(possible probing on this network); most recent: {detail}");
                 m_LastRejectSummaryTime = now;
                 m_SuppressedRejects = 0;
@@ -590,7 +658,7 @@ namespace Unity.Pipeline
                 {
                     // Keeps Update -> Dispatcher.ProcessWorkQueue/WatchdogTick running while unfocused.
                     // Guarded on m_RunInBackgroundOverridden (rather than unconditional) because
-                    // DrainPendingReloads can already have overridden it — a hot-reload push over
+                    // DrainPendingReloads can already have overridden it — a code-reload push over
                     // PlayerConnection needs no HTTP server, so it can arrive and force this on before
                     // StartServer ever runs. Saving unconditionally here would clobber the real
                     // original value with the already-overridden "true", and StopServer would then
@@ -602,15 +670,15 @@ namespace Unity.Pipeline
                         m_RunInBackgroundOverridden = true;
                     }
 
-                    // The hot-reload registry marshals main-thread overrides through a dispatcher
-                    // when hot-reloaded code is invoked from a background thread at runtime. Inject
+                    // The code-reload registry marshals main-thread overrides through a dispatcher
+                    // when reloaded code is invoked from a background thread at runtime. Inject
                     // this server's dispatcher here (a player has exactly one driver), so editor and
                     // per-test servers never clobber the global registry's dispatcher.
-                    HotReloadRegistry.Dispatcher = m_Server.Dispatcher;
+                    CodeReloadRegistry.Dispatcher = m_Server.Dispatcher;
 
                     // Publish the build-baked allowed roots so reload commands can validate that
                     // incoming files are inside the project before compiling and injecting them.
-                    HotReloadRegistry.AllowedReloadRoots = m_AllowedReloadRoots;
+                    CodeReloadRegistry.AllowedReloadRoots = m_AllowedReloadRoots;
 
                     System.Console.WriteLine($"Pipeline: Runtime server started successfully on port {m_Server.Port}");
                 }
@@ -635,8 +703,8 @@ namespace Unity.Pipeline
                 {
                     System.Console.WriteLine("Pipeline: Stopping runtime server...");
                     // Drop the registry's reference to this server's (about to be shut down) dispatcher.
-                    if (HotReloadRegistry.Dispatcher == m_Server.Dispatcher)
-                        HotReloadRegistry.Dispatcher = null;
+                    if (CodeReloadRegistry.Dispatcher == m_Server.Dispatcher)
+                        CodeReloadRegistry.Dispatcher = null;
                     m_Server.Stop(); // Stop() shuts down the server's own dispatcher.
                 }
             }
