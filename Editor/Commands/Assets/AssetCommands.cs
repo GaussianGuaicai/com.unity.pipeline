@@ -31,7 +31,7 @@ namespace Unity.Pipeline.Editor.Commands.Assets
     /// not wrapped in an undo scope, and destructive/overwriting operations instead require an explicit
     /// <c>confirm</c> argument (and support <c>dry_run</c>) so an agent cannot silently lose data.
     /// </summary>
-    public static class AssetCommands
+    static class AssetCommands
     {
         [CliCommand("create_asset", "Create a new ScriptableObject (or other UnityEngine.Object) asset of the given type at a path under the authoring root.", Tags = new[] { "assets" })]
         public static AuthoringResult CreateAsset(

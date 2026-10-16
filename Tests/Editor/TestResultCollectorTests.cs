@@ -8,10 +8,14 @@ using UnityEditor.TestTools.TestRunner.Api;
 namespace Unity.Pipeline.Tests.Editor
 {
     /// <summary>
-    /// Regression coverage for UUM-149016 (InvalidOperationException from a stale collector
-    /// re-delivered a later run's RunFinished).
+    /// Coverage for <see cref="TestResultCollector"/> completion handling: a collector completes
+    /// exactly once, and late/duplicate deliveries are harmless no-ops. Combines the regression
+    /// tests for UUM-149016 (InvalidOperationException from a stale collector re-delivered a
+    /// later run's RunFinished) and AUTHAPI-36 (RunFinished must not throw when the completion
+    /// source was already completed by SetError()/Cancel() or an earlier RunFinished, and must
+    /// preserve the original error).
     /// </summary>
-    public class TestResultCollectorTests
+    class TestResultCollectorTests
     {
         [Test]
         public void RunFinished_CalledTwiceOnSameCollector_SecondCallDoesNotThrow()
@@ -41,6 +45,40 @@ namespace Unity.Pipeline.Tests.Editor
             Assert.DoesNotThrow(() => collector.RunFinished(result),
                 "A stale collector redelivered RunFinished after an intervening RunStarted " +
                 "broadcast must still not throw");
+        }
+
+        [Test]
+        public void RunFinished_AfterSetError_DoesNotThrow_AndKeepsError()
+        {
+            var collector = new TestResultCollector();
+            collector.Results.Add(new TestResult());
+            var task = collector.WaitForCompletionAsync();
+
+            // A timed-out/errored run completes the sync task with an exception first.
+            var boom = new InvalidOperationException("run errored");
+            collector.SetError(boom);
+            Assert.IsTrue(task.IsFaulted, "SetError should fault the completion task");
+
+            // The framework then still delivers RunFinished. It must be a no-op (AUTHAPI-36):
+            // no throw, and the original error wins — RunFinished must not overwrite it.
+            Assert.DoesNotThrow(() => collector.RunFinished(new FakeTestResultAdaptor()));
+            Assert.IsTrue(task.IsFaulted, "Task should remain faulted after late RunFinished");
+            Assert.AreSame(boom, task.Exception?.InnerException, "Original error should be preserved");
+        }
+
+        [Test]
+        public void RunFinished_CompletesWaitTaskWithResult()
+        {
+            var collector = new TestResultCollector();
+            collector.Results.Add(new TestResult());
+            var task = collector.WaitForCompletionAsync();
+            var result = new FakeTestResultAdaptor();
+
+            collector.RunFinished(result);
+
+            Assert.AreEqual(System.Threading.Tasks.TaskStatus.RanToCompletion, task.Status);
+            Assert.AreSame(result, task.Result);
+            Assert.IsTrue(collector.IsComplete);
         }
 
         private sealed class FakeTestResultAdaptor : ITestResultAdaptor

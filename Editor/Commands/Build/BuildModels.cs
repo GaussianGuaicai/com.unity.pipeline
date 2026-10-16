@@ -12,7 +12,7 @@ namespace Unity.Pipeline.Editor.Commands.Build
     /// platform's build support is actually installed in this editor.
     /// </summary>
     [Serializable]
-    public class BuildTargetInfo
+    class BuildTargetInfo
     {
         /// <summary><c>BuildTarget</c> enum name, e.g. "StandaloneWindows64".</summary>
         [JsonProperty("name")] public string Name { get; set; }
@@ -29,7 +29,7 @@ namespace Unity.Pipeline.Editor.Commands.Build
 
     /// <summary>One scene in the Build Settings scene list, projected for <c>get_build_settings</c>.</summary>
     [Serializable]
-    public class BuildSceneEntry
+    class BuildSceneEntry
     {
         [JsonProperty("path")] public string Path { get; set; }
         [JsonProperty("guid")] public string Guid { get; set; }
@@ -43,7 +43,7 @@ namespace Unity.Pipeline.Editor.Commands.Build
     /// <c>remove_scene_from_build</c> (CLI-189); this only reports the list.
     /// </summary>
     [Serializable]
-    public class BuildSettingsResult
+    class BuildSettingsResult
     {
         [JsonProperty("activeBuildTarget")] public string ActiveBuildTarget { get; set; }
         [JsonProperty("activeBuildTargetGroup")] public string ActiveBuildTargetGroup { get; set; }
@@ -64,7 +64,7 @@ namespace Unity.Pipeline.Editor.Commands.Build
     /// only the ones the caller supplies are changed. Note that <see cref="AllowDebugging"/> and
     /// <see cref="ConnectWithProfiler"/> only take effect when <see cref="DevelopmentBuild"/> is also on.
     /// </summary>
-    public class SetBuildSettingsInput : IStructuredCommandInput
+    class SetBuildSettingsInput : IStructuredCommandInput
     {
         [CliArg("developmentBuild", "Build a Development Player (enables the debugger/profiler).")]
         public bool? DevelopmentBuild { get; set; }
@@ -92,7 +92,7 @@ namespace Unity.Pipeline.Editor.Commands.Build
     /// write, without changing anything.
     /// </summary>
     [Serializable]
-    public class SetBuildSettingsResult
+    class SetBuildSettingsResult
     {
         [JsonProperty("success")] public bool Success { get; set; }
         [JsonProperty("dryRun")] public bool DryRun { get; set; }
@@ -111,7 +111,7 @@ namespace Unity.Pipeline.Editor.Commands.Build
 
     /// <summary>One Build Profile asset, projected for <c>list_build_profiles</c> (Unity 6 only).</summary>
     [Serializable]
-    public class BuildProfileInfo
+    class BuildProfileInfo
     {
         [JsonProperty("name")] public string Name { get; set; }
         [JsonProperty("guid")] public string Guid { get; set; }
@@ -124,7 +124,7 @@ namespace Unity.Pipeline.Editor.Commands.Build
 
     /// <summary>One output file produced by the build (a row of <c>BuildReport.GetFiles()</c>).</summary>
     [Serializable]
-    public class BuildFileEntry
+    class BuildFileEntry
     {
         [JsonProperty("path")] public string Path { get; set; }
 
@@ -136,7 +136,7 @@ namespace Unity.Pipeline.Editor.Commands.Build
 
     /// <summary>One asset packed into a build bundle/file (a row of a <c>PackedAssets</c> entry).</summary>
     [Serializable]
-    public class PackedAssetContent
+    class PackedAssetContent
     {
         [JsonProperty("assetPath")] public string AssetPath { get; set; }
         [JsonProperty("type")] public string Type { get; set; }
@@ -146,7 +146,7 @@ namespace Unity.Pipeline.Editor.Commands.Build
 
     /// <summary>A packed bundle/file with its per-asset size breakdown (requires DetailedBuildReport).</summary>
     [Serializable]
-    public class PackedAssetEntry
+    class PackedAssetEntry
     {
         [JsonProperty("bundlePath")] public string BundlePath { get; set; }
         [JsonProperty("overheadBytes")] public long OverheadBytes { get; set; }
@@ -155,7 +155,7 @@ namespace Unity.Pipeline.Editor.Commands.Build
 
     /// <summary>One message emitted during a build step.</summary>
     [Serializable]
-    public class BuildStepMessageEntry
+    class BuildStepMessageEntry
     {
         /// <summary>"Log" | "Warning" | "Error" (mapped from <c>LogType</c>).</summary>
         [JsonProperty("type")] public string Type { get; set; }
@@ -164,7 +164,7 @@ namespace Unity.Pipeline.Editor.Commands.Build
 
     /// <summary>One step of the build (a row of <c>BuildReport.steps</c>).</summary>
     [Serializable]
-    public class BuildStepEntry
+    class BuildStepEntry
     {
         [JsonProperty("name")] public string Name { get; set; }
         [JsonProperty("durationMs")] public long DurationMs { get; set; }
@@ -174,7 +174,7 @@ namespace Unity.Pipeline.Editor.Commands.Build
 
     /// <summary>A build error/warning surfaced in <c>build_status</c>, with best-effort source file.</summary>
     [Serializable]
-    public class BuildIssue
+    class BuildIssue
     {
         [JsonProperty("message")] public string Message { get; set; }
 
@@ -201,7 +201,7 @@ namespace Unity.Pipeline.Editor.Commands.Build
     /// purpose-built payloads, not this type.
     /// </summary>
     [Serializable]
-    public class BuildReportResult
+    class BuildReportResult
     {
         [JsonProperty("status")] public string Status { get; set; }
         [JsonProperty("buildId")] public string BuildId { get; set; }
@@ -234,7 +234,7 @@ namespace Unity.Pipeline.Editor.Commands.Build
     /// source location from a raw build-step message and is exercised directly by the test suite.
     /// </summary>
     [Serializable]
-    public class BuildMessage
+    class BuildMessage
     {
         [JsonProperty("severity")] public string Severity { get; set; }
         [JsonProperty("file")] public string File { get; set; }

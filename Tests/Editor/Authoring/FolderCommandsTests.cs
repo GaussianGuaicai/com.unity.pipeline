@@ -10,7 +10,7 @@ namespace Unity.Pipeline.Tests.Editor.Authoring
     /// PipelineClient. Verifies the result envelope, recursive creation, Assets-relative paths,
     /// and the traversal guard.
     /// </summary>
-    public class FolderCommandsTests
+    class FolderCommandsTests
     {
         private const string Root = "Assets/__CLI190Test";
 

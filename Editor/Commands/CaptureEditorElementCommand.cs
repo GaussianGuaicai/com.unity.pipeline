@@ -17,7 +17,7 @@ namespace Unity.Pipeline.Editor.Commands
     /// Selection, capture, and encoding are shared with the runtime command via
     /// <see cref="VisualElementCaptureSupport"/>; this command only resolves the target window.
     /// </summary>
-    public static class CaptureEditorElementCommand
+    static class CaptureEditorElementCommand
     {
         [CliCommand("capture_editor_element",
             "Capture a UI Toolkit VisualElement (by selector) from an EditorWindow to a PNG; returns path + base64.",

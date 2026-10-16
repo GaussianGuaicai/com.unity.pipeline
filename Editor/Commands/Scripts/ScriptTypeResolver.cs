@@ -14,7 +14,7 @@ namespace Unity.Pipeline.Editor.Commands.Scripts
     /// has no compiled type until a domain reload runs, so resolution here will fail until the agent
     /// recompiles. Callers translate that failure into a clear, recoverable error rather than a crash.
     /// </summary>
-    public static class ScriptTypeResolver
+    static class ScriptTypeResolver
     {
         /// <summary>
         /// Try to resolve a MonoBehaviour-derived type by its name. Accepts either a bare class name

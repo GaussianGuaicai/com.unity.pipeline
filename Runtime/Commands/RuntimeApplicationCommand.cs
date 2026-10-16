@@ -7,7 +7,7 @@ namespace Unity.Pipeline.Runtime.Commands
     /// Runtime application control commands for Unity Player builds.
     /// Provides basic application lifecycle and performance control.
     /// </summary>
-    public static class RuntimeApplicationCommand
+    static class RuntimeApplicationCommand
     {
         [CliCommand("quit", "Gracefully quit the Unity application", MainThreadRequired = true, RuntimeOnly = true, Tags = new[] { "runtime/application" })]
         public static string QuitApplication(

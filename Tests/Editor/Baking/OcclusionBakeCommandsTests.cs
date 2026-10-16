@@ -13,7 +13,7 @@ namespace Unity.Pipeline.Tests.Editor.Baking
     /// clear guard, the idle status, the no_scene guard, and dry_run being a no-op (and echoing the
     /// effective parameters). The full bake → succeeded flow is exercised live.
     /// </summary>
-    public class OcclusionBakeCommandsTests
+    class OcclusionBakeCommandsTests
     {
         [SetUp]
         public void SetUp() => CommandRegistry.SetDiscovery(new TypeCacheCommandDiscovery());

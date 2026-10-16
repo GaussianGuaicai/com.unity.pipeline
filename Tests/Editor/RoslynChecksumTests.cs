@@ -11,7 +11,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// build processor. The pure VerifyChecksums(dir, manifest) core is exercised against synthetic
     /// folders; the real package + CHECKSUMS is exercised via VerifyBundledChecksums().
     /// </summary>
-    public class RoslynChecksumTests
+    class RoslynChecksumTests
     {
         private string m_Dir;
 

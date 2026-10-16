@@ -7,6 +7,9 @@ using Unity.Pipeline.Commands;
 using UnityEditor;
 using UnityEditor.AI;
 using UnityEngine;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 // CLI-215 deliberately targets the built-in legacy UnityEditor.AI.NavMeshBuilder (see class doc). It is
 // [Obsolete] in Unity 6000.x (the modern path is the com.unity.ai.navigation package), but is the
@@ -32,7 +35,10 @@ namespace Unity.Pipeline.Editor.Commands.Baking
     /// fields reconciled against a Temp/ status file across domain reloads.
     /// </summary>
     [InitializeOnLoad]
-    public static class NavMeshBakeCommands
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
+    static class NavMeshBakeCommands
     {
         const string StatusFile = "Temp/pipeline_navmesh_bake_status.json";
 
@@ -375,7 +381,7 @@ namespace Unity.Pipeline.Editor.Commands.Baking
 
     /// <summary>Status/result payload for <c>bake_navmesh</c> / <c>navmesh_bake_status</c>.</summary>
     [Serializable]
-    public class NavMeshBakeStatus
+    class NavMeshBakeStatus
     {
         [JsonProperty("status")]
         public string Status { get; set; }
@@ -395,7 +401,7 @@ namespace Unity.Pipeline.Editor.Commands.Baking
 
     /// <summary>Result of <c>get_navmesh_settings</c> (default-agent legacy bake settings).</summary>
     [Serializable]
-    public class NavMeshSettingsResult
+    class NavMeshSettingsResult
     {
         [JsonProperty("available")]
         public bool Available { get; set; }

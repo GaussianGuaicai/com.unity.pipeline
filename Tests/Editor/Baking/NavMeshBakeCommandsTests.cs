@@ -14,7 +14,7 @@ namespace Unity.Pipeline.Tests.Editor.Baking
     /// being a no-op, and the AI-Navigation stub returning package_not_found when the package is
     /// absent. The full bake → succeeded flow is exercised live.
     /// </summary>
-    public class NavMeshBakeCommandsTests
+    class NavMeshBakeCommandsTests
     {
         [SetUp]
         public void SetUp() => CommandRegistry.SetDiscovery(new TypeCacheCommandDiscovery());

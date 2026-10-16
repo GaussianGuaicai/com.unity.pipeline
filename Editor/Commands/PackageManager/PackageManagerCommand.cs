@@ -9,6 +9,9 @@ using UnityEditor.PackageManager;
 using UnityEditor.PackageManager.Requests;
 using UnityEngine;
 using PackageInfo = UnityEditor.PackageManager.PackageInfo;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Editor.Commands.PackageManager
 {
@@ -45,7 +48,10 @@ namespace Unity.Pipeline.Editor.Commands.PackageManager
     /// UPM operations are not part of Unity's Undo.
     /// </summary>
     [InitializeOnLoad]
-    public static class PackageManagerCommand
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
+    static class PackageManagerCommand
     {
         const string StatusFile = "Temp/pipeline_package_status.json";
 

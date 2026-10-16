@@ -10,7 +10,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// Simple verification tests for hot reload infrastructure.
     /// These tests verify the core functionality works correctly in isolation.
     /// </summary>
-    public class HotReloadVerificationTests
+    class HotReloadVerificationTests
     {
         [SetUp]
         public void SetUp()

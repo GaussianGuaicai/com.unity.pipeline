@@ -12,7 +12,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// Tests build a throwaway "project root" under the temp folder so they never depend on (or
     /// touch) the real test project's Assets.
     /// </summary>
-    public class ReloadPathValidationTests
+    class ReloadPathValidationTests
     {
         private string m_Root;
         private string m_Assets;

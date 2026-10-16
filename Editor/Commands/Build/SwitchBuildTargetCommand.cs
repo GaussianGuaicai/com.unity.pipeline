@@ -4,6 +4,9 @@ using Newtonsoft.Json;
 using Unity.Pipeline.Commands;
 using UnityEditor;
 using UnityEngine;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Editor.Commands.Build
 {
@@ -21,7 +24,10 @@ namespace Unity.Pipeline.Editor.Commands.Build
     /// so it keeps answering while the switch holds the main thread.
     /// </summary>
     [InitializeOnLoad]
-    public static class SwitchBuildTargetCommand
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
+    static class SwitchBuildTargetCommand
     {
         const string StatusFile = "Temp/pipeline_switch_target_status.json";
 

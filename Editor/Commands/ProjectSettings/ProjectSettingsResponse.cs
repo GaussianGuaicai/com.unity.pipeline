@@ -23,7 +23,7 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
     /// an asset reimport. They describe the operation, so a <c>dry_run</c> still reports them.</para>
     /// </summary>
     [Serializable]
-    public class ProjectSettingsResponse
+    class ProjectSettingsResponse
     {
         [JsonProperty("success")]
         public bool Success { get; set; }

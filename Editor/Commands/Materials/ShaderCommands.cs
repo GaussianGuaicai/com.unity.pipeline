@@ -20,7 +20,7 @@ namespace Unity.Pipeline.Editor.Commands.Materials
     /// <c>GetPropertyTextureDimension</c>, and <c>GetPropertyFlags</c>. The reported type set is
     /// <see cref="UnityEngine.Rendering.ShaderPropertyType"/>: Color, Vector, Float, Range, Texture, Int.
     /// </summary>
-    public static class ShaderCommands
+    static class ShaderCommands
     {
         [CliCommand("list_shaders",
             "Discover available shaders so an agent can pick a valid name for set_material_properties / create_asset. Returns [{ name, assetPath|null, isBuiltin, isSupported }].",

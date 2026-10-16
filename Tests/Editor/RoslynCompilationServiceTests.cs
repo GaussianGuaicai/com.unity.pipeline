@@ -10,8 +10,36 @@ namespace Unity.Pipeline.Tests.Editor
     /// Tests for the shared RoslynCompilationService to verify core compilation functionality.
     /// This service is used by both EvalCodeCompiler and HotReloadCompiler.
     /// </summary>
-    public class RoslynCompilationServiceTests
+    class RoslynCompilationServiceTests
     {
+        [Test] // A background compile that runs before any main-thread parse must not see an
+               // empty define set — SnapshotProjectDefines (called at editor load) seeds it.
+        public void ProjectParseOptions_OffThread_SeesSeededDefines()
+        {
+            var field = typeof(RoslynCompilationService).GetField("s_LastProjectDefines",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            var saved = field.GetValue(null);
+            try
+            {
+                // Simulate the pre-seed state (fresh domain, no main-thread parse yet): an
+                // off-thread caller gets an EMPTY define set — the hazard under test.
+                field.SetValue(null, System.Array.Empty<string>());
+                var before = Task.Run(() =>
+                    RoslynCompilationService.ProjectParseOptions().PreprocessorSymbolNames.ToArray()).Result;
+                CollectionAssert.IsEmpty(before, "off-thread defines before seeding (documents the hazard)");
+
+                // The editor-load seed (PipelineServerStartup) makes the snapshot available off-thread.
+                RoslynCompilationService.SnapshotProjectDefines();
+                var after = Task.Run(() =>
+                    RoslynCompilationService.ProjectParseOptions().PreprocessorSymbolNames.ToArray()).Result;
+                CollectionAssert.Contains(after, "UNITY_EDITOR");
+            }
+            finally
+            {
+                field.SetValue(null, saved);
+            }
+        }
+
         [Test]
         public void Compile_ValidCode_ReturnsSuccessfulResult()
         {
@@ -320,6 +348,42 @@ public static class NoDebugClass
             // Assert
             Assert.IsTrue(result.Success, "Should compile");
             Assert.IsNull(result.PdbBytes, "Default path must not emit a PDB (behavior unchanged)");
+        }
+
+        [Test]
+        public void Compile_WithEmbedDebugInformation_EmbedsPortablePdbInAssemblyBytes()
+        {
+            var request = new CompilationRequest
+            {
+                SourceCode = @"
+public static class EmbeddedDebugClass
+{
+    public static int Execute()
+    {
+        return 7;
+    }
+}",
+                AssemblyName = "EmbedPdbTestAssembly_" + System.Guid.NewGuid().ToString("N"),
+                EmbedDebugInformation = true,
+                DocumentPath = "EmbedPdbTest.cs",
+                SkipLoad = true
+            };
+
+            var result = RoslynCompilationService.Compile(request);
+
+            Assert.IsTrue(result.Success, $"Should compile. Errors: {string.Join(", ", result.Diagnostics?.Select(d => d.Message) ?? new string[0])}");
+            Assert.IsNull(result.PdbBytes, "Embedded mode must not produce separate PDB bytes");
+
+            // The PDB must ride inside the assembly bytes (PE debug directory) — that is the only
+            // place the IlInterpreter interpreter looks for sequence points.
+            using (var stream = new System.IO.MemoryStream(result.AssemblyBytes))
+            using (var pe = new System.Reflection.PortableExecutable.PEReader(stream))
+            {
+                Assert.IsTrue(
+                    pe.ReadDebugDirectory().Any(e =>
+                        e.Type == System.Reflection.PortableExecutable.DebugDirectoryEntryType.EmbeddedPortablePdb),
+                    "Assembly bytes should contain an embedded portable PDB debug directory entry");
+            }
         }
 
         [Test]

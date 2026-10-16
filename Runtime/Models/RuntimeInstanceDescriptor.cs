@@ -4,6 +4,9 @@ using UnityEngine;
 using Unity.Pipeline.Config;
 using System.IO;
 using Unity.Pipeline.Security;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Models
 {
@@ -12,7 +15,10 @@ namespace Unity.Pipeline.Models
     /// Different from Editor InstanceDescriptor to reflect runtime context and security.
     /// </summary>
     [Serializable]
-    public class RuntimeInstanceDescriptor
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
+    class RuntimeInstanceDescriptor
     {
         private const string RuntimeDescriptorFileName = ".unity-pipeline-runtime-port";
 
@@ -71,8 +77,23 @@ namespace Unity.Pipeline.Models
         public string EvalToken { get; set; }
 
         /// <summary>
+        /// Optional wire features this server understands (e.g. <c>exec.argv</c>), mirrored from
+        /// <see cref="BasePipelineServer.Capabilities"/> so the two carriers cannot drift.
+        ///
+        /// Carried in the descriptor because every client already reads this file locally to
+        /// obtain the eval token, so negotiation costs no extra request. A descriptor with NO
+        /// capabilities key at all comes from a server too old to have the field, and a client
+        /// must then assume it supports none of these features.
+        /// </summary>
+        [JsonProperty("capabilities", NullValueHandling = NullValueHandling.Ignore)]
+        public string[] Capabilities { get; set; }
+
+        /// <summary>
         /// Create runtime instance descriptor for current Player application.
         /// </summary>
+        /// <param name="port">Port the runtime server is listening on.</param>
+        /// <param name="config">The runtime pipeline configuration (currently unused, reserved for future fields).</param>
+        /// <returns>A populated descriptor for this Player instance.</returns>
         public static RuntimeInstanceDescriptor CreateCurrent(int port, RuntimePipelineConfig config)
         {
             try
@@ -87,6 +108,7 @@ namespace Unity.Pipeline.Models
 
                 return new RuntimeInstanceDescriptor
                 {
+                    Capabilities = BasePipelineServer.Capabilities,
                     Pid = pid,
                     Port = port,
                     Platform = platform,
@@ -115,6 +137,7 @@ namespace Unity.Pipeline.Models
         /// <summary>
         /// Write runtime instance descriptor to working directory.
         /// </summary>
+        /// <param name="descriptor">The descriptor to write.</param>
         public static void WriteToWorkingDirectory(RuntimeInstanceDescriptor descriptor)
         {
             lock (m_WriteGate)
@@ -145,6 +168,7 @@ namespace Unity.Pipeline.Models
         /// <summary>
         /// Read runtime instance descriptor from working directory.
         /// </summary>
+        /// <returns>The descriptor, or null if missing/corrupted.</returns>
         public static RuntimeInstanceDescriptor ReadFromWorkingDirectory()
         {
             var filePath = GetDescriptorFilePath();

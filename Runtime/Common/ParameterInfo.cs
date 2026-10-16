@@ -36,6 +36,11 @@ namespace Unity.Pipeline.Commands
         /// <summary>
         /// Create parameter information from discovery.
         /// </summary>
+        /// <param name="name">Name of the parameter for CLI arguments.</param>
+        /// <param name="description">Human-readable description of the parameter.</param>
+        /// <param name="required">Whether this parameter is required for command execution.</param>
+        /// <param name="parameterType">Type of the parameter for validation and conversion.</param>
+        /// <param name="defaultValue">Default value for optional parameters.</param>
         public CommandParameterInfo(string name, string description, bool required,
             Type parameterType, object defaultValue = null)
         {
@@ -46,6 +51,8 @@ namespace Unity.Pipeline.Commands
             DefaultValue = defaultValue;
         }
 
+        /// <summary>A short diagnostic summary of the parameter.</summary>
+        /// <returns>The summary string.</returns>
         public override string ToString()
         {
             return $"{Name} Required:{Required} Type:{ParameterType}";

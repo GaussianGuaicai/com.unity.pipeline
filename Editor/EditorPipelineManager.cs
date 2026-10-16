@@ -13,7 +13,7 @@ namespace Unity.Pipeline.Editor
     /// The asset is optional: without it the owner uses the defaults below. "Window/Pipeline/Settings"
     /// creates it on demand.
     /// </summary>
-    public class EditorPipelineManager : ScriptableObject
+    class EditorPipelineManager : ScriptableObject
     {
         [Tooltip("HTTP port for the editor server. 0 = auto-assign from the 7800-7849 range. Applies on next start.")]
         [SerializeField] private ushort m_Port = 0;
@@ -32,11 +32,40 @@ namespace Unity.Pipeline.Editor
                  "<project>/Logs/pipeline.log. Editor only; applies live.")]
         [SerializeField] private bool m_LogRequestsResponses = false;
 
+        [Tooltip("Record local eval-usage telemetry (fingerprints + shape, no raw source) to " +
+                 "<project>/Library/Pipeline/eval-usage.jsonl. Read it back with the 'report_evals' " +
+                 "command. Local-only; no data leaves the machine. Applies live.")]
+        [SerializeField] private bool m_EvalTelemetryEnabled = true;
+
+        [Tooltip("Also store the raw eval source in each eval-usage telemetry record. Off by default " +
+                 "(privacy-first) — enable only for local debugging. Applies live.")]
+        [SerializeField] private bool m_StoreEvalSource = false;
+
+        [Tooltip("Accept requests from a client running in a sandboxed browser frame (Origin: null), " +
+                 "such as a plugin hosted inside a web application. An ordinary web page is refused " +
+                 "either way, and a sandboxed one still needs the bearer token. Applies on next start.")]
+        [SerializeField] private bool m_AllowBrowserClients = false;
+
+        // Hot Reload Watch config, drawn by a dedicated inspector section (not DrawDefaultInspector).
+        [HideInInspector, SerializeField] private bool m_HotReloadRepushOnConnect = true;
+
+        /// <summary>HTTP port for the editor server. 0 = auto-assign. Applies on next start.</summary>
         public int Port => m_Port;
+        /// <summary>Start the server automatically when the editor loads.</summary>
         public bool AutoStart => m_AutoStart;
+        /// <summary>Self-heal: re-open the listener on a timer if it dies without a Stop().</summary>
         public bool WatchdogEnabled => m_WatchdogEnabled;
+        /// <summary>How often the watchdog checks the listener, in seconds.</summary>
         public int WatchdogIntervalSeconds => m_WatchdogIntervalSeconds;
+        /// <summary>Log every command request/response to Logs/pipeline.log.</summary>
         public bool LogRequestsResponses => m_LogRequestsResponses;
+        public bool EvalTelemetryEnabled => m_EvalTelemetryEnabled;
+        public bool StoreEvalSource => m_StoreEvalSource;
+        public bool AllowBrowserClients => m_AllowBrowserClients;
+
+        /// <summary>Player-target watches: re-push the watched hot-reload state to any player that
+        /// connects mid-watch, so a restarted player catches up without waiting for the next save.</summary>
+        internal bool HotReloadRepushOnConnect => m_HotReloadRepushOnConnect;
 
         /// <summary>Whether the live server (owned by PipelineServerStartup) is actually running.</summary>
         public bool IsServerRunning => PipelineServerStartup.Server != null && PipelineServerStartup.Server.IsRunning;
@@ -57,6 +86,7 @@ namespace Unity.Pipeline.Editor
         /// Load the single settings asset if one exists, otherwise null (the owner falls back to
         /// defaults). No caching — assets are cheap to look up and this is only read at start/inspect.
         /// </summary>
+        /// <returns>The settings asset, or null if none exists.</returns>
         public static EditorPipelineManager Load()
         {
             var guids = AssetDatabase.FindAssets("t:EditorPipelineManager");

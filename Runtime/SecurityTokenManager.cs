@@ -4,6 +4,9 @@ using System.Threading;
 #if UNITY_EDITOR
 using UnityEditor;
 #endif
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Security
 {
@@ -14,7 +17,10 @@ namespace Unity.Pipeline.Security
     /// Player builds use a per-process in-memory token. Published to the instance descriptor (port
     /// file) for CLI discovery; never written to a separate file.
     /// </summary>
-    public static class SecurityTokenManager
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
+    static class SecurityTokenManager
     {
         // In-editor persistence key. SessionState is session-scoped editor state (wiped on editor exit).
         private const string SessionStateKey = "Unity.Pipeline.SecurityToken";
@@ -35,6 +41,7 @@ namespace Unity.Pipeline.Security
         /// it survives domain reloads (regenerated only on editor restart or via <see cref="ClearCache"/>
         /// / <see cref="RotateToken"/>); player builds generate it once per process.
         /// </summary>
+        /// <returns>The current session token.</returns>
         public static string GetOrCreateToken()
         {
             // Fast path: plain read of the warmed cache — no lock, no SessionState.
@@ -75,6 +82,9 @@ namespace Unity.Pipeline.Security
         /// Compare two tokens in length-independent constant time to avoid leaking the expected
         /// token through comparison timing.
         /// </summary>
+        /// <param name="a">First token.</param>
+        /// <param name="b">Second token.</param>
+        /// <returns>True if the tokens are equal.</returns>
         public static bool ConstantTimeEquals(string a, string b)
         {
             if (string.IsNullOrEmpty(a) || string.IsNullOrEmpty(b))
@@ -121,6 +131,7 @@ namespace Unity.Pipeline.Security
         /// (GetToken validates live); the port file refreshes on the next heartbeat. Call on the main
         /// thread; a command exposing this must be MainThreadRequired and republish the descriptor.
         /// </summary>
+        /// <returns>The new token.</returns>
         public static string RotateToken()
         {
             ClearCache();

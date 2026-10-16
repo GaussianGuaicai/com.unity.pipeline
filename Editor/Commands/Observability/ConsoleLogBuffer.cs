@@ -3,6 +3,9 @@ using System.Collections.Generic;
 using Newtonsoft.Json;
 using UnityEditor;
 using UnityEngine;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Editor.Commands.Observability
 {
@@ -12,7 +15,7 @@ namespace Unity.Pipeline.Editor.Commands.Observability
     /// the Editor UI. Mirrors the fields Unity surfaces on <see cref="Application.logMessageReceivedThreaded"/>.
     /// </summary>
     [Serializable]
-    public class ConsoleLogEntryDto
+    class ConsoleLogEntryDto
     {
         /// <summary>Unity <see cref="LogType"/> name, e.g. "Log", "Warning", "Error", "Exception", "Assert".</summary>
         [JsonProperty("type")]
@@ -40,7 +43,10 @@ namespace Unity.Pipeline.Editor.Commands.Observability
     ///
     /// The buffer holds at most <see cref="MaxEntries"/> entries; the oldest is dropped when full.
     /// </summary>
-    public static class ConsoleLogBuffer
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
+    static class ConsoleLogBuffer
     {
         /// <summary>Maximum number of entries retained; oldest entries are dropped past this.</summary>
         public const int MaxEntries = 1000;

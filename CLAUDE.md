@@ -9,11 +9,13 @@ run tests, eval C#, hot-reload files, play-mode control, status/heartbeat.
 | Folder | Assembly | Notes |
 |--------|----------|-------|
 | `Runtime/` | `Unity.Pipeline` | Ships in player builds. HTTP server base, command registry, models, runtime commands, hot reload, player server. |
-| `Editor/` | `Unity.Pipeline.Editor` | Editor-only. Live server + its owner, settings asset, editor commands, test runner. |
+| `Runtime/IlInterpreter/` | `Unity.Pipeline.IlInterpreter` | IL interpreter (IlInterpreter VM) that executes eval snippets and hot-reloaded method bodies where `Reflection.Emit` is unavailable (IL2CPP). Referenced by both `Unity.Pipeline` and `Unity.Pipeline.Editor`. |
+| `Runtime/Analyzers/` | — | Shipped `IlInterpreterAnalyzer.dll` — Roslyn analyzer (MS002–MS023) surfacing the interpreter's C# subset on `[HotReload]` method bodies. Built from `IlInterpreter/analyzer/` at the repo root (see its `README.md`); auto-synced on Release builds — never edit the DLL by hand. |
+| `Editor/` | `Unity.Pipeline.Editor` | Editor-only. Live server + its owner, settings asset, editor commands, test runner, hot-reload watcher, build processors (`Editor/BuildProcessors/`, incl. the hot-reload `link.xml` generator). |
 | `CodeGen/` | `Unity.Pipeline.CodeGen` | ILPostProcessor (Mono.Cecil) for in-place hot reload. Root-level by Unity convention (cf. Burst/Entities) — leave as-is. |
 | `Tests/Editor/` | `Unity.Pipeline.Tests.Editor` | **EditMode** suite (the main one). |
 | `Tests/Runtime/` | `Unity.Pipeline.Tests.Runtime` | **PlayMode** suite. |
-| `Samples/` | — | Hot-reload sample scenes. |
+| `Samples~/` | — | Hot-reload sample scenes. |
 
 ## Architecture entry points
 
@@ -26,6 +28,13 @@ run tests, eval C#, hot-reload files, play-mode control, status/heartbeat.
 - Commands are discovered via `[CliCommand]` attributes. Editor command groups live under
   `Editor/Commands/` (Assets, Scenes, GameObjects, Prefabs, Scripts, Build, PackageManager,
   ProjectSettings, …); runtime commands under `Runtime/`.
+- **Interpreter path (IL2CPP-safe eval & hot reload)** — `Runtime/IlInterpreter/ScriptInterpreter.cs`
+  is the VM core; `Runtime/Compilation/IlInterpreterHostBindings.cs` (`CreateStandard()`) builds the
+  host surface it may call — consumed by eval, hot reload, and the `link.xml` generator
+  (`Editor/BuildProcessors/HotReloadLinkXmlGenerator.cs`); see the repo-root `CONTEXT.md` glossary
+  for the drift invariant. `Runtime/Compilation/InterpreterHotReloadExecutor.cs` routes reloaded
+  method bodies into the VM; `Editor/EditorHotReloadWatcher.cs` owns the file-watch → push-reload
+  loop.
 - **`Editor/Authoring/`** — helpers shared by state-changing commands: `AuthoringUndoScope`
   (collapses a command's `Undo`-registered mutations into one step) and `ProjectPaths`/`ObjectResolver`
   (authoring-root path resolution + object handles).
@@ -46,5 +55,9 @@ editor ticking while unfocused, so compiles proceed even when focus is elsewhere
 
 ## Conventions
 
-- Private fields (including static): `m_PascalCase`. Consts: `PascalCase`.
+- Private instance fields: `m_PascalCase`. Private static fields: `s_PascalCase`. Consts: `PascalCase`.
+  Exception: `Runtime/IlInterpreter/` keeps its `_camelCase` style.
 - Don't `git commit`/`push` without an explicit request.
+- Changelog entries: `[JIRA-KEY] <one short clause>` in Unreleased. No justification/why — state what changed, stop.
+  Plain English, minimal code snippets/API names — describe the change, don't quote the implementation.
+

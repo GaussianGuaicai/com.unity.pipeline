@@ -6,6 +6,9 @@ using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using UnityEditor;
 using UnityEngine;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 [assembly: InternalsVisibleTo("Unity.Pipeline.Tests.Editor")]
 
@@ -22,6 +25,9 @@ namespace Unity.Pipeline.Editor
     /// RotateForNewSession (called from server startup), NOT in Append — which runs on the background
     /// HTTP thread and is restricted to thread-safe file I/O.
     /// </summary>
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
     internal static class PipelineTransactionLog
     {
         private const string SessionRotatedKey = "Unity.Pipeline.TransactionLog.SessionRotated";
@@ -84,13 +90,8 @@ namespace Unity.Pipeline.Editor
             Directory.CreateDirectory(logsDir);
 
             var logPath = Path.Combine(logsDir, LogFileName);
-            if (!File.Exists(logPath))
-                return;
-
             var oldPath = Path.Combine(logsDir, OldLogFileName);
-            if (File.Exists(oldPath))
-                File.Delete(oldPath);
-            File.Move(logPath, oldPath);
+            RotatingFileBackup.RotateToBackup(logPath, oldPath);
         }
 
         /// <summary>

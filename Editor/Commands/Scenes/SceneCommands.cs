@@ -26,7 +26,7 @@ namespace Unity.Pipeline.Editor.Commands.Scenes
     /// <see cref="InvalidOperationException"/>, surfaced by the server as a 400 "Command Execution
     /// Failed" without touching scene state). The caller can exit play mode and retry.
     /// </summary>
-    public static class SceneCommands
+    static class SceneCommands
     {
         private const string SceneExtension = ".unity";
 

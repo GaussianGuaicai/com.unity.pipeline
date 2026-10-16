@@ -12,7 +12,7 @@ namespace Unity.Pipeline.Tests.Editor.Authoring
     /// Tests for the object-reference resolver foundation (CLI-190): each handle form resolves back
     /// to the same object, and Describe produces a canonical identity.
     /// </summary>
-    public class ObjectResolverTests
+    class ObjectResolverTests
     {
         private const string AssetFolder = "Assets/AUTHAPI9_Res";
 

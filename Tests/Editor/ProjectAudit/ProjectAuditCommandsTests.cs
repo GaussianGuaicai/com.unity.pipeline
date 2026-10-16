@@ -13,7 +13,7 @@ namespace Unity.Pipeline.Tests.Editor.ProjectAudit
     /// a real Project Auditor scan (slow, and Project Auditor may be absent from the test project;
     /// the reflection-driven scan is exercised live against an Editor that has it installed).
     /// </summary>
-    public class ProjectAuditCommandsTests
+    class ProjectAuditCommandsTests
     {
         [SetUp]
         public void SetUp() => CommandRegistry.SetDiscovery(new TypeCacheCommandDiscovery());

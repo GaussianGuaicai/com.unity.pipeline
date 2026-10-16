@@ -29,7 +29,7 @@ namespace Unity.Pipeline.Editor.Commands.Materials
     /// Material CREATION already exists in <c>create_asset</c> (CLI-221); this command set is the
     /// read/write surface on top of an existing material.
     /// </summary>
-    public static class MaterialCommands
+    static class MaterialCommands
     {
         [CliCommand("get_material_properties",
             "Read a material's shader, render queue, enabled keywords, and all shader properties with their current values (Color as [r,g,b,a], Vector as [x,y,z,w], Texture as an object reference).",
@@ -85,15 +85,15 @@ namespace Unity.Pipeline.Editor.Commands.Materials
             return result;
         }
 
-            private static int GetRawRenderQueue(Material material)
-            {
-        #if UNITY_6000_0_OR_NEWER
-                return material.rawRenderQueue;
-        #else
-                var property = new SerializedObject(material).FindProperty("m_CustomRenderQueue");
-                return property != null ? property.intValue : material.renderQueue;
-        #endif
-            }
+        private static int GetRawRenderQueue(Material material)
+        {
+#if UNITY_6000_0_OR_NEWER
+            return material.rawRenderQueue;
+#else
+            var property = new SerializedObject(material).FindProperty("m_CustomRenderQueue");
+            return property != null ? property.intValue : material.renderQueue;
+#endif
+        }
 
         [CliCommand("set_material_properties",
             "Set shader properties on a material (Float/Range/Int=number; Color=[r,g,b,a] or \"#RRGGBBAA\" hex; Vector=[x,y,z,w]; Texture=an object reference or null to clear), optionally reassign the shader, set the render queue, and toggle keywords. Unknown names / type mismatches are reported in unknown[].",
@@ -399,7 +399,7 @@ namespace Unity.Pipeline.Editor.Commands.Materials
     /// stable <c>shader_not_found</c> code (also prefixed onto the message, since the server propagates
     /// only the exception message over the wire) so a client can distinguish it from other failures.
     /// </summary>
-    public sealed class ShaderNotFoundException : Exception
+    sealed class ShaderNotFoundException : Exception
     {
         public const string CodeValue = "shader_not_found";
 

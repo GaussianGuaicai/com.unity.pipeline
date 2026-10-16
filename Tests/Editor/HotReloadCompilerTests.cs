@@ -15,7 +15,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// Tests for HotReloadCompiler to verify refactoring, deadlock fix, and core functionality.
     /// Tests the complete workflow: file reading → compilation → method registration.
     /// </summary>
-    public class HotReloadCompilerTests
+    class HotReloadCompilerTests
     {
         private string testHotReloadDir;
         private string validHotReloadFile;

@@ -1,6 +1,6 @@
 # Script commands
 
-Commands for creating C# script files, attaching MonoBehaviours to GameObjects, and reading/writing serialized fields. Writing a `.cs` file does not make its type available — Unity must import and compile it (a domain reload) first. The flow is: `create_script` → `recompile` → poll `recompile_status` (until completed/up_to_date) → `attach_script`.
+Commands for creating C# script files, attaching MonoBehaviours to GameObjects, reading/writing serialized fields, and running compiled project entry points in memory. Writing a `.cs` file does not make its type available — Unity must import and compile it (a domain reload) first. The flow is: `create_script` → `recompile` → poll `recompile_status` (until completed/up_to_date) → `attach_script`. For bulk construction that does **not** need a new persistent project type, skip the recompile entirely: [`run_script`](#run_script) compiles a file in memory and runs it with no asset import and no domain reload.
 
 ### `create_script`
 Create a new C# script (default base class MonoBehaviour) from a template under the authoring root. NOTE: the type does not exist until a recompile completes — to attach it, call recompile, poll recompile_status, then attach_script.
@@ -51,5 +51,61 @@ Read serialized fields of a component/asset. Returns each top-level field's name
 | `component` | no | `–` | Component type name on the target GameObject (e.g. 'Rigidbody'). Use when 'target' is a GameObject; omit when 'target' is already a component handle. |
 
 **Returns:** `object`
+
+### `run_script`
+Compile a single project `.cs` file in memory (no domain reload, no code carried through the
+protocol) and execute a named `static` entry point. This is the **builder-pattern** path for bulk
+construction — see the note below. Editor command; still arbitrary code execution, so it is grouped
+under the same `scripts/eval` tag as `eval` and is disabled wherever the eval family is disabled.
+
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `file` | yes | `–` | Path to a `.cs` file. Relative paths resolve against the **project root** (the parent of `Assets/`), not the process working directory. May live **outside `Assets/`** (e.g. `AgentScripts/`) so writing it never triggers an asset import or domain reload. |
+| `entry` | no | `–` | Entry point as `Namespace.Type.Method` (or `Type.Method`, or a bare `Method`). Nested types may be written with dots (`Outer.Inner.Method`). Default: the single public static method if unambiguous, else a method named `Main`. Static, non-generic methods only in v1. Ephemeral mode only — rejected with `mode=hotpatch`. |
+| `args` | no | `–` | JSON array of arguments, coerced to the entry's parameter types: primitives, enum names, `string[]`, and a string/object handle (`ObjectRef`) for `UnityEngine.Object` parameters. JSON `null` is only valid for reference-type and nullable parameters (never a silent `default(T)`). Ephemeral mode only — rejected with `mode=hotpatch`. |
+| `mode` | no | `ephemeral` | `ephemeral`: compile to an in-memory assembly, run the entry, discard. `hotpatch`: apply in-place `[HotReload]` method replacements to already-loaded types (delegates to `reload_file`). |
+| `references` | no | `–` | Extra assembly name prefixes to reference. In the Editor all loaded assemblies are already referenced, so this is effectively a no-op there. Ephemeral mode only; **not applied** by hotpatch (the compile is `reload_file`'s). |
+| `defines` | no | `–` | Extra scripting define symbols, **appended to the project's active editor defines** (`EditorUserBuildSettings.activeScriptCompilationDefines`) — so `UNITY_EDITOR`, version and platform symbols are already set and sources behave like project code; your defines extend that set rather than replace it. Ephemeral mode only; **not applied** by hotpatch. |
+| `pdb` | no | `false` | Emit a portable PDB mapped to the source file so breakpoints bind. Ephemeral runs always emit source-mapped symbols so exception stack traces carry `file:line`. Compiles unoptimized. |
+| `timeout_ms` | no | `30000` | Timeout in milliseconds (governs the main-thread wait budget end-to-end, like `eval`). |
+| `dry_run` | no | `false` | Compile only: return diagnostics; the emitted assembly is **not loaded** into the domain and nothing executes (the response carries no `assemblyName`). Rejected with `mode=hotpatch` — a hotpatch "dry run" would still apply live method replacements. |
+
+**Returns:** `RunScriptResponse` — `{ result, diagnostics, compileMs, executeMs, assemblyName }` on top
+of the standard envelope. The result carries no echo of the source (path + diagnostics only). Compile
+errors return full Roslyn diagnostics (with line/column) and execute nothing; runtime exceptions
+surface as structured errors with `file:line` mapped to the source file.
+**Notes:** `MainThreadRequired = true`. Editor command.
+
+- Executing runs always compile **unoptimized (Debug codegen)** so the emitted symbols keep full
+  sequence points for `file:line` mapping — expect the generated code to run somewhat slower than
+  regular project assemblies.
+- **Async entry points** (`async Task` / `Task<T>`) are awaited to completion; `Task<T>.Result`
+  becomes the command result and exceptions in the async work surface as runtime errors. The await
+  is **asynchronous** — the Editor main thread keeps pumping, so awaits that resume on Unity's
+  main-thread context (`Task.Yield()`, `Task.Delay()`, Awaitable, …) work naturally; no
+  `ConfigureAwait(false)` contortions are required. The wait is bounded by what remains of
+  `timeout_ms`; on expiry the command returns a `Timeout` error and the task keeps running
+  detached (its effects may still land), like an abandoned `eval`.
+- **hotpatch specifics:** `entry`, `args` and `dry_run` are rejected (Bad Request); `references` and
+  `defines` are not applied. Path resolution follows `reload_file`, which probes under `Assets/`
+  for bare filenames (unlike ephemeral's project-root resolution). Timing: `executeMs` carries the
+  whole reload duration (compile + apply, not split by `reload_file`); `compileMs` is `0`. Advisory
+  reload diagnostics are surfaced as severity-`warning` entries on success.
+- Under Unity's Mono runtime the in-memory assembly emitted by an executing `ephemeral` run is
+  **not** collectible/unloadable, so each run retains one small assembly (the same behavior as
+  `eval`); prefer a single builder entry over many tiny runs. `dry_run` loads nothing.
+
+#### The builder pattern (bulk construction)
+
+For bulk construction — creating many objects, wiring private fields, generating content — put the
+logic in a **versioned project script** and invoke it with `run_script`. Write the file with
+`write_text_file` (ideally under a non-`Assets/` folder such as `AgentScripts/` so the write triggers
+no asset import), then call `run_script --file AgentScripts/Build.cs --entry Build.All`. Iterating the
+script and re-running it costs an in-memory compile (< ~2s), **not** a 15–20s domain reload.
+
+The anti-patterns this replaces: carrying construction code as escaped C# strings through `eval`
+(verbose, unreviewable, shell-escaping hazards), and editing a builder under `Assets/` in a loop
+(each edit pays a full domain reload). Hold the line: code goes in files on disk via `run_script`;
+`eval` stays for genuinely ad-hoc one-liners.
 
 See [Creating commands](../creating-commands.md) and [Connectivity](../connectivity.md).

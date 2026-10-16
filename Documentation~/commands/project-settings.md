@@ -1,6 +1,6 @@
 # Project settings commands
 
-Read and change a representative slice of Unity's project-wide settings (Audio, Graphics, Input, Physics, Player, Quality, Tags & Layers, Time). `get_*` commands read a group's current values into a `ProjectSettingsResponse`; `set_*` commands mutate them through the shared `confirm`/`dry_run` convention, so `confirm=true` is required to apply and `dry_run=true` previews the change without applying it. Every command in this group is `MainThreadRequired = true`. On a `set_*`, omitted fields are left unchanged, and the group is re-read after the write so the response reflects the resulting state. Settings writes are not undoable via Ctrl+Z.
+Read and change a representative slice of Unity's project-wide settings (Audio, Graphics, Input, Physics, Player, Quality, Runtime Pipeline, Tags & Layers, Time). `get_*` commands read a group's current values into a `ProjectSettingsResponse`; `set_*` commands mutate them through the shared `confirm`/`dry_run` convention, so `confirm=true` is required to apply and `dry_run=true` previews the change without applying it. Every command in this group is `MainThreadRequired = true`. On a `set_*`, omitted fields are left unchanged, and the group is re-read after the write so the response reflects the resulting state. Settings writes are not undoable via Ctrl+Z.
 
 ### `get_audio_settings`
 Read project Audio settings (volume, rolloff scale, doppler factor).
@@ -172,6 +172,37 @@ Change QualitySettings. Requires confirm=true; use dry_run to preview.
 
 **Returns:** `ProjectSettingsResponse`
 **Notes:** `MainThreadRequired = true`. `confirm=true` required to apply; supports `dry_run`.
+
+### `get_runtime_pipeline_settings`
+Read Pipeline Runtime settings (enableInBuilds, port, requestTimeoutMs, enableAuditLogging, autoStart, maxWorkItemsPerFrame). Reports the settings in effect, falling back to built-in defaults when none have been authored; never creates the settings file.
+
+No parameters.
+
+**Returns:** `ProjectSettingsResponse`
+**Notes:** `MainThreadRequired = true`.
+
+### `set_runtime_pipeline_settings`
+Change Pipeline Runtime settings. Requires confirm=true; use dry_run to preview.
+
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `settings` | no | `–` | Fields to change; omitted fields are left unchanged (fields below). |
+| `confirm` | no | `false` | Apply the change. Without it the call is refused. |
+| `dry_run` | no | `false` | Preview the change without applying it. |
+
+`settings` fields:
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `enableInBuilds` | no | `–` | Enable the Pipeline HTTP server in Player builds. SECURITY WARNING: only enable in development/QA builds. |
+| `port` | no | `–` | HTTP port for the Pipeline server. 0 = auto-assign from range 7900-7999. |
+| `requestTimeoutMs` | no | `–` | Request timeout in milliseconds. |
+| `enableAuditLogging` | no | `–` | Log every remote request for security auditing. |
+| `autoStart` | no | `–` | Start the server automatically when the Player boots (or Play Mode is entered). |
+| `maxWorkItemsPerFrame` | no | `–` | Maximum work items the dispatcher processes per frame. |
+
+**Returns:** `ProjectSettingsResponse`
+**Notes:** `MainThreadRequired = true`. `confirm=true` required to apply; supports `dry_run`. Refused while in Play Mode — the running driver already loaded its own settings, so a change would silently not apply until the next Play session or build. `port` (0-65535), `requestTimeoutMs` (1000-60000), and `maxWorkItemsPerFrame` (1-50) are rejected outright with a `Fail` response if outside these bounds — the same ones the Project Settings page enforces — rather than being clamped or silently applied.
 
 ### `get_tags_layers`
 Read the project's tags and (named) layers.

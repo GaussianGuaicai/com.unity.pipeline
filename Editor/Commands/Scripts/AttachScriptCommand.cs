@@ -26,7 +26,7 @@ namespace Unity.Pipeline.Editor.Commands.Scripts
     /// The component add is wrapped in an <see cref="AuthoringUndoScope"/> and registered with the
     /// Undo system so it reverts as one step and the owning object/prefab is marked dirty.
     /// </summary>
-    public static class AttachScriptCommand
+    static class AttachScriptCommand
     {
         [CliCommand("attach_script",
             "Add a MonoBehaviour to a GameObject by its (compiled) type name OR by its script asset path. " +

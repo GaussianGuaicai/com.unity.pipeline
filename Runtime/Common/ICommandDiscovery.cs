@@ -7,12 +7,14 @@ namespace Unity.Pipeline.Commands
     /// Interface for command discovery mechanism.
     /// Allows Runtime assembly to discover commands without directly using Editor APIs.
     /// </summary>
-    public interface ICommandDiscovery
+    interface ICommandDiscovery
     {
         /// <summary>
         /// Find all methods marked with CliCommand attribute.
         /// Implementation uses TypeCache in Editor or reflection fallback in Runtime.
         /// </summary>
+        /// <typeparam name="T">The attribute type to search for.</typeparam>
+        /// <returns>The matching methods.</returns>
         IEnumerable<MethodInfo> GetMethodsWithAttribute<T>() where T : System.Attribute;
     }
 }

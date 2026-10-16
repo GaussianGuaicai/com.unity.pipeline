@@ -20,7 +20,7 @@ namespace Unity.Pipeline.Samples.HotReload
         public string lastActionLog = "No action yet";
         public float lastDamageCalculated;
 
-        // No manual registration needed: RuntimePipelineManager auto-discovers [HotReloadWithOverrides] methods.
+        // No manual registration needed: the Pipeline runtime driver auto-discovers [HotReloadWithOverrides] methods.
 
         void Start()
         {

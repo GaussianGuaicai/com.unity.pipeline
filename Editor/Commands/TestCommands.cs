@@ -13,7 +13,7 @@ namespace Unity.Pipeline.Editor.Commands
     /// <summary>
     /// Commands for running Unity tests programmatically
     /// </summary>
-    public static class TestCommands
+    static class TestCommands
     {
         /// <summary>
         /// Execute Unity tests with filtering options.
@@ -197,7 +197,7 @@ namespace Unity.Pipeline.Editor.Commands
     /// Response for the list_tests command: the available tests, without execution results.
     /// </summary>
     [Serializable]
-    public class TestListResponse : CommandExecutionResponse
+    class TestListResponse : CommandExecutionResponse
     {
         public string Mode { get; set; }       // EditMode, PlayMode, or All
         public int Count { get; set; }
@@ -208,7 +208,7 @@ namespace Unity.Pipeline.Editor.Commands
     /// A single available test (no run state / outcome — this is a listing, not a result).
     /// </summary>
     [Serializable]
-    public class TestListItem
+    class TestListItem
     {
         public string FullName { get; set; }
         public string Mode { get; set; }

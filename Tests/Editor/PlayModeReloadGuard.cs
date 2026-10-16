@@ -22,7 +22,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// recompiles (e.g. RequestScriptReload) would still reload — that is a different mechanism.
     /// </summary>
     [SetUpFixture]
-    public class PlayModeReloadGuard
+    class PlayModeReloadGuard
     {
         const string k_StashedKey = "Unity.Pipeline.Tests.EnterPlayModeStashed";
         const string k_EnabledKey = "Unity.Pipeline.Tests.EnterPlayModeEnabled";

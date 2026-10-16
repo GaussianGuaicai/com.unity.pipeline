@@ -14,7 +14,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// Tests for the test commands (run_tests, test_status, cancel_tests): input validation and
     /// registration/discovery. Does not execute a real test run (that would be self-referential).
     /// </summary>
-    public class TestCommandsTests
+    class TestCommandsTests
     {
         [SetUp]
         public void SetUp()

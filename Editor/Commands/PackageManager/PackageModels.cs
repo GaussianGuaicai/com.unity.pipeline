@@ -9,7 +9,7 @@ namespace Unity.Pipeline.Editor.Commands.PackageManager
     /// <c>UnityEditor.PackageManager.PackageInfo</c> (CLI-203).
     /// </summary>
     [Serializable]
-    public class PackageSummary
+    class PackageSummary
     {
         [JsonProperty("name")] public string Name { get; set; }
         [JsonProperty("version")] public string Version { get; set; }
@@ -35,7 +35,7 @@ namespace Unity.Pipeline.Editor.Commands.PackageManager
     /// path that the mutating commands do.
     /// </summary>
     [Serializable]
-    public class PackageListResponse
+    class PackageListResponse
     {
         [JsonProperty("success")] public bool Success { get; set; }
 
@@ -59,7 +59,7 @@ namespace Unity.Pipeline.Editor.Commands.PackageManager
     /// <see cref="PackageSummary.IsInstalled"/> so callers can tell which results are already installed.
     /// </summary>
     [Serializable]
-    public class PackageSearchResponse
+    class PackageSearchResponse
     {
         [JsonProperty("success")] public bool Success { get; set; }
 
@@ -81,7 +81,7 @@ namespace Unity.Pipeline.Editor.Commands.PackageManager
     /// synchronous reply was lost to the reload.
     /// </summary>
     [Serializable]
-    public class PackageStatus
+    class PackageStatus
     {
         /// <summary>idle | in_progress | completed | failed.</summary>
         [JsonProperty("status")] public string Status { get; set; }
@@ -121,7 +121,7 @@ namespace Unity.Pipeline.Editor.Commands.PackageManager
     /// <c>recompile_status</c> to wait for the editor to be ready.
     /// </summary>
     [Serializable]
-    public class PackageMutationResponse
+    class PackageMutationResponse
     {
         [JsonProperty("success")] public bool Success { get; set; }
 

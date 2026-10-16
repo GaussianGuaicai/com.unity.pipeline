@@ -35,7 +35,7 @@ namespace Unity.Pipeline.Editor.Commands.Prefabs
     /// <see cref="PrefabUtility.UnloadPrefabContents"/>) rather than mutating the asset root directly,
     /// which preserves nested-prefab links instead of flattening them.
     /// </summary>
-    public static class PrefabCommands
+    static class PrefabCommands
     {
         /// <summary>
         /// Save a source GameObject (typically a scene object) as a prefab asset. The source becomes

@@ -8,7 +8,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// The live editor's own server may already have auto-tick enabled, so SetUp/TearDown save and
     /// restore whatever state was live before each test instead of assuming it starts off.
     /// </summary>
-    public class AutoTickCommandTests
+    class AutoTickCommandTests
     {
         private bool m_PrevEnabled;
         private long m_PrevIntervalMs;

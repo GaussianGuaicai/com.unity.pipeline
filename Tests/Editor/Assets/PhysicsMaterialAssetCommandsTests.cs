@@ -23,7 +23,7 @@ namespace Unity.Pipeline.Tests.Editor.Assets
     /// a ".physicsMaterial" request to ".physicMaterial", so the created path is asserted via the
     /// command result rather than the requested path.
     /// </summary>
-    public class PhysicsMaterialAssetCommandsTests
+    class PhysicsMaterialAssetCommandsTests
     {
         private const string Root = "Assets/__CLI221_222Test";
 

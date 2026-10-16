@@ -16,7 +16,7 @@ using ObservabilityConsoleLogEntryDto = Unity.Pipeline.Editor.Commands.Observabi
 
 namespace Unity.Pipeline.Tests.Editor.Console
 {
-    public class ConsoleCaptureResubscribeTests
+    class ConsoleCaptureResubscribeTests
     {
         [UnityTearDown]
         public IEnumerator TearDown()

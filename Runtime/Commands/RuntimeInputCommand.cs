@@ -28,7 +28,7 @@ namespace Unity.Pipeline.Runtime.Commands
     /// <c>set_target_framerate</c>). TODO(CAT-2509): route input commands through the safety policy when it
     /// lands.</para>
     /// </summary>
-    public static class RuntimeInputCommand
+    static class RuntimeInputCommand
     {
         [CliCommand("simulate_key", "Simulate a keyboard key event (Input System). Drives the running app.",
             MainThreadRequired = true, RuntimeOnly = true,
@@ -157,7 +157,7 @@ namespace Unity.Pipeline.Runtime.Commands
     /// human-readable detail (or an error / unavailable reason).
     /// </summary>
     [Serializable]
-    public class InputSimulationResponse
+    class InputSimulationResponse
     {
         public bool Success { get; set; }
         public string Command { get; set; }

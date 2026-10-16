@@ -17,7 +17,7 @@ namespace Unity.Pipeline.Tests.Editor.GameObjects
     /// Undo-revert contract. Test GameObjects are created with plain UnityEngine/UnityEditor APIs and
     /// torn down explicitly so the suite leaves no scene residue.
     /// </summary>
-    public class GameObjectCommandsTests
+    class GameObjectCommandsTests
     {
         private readonly List<GameObject> m_Spawned = new List<GameObject>();
 

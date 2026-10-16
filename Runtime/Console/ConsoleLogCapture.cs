@@ -1,5 +1,8 @@
 using System;
 using UnityEngine;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Console
 {
@@ -26,13 +29,16 @@ namespace Unity.Pipeline.Console
     /// before the package's first import — are not retroactively captured; this reads from the public
     /// log callback, not Unity's internal console store.
     /// </summary>
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
     public static class ConsoleLogCapture
     {
         static readonly ConsoleLogBuffer s_Buffer = new ConsoleLogBuffer();
         static readonly object s_SubscriptionLock = new object();
 
         /// <summary>The shared buffer holding captured console entries.</summary>
-        public static ConsoleLogBuffer Buffer => s_Buffer;
+        internal static ConsoleLogBuffer Buffer => s_Buffer;
 
         /// <summary>
         /// Player entry point. Runs as the application boots so console output is captured from the

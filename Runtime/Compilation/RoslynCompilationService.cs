@@ -19,7 +19,7 @@ namespace Unity.Pipeline.Compilation
     /// Eliminates code duplication by providing common compilation infrastructure.
     /// Thread-safe and can be called from any thread.
     /// </summary>
-    public static class RoslynCompilationService
+    static class RoslynCompilationService
     {
 #if UNITY_EDITOR || (UNITY_STANDALONE && DEBUG)
 
@@ -27,17 +27,24 @@ namespace Unity.Pipeline.Compilation
         /// Compile source code to assembly with customizable options.
         /// Thread-safe compilation that can run on any thread.
         /// </summary>
+        /// <param name="request">The source and compilation options.</param>
+        /// <returns>The compilation result.</returns>
         public static CompilationResult Compile(CompilationRequest request)
         {
             try
             {
                 // Parse syntax tree. When emitting debug info, the tree needs a document path and
-                // UTF-8 encoding so the portable PDB can reference a source document.
-                var syntaxTree = request.EmitDebugInformation
+                // UTF-8 encoding so the portable PDB can reference a source document. Explicit
+                // symbols (e.g. run_script's `defines`) win; otherwise the project's define set
+                // applies so the source's #if regions match the running assemblies.
+                var emitDebug = request.EmitDebugInformation || request.EmbedDebugInformation;
+                var parseOptions = ProjectParseOptions(request.PreprocessorSymbols);
+                var syntaxTree = emitDebug
                     ? CSharpSyntaxTree.ParseText(
                         SourceText.From(request.SourceCode, Encoding.UTF8),
+                        parseOptions,
                         path: request.DocumentPath ?? request.AssemblyName + ".cs")
-                    : CSharpSyntaxTree.ParseText(request.SourceCode);
+                    : CSharpSyntaxTree.ParseText(request.SourceCode, parseOptions);
 
                 // Get metadata references with optional additional prefixes
                 var references = GetMetadataReferences(request.AdditionalAssemblyPrefixes);
@@ -45,8 +52,18 @@ namespace Unity.Pipeline.Compilation
                 // Create compilation. Disable optimizations when emitting debug info so the JIT
                 // keeps full sequence points (otherwise breakpoints can't bind).
                 var options = new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary);
-                if (request.EmitDebugInformation)
+                if (emitDebug)
                     options = options.WithOptimizationLevel(OptimizationLevel.Debug);
+                // Non-public member access needs two pieces: MetadataImportOptions.All (the default,
+                // Public, doesn't import non-public members of referenced assemblies at all — CS1061)
+                // and BinderFlags.IgnoreAccessibility (the compiler does not honor
+                // [assembly: IgnoresAccessChecksTo] — CS0122 otherwise). Interpreter-bound compiles
+                // only (see the property doc): the interpreter executes the result by reflection,
+                // which reaches non-public members. Unity's Mono JIT-enforces accessibility on
+                // Assembly.Load'd IL and ignores IgnoresAccessChecksTo too (verified on Mono 6.13) —
+                // see HotReloadInPlaceTests.ReloadFileInPlace_PrivateFieldAccess_FailsValidationUpFront.
+                if (request.AllowNonPublicMemberAccess)
+                    options = WithIgnoreAccessibility(options.WithMetadataImportOptions(MetadataImportOptions.All));
 
                 var compilation = CSharpCompilation.Create(
                     request.AssemblyName,
@@ -75,7 +92,16 @@ namespace Unity.Pipeline.Compilation
                     byte[] pdbBytes = null;
                     EmitResult emitResult;
 
-                    if (request.EmitDebugInformation)
+                    if (request.EmbedDebugInformation)
+                    {
+                        // Embed the portable PDB in the PE debug directory so the single byte[]
+                        // pushed to a player carries its own sequence points; the IlInterpreter
+                        // interpreter reads line info only from an embedded PDB.
+                        emitResult = compilation.Emit(
+                            peStream,
+                            options: new EmitOptions(debugInformationFormat: DebugInformationFormat.Embedded));
+                    }
+                    else if (request.EmitDebugInformation)
                     {
                         using (var pdbStream = new MemoryStream())
                         {
@@ -105,10 +131,16 @@ namespace Unity.Pipeline.Compilation
 
                     // Load assembly from memory. When symbols are present, load them alongside the
                     // assembly so an attached debugger can bind breakpoints into the emitted code.
+                    // SkipLoad = emit-only (run_script's dry_run, and the interpreter path — see
+                    // the property doc).
                     var assemblyBytes = peStream.ToArray();
-                    var assembly = pdbBytes != null
-                        ? PipelineUtils.LoadFromBytes(assemblyBytes, pdbBytes)
-                        : PipelineUtils.LoadFromBytes(assemblyBytes);
+                    Assembly assembly = null;
+                    if (!request.SkipLoad)
+                    {
+                        assembly = pdbBytes != null
+                            ? PipelineUtils.LoadFromBytes(assemblyBytes, pdbBytes)
+                            : PipelineUtils.LoadFromBytes(assemblyBytes);
+                    }
 
                     return new CompilationResult
                     {
@@ -144,15 +176,65 @@ namespace Unity.Pipeline.Compilation
         /// Async wrapper for compilation that runs on background thread.
         /// Use when you need to avoid blocking the calling thread.
         /// </summary>
+        /// <param name="request">The source and compilation options.</param>
+        /// <returns>The compilation result.</returns>
         public static Task<CompilationResult> CompileAsync(CompilationRequest request)
         {
             return Task.Run(() => Compile(request));
         }
 
+        // MetadataReference cache keyed by assembly path. Reusing the same instances, both within one
+        // reload and across successive reloads, lets Roslyn cache each assembly's parsed metadata
+        // instead of re-reading all ~190 DLLs per compilation (~830 ms each). Static: cleared by
+        // domain reload, which is when the loaded-assembly set can change.
+        static readonly System.Collections.Concurrent.ConcurrentDictionary<string, MetadataReference> s_ReferenceCache =
+            new System.Collections.Concurrent.ConcurrentDictionary<string, MetadataReference>();
+
+        static MetadataReference GetCachedReference(string path) =>
+            s_ReferenceCache.GetOrAdd(path, p => MetadataReference.CreateFromFile(p));
+
+        // The internal BinderFlags.IgnoreAccessibility is the only way to disable Roslyn's
+        // compile-time access checks (no public API; [IgnoresAccessChecksTo] is ignored, see Compile).
+        // Resolve the internal CSharpCompilationOptions.WithTopLevelBinderFlags(BinderFlags) once.
+        static bool s_BinderFlagResolved;
+        static MethodInfo s_WithTopLevelBinderFlags;
+        static object s_IgnoreAccessibilityFlag;
+
+        static CSharpCompilationOptions WithIgnoreAccessibility(CSharpCompilationOptions options)
+        {
+            if (!s_BinderFlagResolved)
+            {
+                s_BinderFlagResolved = true;
+                try
+                {
+                    var binderFlags = typeof(CSharpCompilationOptions).Assembly
+                        .GetType("Microsoft.CodeAnalysis.CSharp.BinderFlags");
+                    if (binderFlags != null)
+                    {
+                        s_IgnoreAccessibilityFlag = Enum.Parse(binderFlags, "IgnoreAccessibility");
+                        s_WithTopLevelBinderFlags = typeof(CSharpCompilationOptions).GetMethod(
+                            "WithTopLevelBinderFlags", BindingFlags.NonPublic | BindingFlags.Instance);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogWarning($"Pipeline: could not resolve IgnoreAccessibility binder flag; hot-reload " +
+                        $"overrides touching non-public members may fail to compile. {ex.Message}");
+                }
+            }
+
+            if (s_WithTopLevelBinderFlags != null && s_IgnoreAccessibilityFlag != null)
+                return (CSharpCompilationOptions)s_WithTopLevelBinderFlags.Invoke(options, new[] { s_IgnoreAccessibilityFlag });
+            return options;
+        }
+
         /// <summary>
         /// Get metadata references for compilation with optional additional assembly prefixes.
-        /// Handles both Editor and Runtime scenarios with appropriate filtering.
+        /// Handles both Editor and Runtime scenarios with appropriate filtering. Reference instances
+        /// are cached by path (see <see cref="s_ReferenceCache"/>) so repeated compilations are cheap.
         /// </summary>
+        /// <param name="additionalPrefixes">Extra assembly name prefixes to include as references.</param>
+        /// <returns>The metadata references to compile against.</returns>
         public static List<MetadataReference> GetMetadataReferences(string[] additionalPrefixes = null)
         {
             var references = new List<MetadataReference>();
@@ -166,7 +248,7 @@ namespace Unity.Pipeline.Compilation
                 {
                     try
                     {
-                        references.Add(MetadataReference.CreateFromFile(PipelineUtils.GetLoadedAssemblyPath(assembly)));
+                        references.Add(GetCachedReference(PipelineUtils.GetLoadedAssemblyPath(assembly)));
                     }
                     catch
                     {
@@ -200,7 +282,7 @@ namespace Unity.Pipeline.Compilation
                         var assemblyName = assembly.GetName().Name;
                         if (allowedPrefixes.Any(prefix => assemblyName.StartsWith(prefix)))
                         {
-                            references.Add(MetadataReference.CreateFromFile(PipelineUtils.GetLoadedAssemblyPath(assembly)));
+                            references.Add(GetCachedReference(PipelineUtils.GetLoadedAssemblyPath(assembly)));
                         }
                     }
                     catch
@@ -245,6 +327,8 @@ namespace Unity.Pipeline.Compilation
         /// Runtime compilation not supported on this platform.
         /// Desktop development builds only (Windows/Mac/Linux).
         /// </summary>
+        /// <param name="request">Unused on this build.</param>
+        /// <returns>A failure result explaining runtime compilation isn't supported on this build.</returns>
         public static CompilationResult Compile(CompilationRequest request)
         {
             return new CompilationResult
@@ -267,6 +351,8 @@ namespace Unity.Pipeline.Compilation
         /// <summary>
         /// Runtime compilation not supported on this platform.
         /// </summary>
+        /// <param name="request">Unused on this build.</param>
+        /// <returns>A completed task carrying a failure result.</returns>
         public static Task<CompilationResult> CompileAsync(CompilationRequest request)
         {
             return Task.FromResult(Compile(request));
@@ -275,11 +361,48 @@ namespace Unity.Pipeline.Compilation
         /// <summary>
         /// Runtime compilation not supported on this platform.
         /// </summary>
+        /// <param name="additionalPrefixes">Unused on this build.</param>
+        /// <returns>An empty list.</returns>
         public static List<MetadataReference> GetMetadataReferences(string[] additionalPrefixes = null)
         {
             return new List<MetadataReference>();
         }
 #endif
+
+        // Preprocessor symbols the surrounding project was compiled with. Reload/eval sources must
+        // parse under the same defines as the assemblies they patch, or every #if UNITY_EDITOR /
+        // ENABLE_INPUT_SYSTEM / UNITY_STANDALONE region resolves to the wrong branch. The editor
+        // snapshots its live define set; a Mono dev player has no runtime API for it, so callers
+        // that care (the editor-side push path) pass explicit symbols.
+        //
+        // Kept outside the desktop-dev #if region: the parse sites that consume this
+        // (OverrideFileValidator, InPlaceReloadProcessor, SourceCodeTransformer) also compile on
+        // release standalone, where the region above is compiled out.
+        static string[] s_LastProjectDefines = Array.Empty<string>();
+
+        static string[] ProjectDefines()
+        {
+#if UNITY_EDITOR
+            // Editor API — main thread only. Off-thread callers reuse the last snapshot.
+            try { s_LastProjectDefines = UnityEditor.EditorUserBuildSettings.activeScriptCompilationDefines; }
+            catch { }
+#endif
+            return s_LastProjectDefines;
+        }
+
+        /// <summary>
+        /// Seed the define snapshot from the main thread. Called at editor load
+        /// (PipelineServerStartup's [InitializeOnLoad] ctor) so a background compile that runs
+        /// before any main-thread parse doesn't see an EMPTY define set — its #if UNITY_EDITOR /
+        /// UNITY_STANDALONE regions would resolve to the wrong branch.
+        /// </summary>
+        internal static void SnapshotProjectDefines() => ProjectDefines();
+
+        /// <summary>Parse options carrying <paramref name="preprocessorSymbols"/>, or the project's
+        /// define set (see <see cref="ProjectDefines"/>) when null. Every parse of user source in the
+        /// reload/eval pipeline should use this so #if regions match the running assemblies.</summary>
+        internal static CSharpParseOptions ProjectParseOptions(string[] preprocessorSymbols = null)
+            => CSharpParseOptions.Default.WithPreprocessorSymbols(preprocessorSymbols ?? ProjectDefines());
     }
 
     /// <summary>
@@ -304,6 +427,15 @@ namespace Unity.Pipeline.Compilation
         public string[] AdditionalAssemblyPrefixes { get; set; }
 
         /// <summary>
+        /// Preprocessor symbols to parse with. Null = the project's define set
+        /// (<see cref="RoslynCompilationService.ProjectDefines"/>), so #if regions in the source
+        /// resolve the same way they did when the running assemblies were compiled. The push-to-player
+        /// path passes the target player's defines explicitly, and <c>run_script</c>'s
+        /// <c>defines</c> parameter arrives here too.
+        /// </summary>
+        internal string[] PreprocessorSymbols { get; set; }
+
+        /// <summary>
         /// Line number offset to subtract from diagnostic line numbers.
         /// Used when source code has wrapper code that should be hidden from diagnostics.
         /// </summary>
@@ -316,10 +448,40 @@ namespace Unity.Pipeline.Compilation
         public bool EmitDebugInformation { get; set; }
 
         /// <summary>
-        /// Document path recorded in the syntax tree when <see cref="EmitDebugInformation"/> is set.
+        /// When true, emit the portable PDB inside the assembly itself (PE debug directory) instead
+        /// of as separate <see cref="CompilationResult.PdbBytes"/>. Compiles unoptimized, like
+        /// <see cref="EmitDebugInformation"/>. Use for the interpreter push path, which ships a single
+        /// byte[] to the player — the IlInterpreter interpreter resolves error line numbers only from an
+        /// embedded PDB.
+        /// </summary>
+        internal bool EmbedDebugInformation { get; set; }
+
+        /// <summary>
+        /// Document path recorded in the syntax tree when <see cref="EmitDebugInformation"/> or
+        /// <see cref="EmbedDebugInformation"/> is set.
         /// Source that is not covered by explicit <c>#line</c> directives maps to this path.
         /// </summary>
         public string DocumentPath { get; set; }
+
+        /// <summary>
+        /// When true, compile and collect diagnostics but do NOT load the emitted assembly into
+        /// the domain: <see cref="CompilationResult.Assembly"/> stays null;
+        /// <see cref="CompilationResult.AssemblyBytes"/> is still returned. Two callers need this:
+        /// compile-only paths such as <c>run_script</c>'s <c>dry_run</c> (in-memory assemblies are
+        /// not unloadable under Mono, so loading would leak one per compile), and the IL2CPP-safe
+        /// interpreter path, which runs the raw bytes directly — <c>Assembly.Load</c> is
+        /// unavailable under IL2CPP. Default false — existing callers keep the load behavior.
+        /// </summary>
+        public bool SkipLoad { get; set; }
+
+        /// <summary>
+        /// When true, referenced assemblies' non-public members are imported and access checks against them
+        /// are relaxed (<see cref="MetadataImportOptions.All"/>). Interpreter-backend compiles only: the
+        /// interpreter executes the emitted IL via reflection, which reaches non-public members. Never set
+        /// this for IL that will be <c>Assembly.Load</c>'d — Mono JIT-enforces accessibility on loaded IL,
+        /// so the access would compile and then throw at first dispatch. Off by default.
+        /// </summary>
+        internal bool AllowNonPublicMemberAccess { get; set; }
     }
 
     /// <summary>
@@ -333,7 +495,8 @@ namespace Unity.Pipeline.Compilation
         public bool Success { get; set; }
 
         /// <summary>
-        /// Compiled assembly (only available if Success = true).
+        /// Compiled assembly (only available if Success = true and
+        /// <see cref="CompilationRequest.SkipLoad"/> was not set).
         /// </summary>
         public Assembly Assembly { get; set; }
 

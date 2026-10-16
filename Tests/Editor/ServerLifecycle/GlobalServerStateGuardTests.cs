@@ -20,7 +20,7 @@ namespace Unity.Pipeline.Tests.Editor.ServerLifecyle
     /// </summary>
     [Explicit("Manipulates the live editor server; run deliberately (e.g. from the Test Runner window).")]
     [Category("ServerLifecycle")]
-    public class GlobalServerStateGuardTests
+    class GlobalServerStateGuardTests
     {
         [TearDown]
         public void TearDown()

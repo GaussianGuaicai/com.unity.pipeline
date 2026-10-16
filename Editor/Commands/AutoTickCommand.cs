@@ -2,6 +2,9 @@ using System;
 using System.Reflection;
 using Unity.Pipeline.Commands;
 using UnityEditor;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Editor.Commands
 {
@@ -19,7 +22,10 @@ namespace Unity.Pipeline.Editor.Commands
     /// <see cref="RestoreFromSession"/> (called from <c>EditorPipelineStartup</c> on every server
     /// (re)start, including after a recompile). Forcing full-rate ticks uses CPU like a focused editor.
     /// </summary>
-    public static class AutoTickCommand
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
+    static class AutoTickCommand
     {
         // Default interval when nothing else applies (fresh editor session, no prior SetAutoTick call).
         internal const int DefaultIntervalMs = 16;

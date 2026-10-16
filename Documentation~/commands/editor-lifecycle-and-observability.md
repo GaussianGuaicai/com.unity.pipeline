@@ -133,6 +133,58 @@ No parameters.
 The CSV columns are `Category, Severity, Areas, Description, RelativePath, Line, DescriptorId, Recommendation`;
 only diagnostics (things to fix) are emitted, not raw inventory rows.
 
+### `report_evals`
+Aggregate the local eval-usage telemetry into a ranked report: API fingerprint frequency, one-liner percentage, error rate, and command-coverage suggestions (read-only). See [Eval usage telemetry](#eval-usage-telemetry) below.
+
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `top` | no | `50` | Maximum entries in each ranked list: the fingerprint ranking and the uncovered patterns suggested as commands. Accepted range: 0 or greater; negative values fall back to the default. |
+
+**Returns:** `EvalUsageReport`
+**Notes:** `MainThreadRequired = false` (stays servable while the Editor is settling). Reads `<project>/Library/Pipeline/eval-usage.jsonl` merged with the rotated `eval-usage.old.jsonl` (oldest first), so the report covers the full retained history — bounded to roughly 2× the size cap. Returns a zeroed report if no evals have been recorded. The report's `distinctFingerprints` field carries the uncapped total of distinct fingerprints so truncation of the ranked list is always visible; coverage suggestions are computed from the full ranking, not the capped list.
+
+## Eval usage telemetry
+
+The `eval`/`eval_file` commands are the workhorse of autonomous agent sessions, but they are opaque: raw C# through the protocol, unauditable, and hard to displace with typed commands without knowing what agents actually run. This telemetry closes that loop by recording, **locally**, what each eval does — so the [eval-displacement epic (AUTHAPI-24)](https://jira.unity3d.com/browse/AUTHAPI-24) can be triaged from data instead of anecdotes.
+
+### What is recorded, and where
+
+Every `eval`/`eval_file` invocation appends one JSON object (one line, JSONL) to `<project>/Library/Pipeline/eval-usage.jsonl`:
+
+| Field | Meaning |
+|-------|---------|
+| `time` | ISO-8601 UTC timestamp. |
+| `command` | `eval` or `eval_file`. |
+| `success` / `error` | Whether it succeeded; short error category on failure. |
+| `payloadLength` / `lineCount` | Size/shape of the eval body. |
+| `executionTimeMs` | How long it took. |
+| `classification` | `single-expression` (a one-liner: one invoke / read / assignment) or `statements` (multi-statement bodies, e.g. polling loops, bulk setup). |
+| `fingerprints` | The top-level member-access paths from the syntax tree — e.g. `AssetDatabase.Refresh`, `PlayerSettings.SetScriptingBackend`, `Object.FindFirstObjectByType<T>`, `MatchManager.Instance.State`. Rendering is a strict whitelist: the only source text that can appear in a fingerprint is an identifier, type name, or member name. Literals, interpolated strings, and any other expression form are replaced by the neutral `<expr>` placeholder (`"…".Length` records as `<expr>.Length`); object creations record as `new TypeName` (constructor arguments never appear); casts unwrap to the inner expression; generic type arguments normalise to `<T>`. A fingerprint that would be nothing but the placeholder is dropped. |
+| `source` | The raw eval source — **absent by default**; present only when the opt-in below is enabled, and truncated at 64 K characters with an explicit `…[truncated]` marker (`payloadLength` still reports the full length). |
+
+**Local-first, privacy-first, editor-only.** Nothing is transmitted off the machine, and nothing is recorded outside the Editor: player builds — including development players, where eval itself is available — never write telemetry (recording compiles to a no-op there). The fingerprint is derived from the C# syntax tree, so the log captures *which APIs* agents reach for without capturing *what data* they operate on. Conditional-access chains (`a?.B.C`) are fingerprinted with `?.` normalised to `.` so they rank with their unconditional form. The fingerprint deliberately undercounts a few forms (arguments nested inside a chain's receiver call, bare object creations) — see the `EvalUsageFingerprinter` class doc for the full blind-spot list before treating absence as proof of non-use.
+
+**Zero eval latency.** Recording is fire-and-forget: when an eval completes, the source and outcome plus the current settings are snapshotted, and the parse → fingerprint → append runs on a background thread from that snapshot — the eval response is never delayed by telemetry. The JSONL is bounded by a size cap and rotates to `eval-usage.old.jsonl`; the rotated file is merged back into `report_evals`, so retained history is bounded to roughly 2× the cap.
+
+### Settings
+
+Configured on the `EditorPipelineManager` settings asset (`Window/Pipeline/Settings...`). Edits apply live from the inspector, and the stored values are re-applied on every server start:
+
+- **Eval Telemetry Enabled** (default on) — master switch. When off, nothing is recorded (and, as always, nothing is transmitted).
+- **Store Eval Source** (default off) — the explicit opt-in to also persist the raw eval `source` in each record, for local debugging only.
+
+### The feedback loop: report → backlog triage
+
+Run `report_evals` to aggregate the log into an `EvalUsageReport`:
+
+- **Ranked fingerprints** with counts — what agents actually eval, most-used first.
+- **One-liner percentage** and **error rate** — the shape of eval usage (the evidence base for AUTHAPI-24 is that ~80% of eval calls are one-liners).
+- **Coverage suggestions** — each fingerprint is cross-referenced against the live command catalog:
+  - `covered`: patterns already served by an existing command (e.g. `PlayerSettings.SetScriptingBackend` → `set_player_settings`) — these are habit, and should move off eval.
+  - `topUncovered`: the highest-frequency patterns with no covering command (e.g. `AssetDatabase.Refresh` → proposed `refresh_assets`) — these are the next typed commands to build ([AUTHAPI-17](https://jira.unity3d.com/browse/AUTHAPI-17)).
+
+This turns backlog triage into a lookup: "12× `AssetDatabase.Refresh`, no command → build it; 60× state-read loops → `wait_for`". Re-run across sessions to demonstrate eval's shrinking share as typed commands land.
+
 ### `get_authoring_root`
 Get the base folder (under Assets/) that bare authoring paths resolve against.
 

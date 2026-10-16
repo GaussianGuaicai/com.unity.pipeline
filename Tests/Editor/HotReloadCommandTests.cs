@@ -13,7 +13,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// Integration tests for hot reload CLI commands.
     /// Tests the complete workflow: CLI commands → compiler → registry → runtime behavior.
     /// </summary>
-    public class HotReloadCommandTests
+    class HotReloadCommandTests
     {
         [SetUp]
         public void SetUp()

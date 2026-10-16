@@ -20,7 +20,7 @@ namespace Unity.Pipeline.Console
     /// persisted via <see cref="Save"/>/<see cref="Load"/>. The seq is the cursor a "--follow"
     /// client uses to fetch only newer entries.
     /// </summary>
-    public class ConsoleLogBuffer
+    class ConsoleLogBuffer
     {
         /// <summary>Maximum number of entries retained. Older entries are evicted first.</summary>
         public const int Capacity = 2000;
@@ -48,6 +48,10 @@ namespace Unity.Pipeline.Console
         /// Capture a console entry. Assigns the next sequence number and evicts the oldest entry if
         /// the buffer is full. Safe to call from any thread.
         /// </summary>
+        /// <param name="type">Unity log type; mapped to a severity via <see cref="SeverityFromLogType"/>.</param>
+        /// <param name="message">The log message.</param>
+        /// <param name="stackTrace">The stack trace, if any.</param>
+        /// <param name="timestampUtc">UTC time the entry was captured.</param>
         public void Add(LogType type, string message, string stackTrace, DateTime timestampUtc)
         {
             var severity = SeverityFromLogType(type);
@@ -84,6 +88,7 @@ namespace Unity.Pipeline.Console
         /// limit" (up to <see cref="Capacity"/>).
         /// </param>
         /// <param name="minSeverity">Minimum severity to include (see the Severity* constants).</param>
+        /// <returns>The matching entries plus cursor/drop metadata for the <c>console</c> command.</returns>
         public ConsoleLogResponse Query(long since, int tail, int minSeverity)
         {
             lock (m_Lock)
@@ -167,6 +172,7 @@ namespace Unity.Pipeline.Console
         /// Persist the buffer (entries + sequence counter) to <paramref name="path"/> so it survives
         /// a domain reload. Failures are swallowed (logging is best-effort, never fatal).
         /// </summary>
+        /// <param name="path">File to write the snapshot to.</param>
         public void Save(string path)
         {
             try
@@ -196,6 +202,8 @@ namespace Unity.Pipeline.Console
         /// Restore a buffer previously written by <see cref="Save"/>. Missing or unreadable files
         /// leave the buffer empty. Returns true if a snapshot was loaded.
         /// </summary>
+        /// <param name="path">File previously written by <see cref="Save"/>.</param>
+        /// <returns>True if a snapshot was found and loaded.</returns>
         public bool Load(string path)
         {
             try
@@ -249,6 +257,8 @@ namespace Unity.Pipeline.Console
         #region Severity mapping
 
         /// <summary>Map a Unity <see cref="LogType"/> to an ordered severity.</summary>
+        /// <param name="type">The Unity log type.</param>
+        /// <returns>One of the Severity* constants.</returns>
         public static int SeverityFromLogType(LogType type)
         {
             switch (type)
@@ -269,6 +279,8 @@ namespace Unity.Pipeline.Console
         /// severity. Unknown values fall back to <see cref="SeverityLog"/> (everything), matching the
         /// lenient behavior of the existing log command.
         /// </summary>
+        /// <param name="level">Level name to parse (case-insensitive).</param>
+        /// <returns>One of the Severity* constants.</returns>
         public static int SeverityFromLevelName(string level)
         {
             switch ((level ?? string.Empty).Trim().ToLowerInvariant())
@@ -286,6 +298,8 @@ namespace Unity.Pipeline.Console
         }
 
         /// <summary>The canonical level name for a severity.</summary>
+        /// <param name="severity">One of the Severity* constants.</param>
+        /// <returns>The matching Level* constant.</returns>
         public static string LevelName(int severity)
         {
             switch (severity)

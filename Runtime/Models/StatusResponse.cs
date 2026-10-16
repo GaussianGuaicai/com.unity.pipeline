@@ -51,5 +51,12 @@ namespace Unity.Pipeline.Models
         /// </summary>
         [JsonProperty("unityVersion")]
         public string UnityVersion { get; set; }
+
+        /// <summary>
+        /// The dialog currently blocking the main thread, present only when
+        /// <see cref="Status"/> is "blocked_by_dialog".
+        /// </summary>
+        [JsonProperty("dialog", NullValueHandling = NullValueHandling.Ignore)]
+        public object Dialog { get; set; }
     }
 }

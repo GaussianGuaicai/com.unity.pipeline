@@ -11,7 +11,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// Tests specifically for HotReloadMethod attribute compilation and reflection.
     /// Helps diagnose issues with attribute detection in compiled assemblies.
     /// </summary>
-    public class HotReloadAttributeTests
+    class HotReloadAttributeTests
     {
         [Test]
         public void HotReloadOverrideMethodAttribute_DirectUsage_CanBeReflected()

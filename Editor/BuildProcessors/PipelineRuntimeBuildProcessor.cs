@@ -4,166 +4,156 @@ using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
+using Unity.Pipeline.Config;
 using UnityEngine;
 using UnityEditor;
 using UnityEditor.Build;
 using UnityEditor.Build.Reporting;
-using UnityEngine.SceneManagement;
-using UnityEditor.SceneManagement;
 
 namespace Unity.Pipeline.Editor.BuildProcessors
 {
     /// <summary>
-    /// Build processor for runtime Pipeline support. Two responsibilities:
-    ///  - Validates RuntimePipelineManager components in build scenes (security settings) before
-    ///    allowing builds with runtime Pipeline enabled.
-    ///  - Bakes the project's hot reload scope (Assets + loaded package locations) into the manager
-    ///    in each build scene. A running Player cannot resolve the project layout, so the absolute
-    ///    roots it is allowed to hot reload from must be captured at build time.
-    /// Components control their behavior directly without conditional compilation.
+    /// Build processor for runtime Pipeline support. Three responsibilities:
+    ///  - Validates the RuntimePipelineConfig settings (JSON-authored, read via
+    ///    RuntimePipelineConfig.Load()) before allowing builds with runtime Pipeline enabled.
+    ///  - Bakes the current settings into a transient RuntimePipelineConfig Resources asset so a
+    ///    Player build can find them (the authored copy stays in ProjectSettings/, never here).
+    ///  - Bakes the project's hot reload scope (Assets + loaded package locations) into a
+    ///    generated RuntimePipelineBuildInfo asset. A running Player cannot resolve the project
+    ///    layout, so the absolute roots it is allowed to hot reload from must be captured at build
+    ///    time.
+    ///  Both generated assets are purged at the very start of every build (before either is
+    ///  possibly rewritten) and deleted again after a successful build, so machine-specific/
+    ///  duplicated data never lingers in the project — including a stale, possibly-enabled asset
+    ///  left behind by a build that was interrupted before OnPostprocessBuild could run (Unity
+    ///  never invokes it for a failed or cancelled build).
     /// </summary>
 #if UNITY_6000_3_OR_NEWER
-    public class PipelineRuntimeBuildProcessor : IPreprocessBuildWithContext, IProcessSceneWithReport
+    class PipelineRuntimeBuildProcessor : IPreprocessBuildWithContext, IPostprocessBuildWithReport
 #else
-    public class PipelineRuntimeBuildProcessor : IPreprocessBuildWithReport, IProcessSceneWithReport
+    class PipelineRuntimeBuildProcessor : IPreprocessBuildWithReport, IPostprocessBuildWithReport
 #endif
     {
+        /// <summary>Callback ordering relative to other build processors (0 = default).</summary>
         public int callbackOrder => 0;
 
+        private const string ConfigAssetPath = "Assets/Settings/Pipeline/Resources/RuntimePipelineConfig.asset";
+        private const string BuildInfoAssetPath = "Assets/Settings/Pipeline/Resources/RuntimePipelineBuildInfo.asset";
+
+        // EditorUtility.DisplayDialogComplex's choice indices, deliberately untested: popping the
+        // real dialog from an EditMode test would block the live Editor waiting for a click nobody
+        // can give. Verified manually instead.
+        private const int DialogChoiceCancel = 1;
+        private const int DialogChoiceDisablePipeline = 2;
+
+        /// <summary>Verify bundled DLL integrity and validate runtime pipeline configuration before a build.</summary>
 #if UNITY_6000_3_OR_NEWER
+        /// <param name="ctx">The build callback context.</param>
         public void OnPreprocessBuild(BuildCallbackContext ctx)
 #else
+        /// <param name="report">The build report.</param>
         public void OnPreprocessBuild(BuildReport report)
 #endif
         {
+            // Purge any leftovers from a previous, interrupted build before anything else in this
+            // method — every exit path below (no config, disabled, validation failure, dialog
+            // Cancel, dialog "Disable Pipeline") must start from a clean slate. OnPostprocessBuild
+            // is not invoked for a failed/cancelled build, so it can never be relied on for this;
+            // this purge is the only mechanism that actually guarantees it. Without it, a stale
+            // *enabled* asset left by an earlier interrupted build would still get packaged into a
+            // build that is supposed to have Pipeline disabled.
+            DeleteGeneratedAssetsIfPresent();
+
             // Integrity gate: fail the build if a bundled Roslyn DLL was swapped or modified.
             VerifyBundledChecksums();
 
-            // Find RuntimePipelineManager components in build scenes. Any scene not already open is
-            // opened additively for the duration of this method and closed again in the finally below -
-            // closing it earlier would destroy the manager GameObjects this method still reads below.
-            var scenesOpenedForScan = new List<Scene>();
+            var config = RuntimePipelineConfig.Load();
+            if (config == null)
+            {
+                Debug.LogWarning("Pipeline: No RuntimePipelineConfig asset found (Project Settings > Pipeline > Runtime). Pipeline will be disabled in Player builds.");
+                return;
+            }
+
             try
             {
-                var managers = FindRuntimeManagersInBuildScenes(scenesOpenedForScan);
-
-                if (managers.Count == 0)
+                if (!config.enableInBuilds)
                 {
-                    Debug.LogWarning("Pipeline: No RuntimePipelineManager components found in build scenes. Pipeline will be disabled in Player builds.");
+                    Debug.LogWarning("Pipeline: RuntimePipelineConfig found, but enableInBuilds = false. Pipeline will be disabled in Player builds.");
                     return;
                 }
 
-                if (managers.Count > 1)
-                {
-                    var sceneNames = string.Join(", ", managers.Select(m => m.gameObject.scene.name + "/" + m.gameObject.name));
-                    Debug.LogWarning($"Pipeline: Multiple RuntimePipelineManager components found in build: {sceneNames}. Only the first enabled component will be used.");
-                }
-
-                // Find enabled managers
-                var enabledManagers = managers.Where(m => m.enableInBuilds).ToList();
-
-                if (enabledManagers.Count == 0)
-                {
-                    Debug.LogWarning("Pipeline: RuntimePipelineManager components found, but all have enableInBuilds = false. Pipeline will be disabled in Player builds.");
-                    return;
-                }
-
-                if (enabledManagers.Count > 1)
-                {
-                    var enabledNames = string.Join(", ", enabledManagers.Select(m => m.gameObject.scene.name + "/" + m.gameObject.name));
-                    Debug.LogWarning($"Pipeline: Multiple enabled RuntimePipelineManager components found: {enabledNames}. Using the first one.");
-                }
-
-                var activeManager = enabledManagers[0];
-
-                // Validate the active manager configuration
-                var validationResult = activeManager.ValidateConfiguration();
-
+                var validationResult = config.Validate();
                 if (!validationResult.IsValid)
                 {
-                    throw new BuildFailedException($"Pipeline: Runtime configuration validation failed for {activeManager.gameObject.scene.name}/{activeManager.gameObject.name}: {validationResult.Message}");
+                    throw new BuildFailedException($"Pipeline: Runtime configuration validation failed: {validationResult.Message}");
                 }
 
                 if (validationResult.Level == "warning")
                 {
-                    Debug.LogWarning($"Pipeline: Runtime configuration warning for {activeManager.gameObject.scene.name}/{activeManager.gameObject.name}: {validationResult.Message}");
+                    Debug.LogWarning($"Pipeline: Runtime configuration warning: {validationResult.Message}");
+                }
 
-                    if (!EditorUserBuildSettings.development)
+                // Independent of config validity: enableInBuilds ships the Pipeline HTTP server
+                // (including remote code execution) in whatever build this is. A non-development
+                // build is a release build, so warn regardless of whether the port/etc. also
+                // happened to warn.
+                if (!EditorUserBuildSettings.development)
+                {
+                    const string message = "SECURITY RISK: enableInBuilds is on but this is not a Development " +
+                        "Build. The Pipeline HTTP server, including remote code execution, will ship in this " +
+                        "RELEASE build.";
+                    Debug.LogWarning($"Pipeline: {message}");
+
+                    // A modal dialog would hang forever in a headless/CI build (this package's
+                    // primary use case), so only prompt for an interactive, human-triggered build.
+                    if (!Application.isBatchMode)
                     {
-                        Debug.LogWarning("Pipeline: Security warnings detected in release build. Consider reviewing configuration.");
+                        var choice = EditorUtility.DisplayDialogComplex("Pipeline: Security Risk", message,
+                            "Continue", "Cancel", "Disable Pipeline");
+
+                        if (choice == DialogChoiceCancel)
+                        {
+                            throw new BuildFailedException(
+                                "Pipeline: build cancelled — enableInBuilds was on without a Development Build.");
+                        }
+
+                        if (choice == DialogChoiceDisablePipeline)
+                        {
+                            config.enableInBuilds = false;
+                            config.Save();
+                            Debug.LogWarning("Pipeline: Runtime server disabled for this build (and persisted " +
+                                "to Project Settings > Pipeline > Runtime) in response to the security dialog.");
+                            return;
+                        }
+
+                        // DialogChoiceContinue: fall through and build with the Pipeline enabled as configured.
                     }
                 }
 
-                Debug.Log($"Pipeline: Runtime server ENABLED in build for {activeManager.gameObject.scene.name}/{activeManager.gameObject.name}");
+                // Push signing: ensure the project key exists and bake its public half into the
+                // build info, so the player rejects any hot-reload push not signed by the matching
+                // private key. Log the fingerprint so a later key mismatch is diagnosable from the
+                // build log alone.
+                var privateKey = PushSigningKey.LoadOrCreate(PushSigningKey.DefaultDirectory, out var keyCreated);
+                var pushPublicKey = Unity.Pipeline.HotReload.PushEnvelope.DerivePublicKey(privateKey);
+                Debug.Log($"Pipeline: push-signing key {(keyCreated ? "GENERATED" : "loaded")} " +
+                          $"(fingerprint {Unity.Pipeline.HotReload.PushEnvelope.Fingerprint(pushPublicKey)}, " +
+                          $"Library/Pipeline/{PushSigningKey.KeyFileName}). This build only accepts pushes signed with it.");
+
+                WriteConfigAsset(config);
+                WriteBuildInfoAsset(pushPublicKey);
+
+                Debug.Log("Pipeline: Runtime server ENABLED in build.");
             }
             finally
             {
-                foreach (var scene in scenesOpenedForScan)
-                {
-                    EditorSceneManager.CloseScene(scene, true);
-                }
+                UnityEngine.Object.DestroyImmediate(config);
             }
         }
 
-        /// <summary>
-        /// Find all RuntimePipelineManager components in scenes that will be included in the build.
-        /// Opens each enabled build scene additively to scan it, appending to <paramref name="scenesOpenedForScan"/>
-        /// any scene that was not already open - the caller is responsible for closing those once it is
-        /// done reading the returned managers. A scene the user already had open is left off that list,
-        /// so it is never closed out from under them.
-        /// </summary>
-        private List<RuntimePipelineManager> FindRuntimeManagersInBuildScenes(List<Scene> scenesOpenedForScan)
+        public void OnPostprocessBuild(BuildReport report)
         {
-            var managers = new List<RuntimePipelineManager>();
-
-            var buildScenes = EditorBuildSettings.scenes.Where(s => s.enabled).ToArray();
-            var alreadyOpenPaths = new HashSet<string>(OpenScenePaths());
-
-            foreach (var buildScene in buildScenes)
-            {
-                var wasAlreadyOpen = alreadyOpenPaths.Contains(buildScene.path);
-                var scene = EditorSceneManager.OpenScene(buildScene.path, OpenSceneMode.Additive);
-
-                if (!wasAlreadyOpen)
-                {
-                    scenesOpenedForScan.Add(scene);
-                }
-
-                var sceneManagers = scene.GetRootGameObjects()
-                    .SelectMany(go => go.GetComponentsInChildren<RuntimePipelineManager>(true))
-                    .ToArray();
-                managers.AddRange(sceneManagers);
-            }
-            return managers;
-        }
-
-        private static IEnumerable<string> OpenScenePaths()
-        {
-            for (var i = 0; i < SceneManager.sceneCount; i++)
-                yield return SceneManager.GetSceneAt(i).path;
-        }
-
-        /// <summary>
-        /// Bake the project's hot reload roots into the RuntimePipelineManager of each build scene.
-        /// Edits the temporary build copy of the scene, so the user's saved scene is untouched.
-        /// </summary>
-        public void OnProcessScene(Scene scene, BuildReport report)
-        {
-            // report is null when this runs on entering Play Mode; only bake during real builds.
-            if (report == null)
-            {
-                return;
-            }
-
-            var roots = CollectProjectRoots();
-
-            foreach (var go in scene.GetRootGameObjects())
-            {
-                foreach (var manager in go.GetComponentsInChildren<RuntimePipelineManager>(true))
-                {
-                    manager.SetAllowedReloadRoots(roots);
-                }
-            }
+            DeleteGeneratedAssetsIfPresent();
         }
 
         /// <summary>
@@ -171,6 +161,7 @@ namespace Unity.Pipeline.Editor.BuildProcessors
         /// plus the resolved location of every package loaded into the project (a local package may
         /// live anywhere on disk, not only under Packages).
         /// </summary>
+        /// <returns>Absolute paths of the project's Assets folder and every loaded package.</returns>
         public static List<string> CollectProjectRoots()
         {
             var roots = new List<string> { Path.GetFullPath(Application.dataPath) };
@@ -184,6 +175,78 @@ namespace Unity.Pipeline.Editor.BuildProcessors
             }
 
             return roots;
+        }
+
+        private static void WriteConfigAsset(RuntimePipelineConfig sourceConfig)
+        {
+            var folder = Path.GetDirectoryName(ConfigAssetPath).Replace('\\', '/');
+            CreateFolderRecursive(folder);
+
+            // No DeleteGeneratedAssetIfPresent() call here: OnPreprocessBuild already purged both
+            // paths before any of this method's caller ran, so this path is guaranteed clear.
+
+            var baked = ScriptableObject.CreateInstance<RuntimePipelineConfig>();
+            baked.enableInBuilds = sourceConfig.enableInBuilds;
+            baked.port = sourceConfig.port;
+            baked.requestTimeoutMs = sourceConfig.requestTimeoutMs;
+            baked.enableAuditLogging = sourceConfig.enableAuditLogging;
+            baked.autoStart = sourceConfig.autoStart;
+            baked.maxWorkItemsPerFrame = sourceConfig.maxWorkItemsPerFrame;
+            AssetDatabase.CreateAsset(baked, ConfigAssetPath);
+            AssetDatabase.SaveAssets();
+        }
+
+        private static void WriteBuildInfoAsset(string pushPublicKey)
+        {
+            var folder = Path.GetDirectoryName(BuildInfoAssetPath).Replace('\\', '/');
+            CreateFolderRecursive(folder);
+
+            // No DeleteGeneratedAssetIfPresent() call here: OnPreprocessBuild already purged both
+            // paths before any of this method's caller ran, so this path is guaranteed clear.
+
+            var buildInfo = ScriptableObject.CreateInstance<RuntimePipelineBuildInfo>();
+            buildInfo.allowedReloadRoots = CollectProjectRoots();
+            buildInfo.pushPublicKey = pushPublicKey ?? "";
+            AssetDatabase.CreateAsset(buildInfo, BuildInfoAssetPath);
+            AssetDatabase.SaveAssets();
+        }
+
+        /// <summary>
+        /// Delete both transient build-only assets if either is present, however they got there —
+        /// baked by a previous build (normal cleanup) or left behind by one that never reached
+        /// OnPostprocessBuild (crash, force-quit, cancelled build).
+        /// </summary>
+        private static void DeleteGeneratedAssetsIfPresent()
+        {
+            DeleteGeneratedAssetIfPresent(ConfigAssetPath);
+            DeleteGeneratedAssetIfPresent(BuildInfoAssetPath);
+        }
+
+        /// <summary>
+        /// Untyped load + a raw file-existence fallback, deliberately not a typed
+        /// AssetDatabase.LoadAssetAtPath&lt;T&gt;: a typed load returns null — leaving a stale file
+        /// untouched on disk, inside Resources, where a Player build would still package it — for
+        /// any asset whose script reference broke after a package upgrade, or that was only
+        /// partially written by the very crash that left it behind. Both are exactly the kind of
+        /// leftover this cleanup exists to catch.
+        /// </summary>
+        private static void DeleteGeneratedAssetIfPresent(string assetPath)
+        {
+            if (AssetDatabase.LoadAssetAtPath<UnityEngine.Object>(assetPath) != null || File.Exists(assetPath))
+                AssetDatabase.DeleteAsset(assetPath);
+        }
+
+        private static void CreateFolderRecursive(string folder)
+        {
+            var parts = folder.Split('/');
+            var current = parts[0];
+            for (var i = 1; i < parts.Length; i++)
+            {
+                var next = current + "/" + parts[i];
+                if (!AssetDatabase.IsValidFolder(next))
+                    AssetDatabase.CreateFolder(current, parts[i]);
+                current = next;
+            }
         }
 
         // Relative location of the bundled Roslyn DLLs + their integrity manifest within the package.
@@ -223,6 +286,9 @@ namespace Unity.Pipeline.Editor.BuildProcessors
         /// <paramref name="codeAnalysisDir"/> with a matching SHA-256 and no unlisted DLL is present;
         /// otherwise returns a human-readable error describing the first problem found.
         /// </summary>
+        /// <param name="codeAnalysisDir">Directory containing the bundled Roslyn DLLs.</param>
+        /// <param name="checksumsPath">Path to the CHECKSUMS manifest.</param>
+        /// <returns>Null if every DLL matches; otherwise a human-readable description of the first problem found.</returns>
         public static string VerifyChecksums(string codeAnalysisDir, string checksumsPath)
         {
             if (!Directory.Exists(codeAnalysisDir))
@@ -258,6 +324,8 @@ namespace Unity.Pipeline.Editor.BuildProcessors
         }
 
         /// <summary>SHA-256 of a file as a lowercase hex string.</summary>
+        /// <param name="filePath">The file to hash.</param>
+        /// <returns>The lowercase hex-encoded SHA-256 hash.</returns>
         public static string ComputeSha256(string filePath)
         {
             using (var sha = SHA256.Create())

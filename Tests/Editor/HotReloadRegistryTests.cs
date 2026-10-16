@@ -9,7 +9,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// Tests for HotReloadRegistry to verify method registration and statistics.
     /// Helps diagnose issues with hot reload method registration.
     /// </summary>
-    public class HotReloadRegistryTests
+    class HotReloadRegistryTests
     {
         [SetUp]
         public void SetUp()

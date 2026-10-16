@@ -7,7 +7,7 @@ namespace Unity.Pipeline.Tests.Editor.Authoring
     /// Tests for ProjectPaths (CLI-190): Assets-relative resolution, the traversal/out-of-root
     /// guards, and the configurable authoring root.
     /// </summary>
-    public class ProjectPathsTests
+    class ProjectPathsTests
     {
         [SetUp]
         public void SetUp()

@@ -12,7 +12,7 @@ namespace Unity.Pipeline.Compilation
     /// Wraps user code in Execute() method, compiles, and executes with result serialization.
     /// Supports both Editor and Runtime compilation for desktop development builds.
     /// </summary>
-    public static class EvalCodeCompiler
+    static class EvalCodeCompiler
     {
 #if UNITY_EDITOR || (UNITY_STANDALONE && DEBUG)
 
@@ -24,6 +24,10 @@ namespace Unity.Pipeline.Compilation
         /// Eval is a MainThreadRequired command, so the server marshals the caller to the main
         /// thread before invoking this; compilation + execution run synchronously here.
         /// </summary>
+        /// <param name="code">The C# expression/statement(s) to evaluate.</param>
+        /// <param name="timeoutMs">Timeout for compilation, in milliseconds.</param>
+        /// <param name="stopwatch">Running stopwatch used to report execution time in the response.</param>
+        /// <returns>The evaluation result.</returns>
         public static EvalResponse CompileAndExecuteOnMainThread(string code, int timeoutMs, System.Diagnostics.Stopwatch stopwatch)
         {
             if (stopwatch == null)
@@ -316,6 +320,10 @@ namespace PipelineEvaluation
         /// Runtime compilation not supported on this platform.
         /// Desktop development builds only (Windows/Mac/Linux).
         /// </summary>
+        /// <param name="code">Unused on this build.</param>
+        /// <param name="timeoutMs">Unused on this build.</param>
+        /// <param name="stopwatch">Unused on this build.</param>
+        /// <returns>A failure result explaining runtime compilation isn't supported on this build.</returns>
         public static EvalResponse CompileAndExecuteOnMainThread(string code, int timeoutMs, System.Diagnostics.Stopwatch stopwatch)
         {
             return EvalResponse.EvalFailure(

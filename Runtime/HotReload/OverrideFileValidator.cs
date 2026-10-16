@@ -18,13 +18,18 @@ namespace Unity.Pipeline.HotReload
     ///  3. Each [HotReloadOverrideMethod] method must be 'public static' and take the instance as its
     ///     first parameter.
     /// </summary>
-    public static class OverrideFileValidator
+    static class OverrideFileValidator
     {
+        /// <summary>Validate an override file against the three helper-workflow rules described above.</summary>
+        /// <param name="sourceCode">The override file's source.</param>
+        /// <param name="displayName">Name to use for the file in error messages.</param>
+        /// <returns>The validation result, including any errors found.</returns>
         public static OverrideFileValidationResult Validate(string sourceCode, string displayName)
         {
             var result = new OverrideFileValidationResult { DisplayName = displayName };
 
-            var root = CSharpSyntaxTree.ParseText(sourceCode ?? string.Empty).GetRoot();
+            var root = CSharpSyntaxTree.ParseText(sourceCode ?? string.Empty,
+                Unity.Pipeline.Compilation.RoslynCompilationService.ProjectParseOptions()).GetRoot();
 
             // All type names declared in this file (class/struct), by simple name.
             var declaredTypeNames = new HashSet<string>(root.DescendantNodes()
@@ -112,12 +117,16 @@ namespace Unity.Pipeline.HotReload
     /// <summary>
     /// Result of validating a helper-workflow override file.
     /// </summary>
-    public class OverrideFileValidationResult
+    class OverrideFileValidationResult
     {
+        /// <summary>Name of the file being validated, for error messages.</summary>
         public string DisplayName { get; set; }
+        /// <summary>Validation errors found, if any.</summary>
         public List<string> Errors { get; } = new List<string>();
+        /// <summary>True when no errors were found.</summary>
         public bool IsValid => Errors.Count == 0;
 
+        /// <summary>Human-readable summary of all <see cref="Errors"/>.</summary>
         public string GetFormattedErrorMessage()
         {
             if (IsValid)

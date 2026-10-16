@@ -18,7 +18,7 @@ namespace Unity.Pipeline.Tests.Editor.Animation
     /// All commands are reached through the public static methods; the Timeline types themselves are
     /// only touched via reflection inside the commands, never referenced by this test assembly.
     /// </summary>
-    public class TimelineCommandsTests
+    class TimelineCommandsTests
     {
         private const string Root = "Assets/__CLI214TimelineTest";
 

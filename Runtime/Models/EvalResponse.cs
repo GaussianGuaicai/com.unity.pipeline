@@ -8,7 +8,7 @@ namespace Unity.Pipeline.Models
     /// Response from code evaluation commands containing results, output, and diagnostics.
     /// </summary>
     [Serializable]
-    public class EvalResponse :CommandExecutionResponse
+    class EvalResponse :CommandExecutionResponse
     {
         /// <summary>
         /// Console output captured during execution.
@@ -25,6 +25,11 @@ namespace Unity.Pipeline.Models
         /// <summary>
         /// Create a successful evaluation response.
         /// </summary>
+        /// <param name="result">The evaluated expression's result.</param>
+        /// <param name="output">Console output captured during execution.</param>
+        /// <param name="executionTimeMs">How long execution took, in milliseconds.</param>
+        /// <param name="diagnostics">Compilation diagnostics (errors, warnings) from Roslyn.</param>
+        /// <returns>A successful response wrapping <paramref name="result"/>.</returns>
         public static EvalResponse EvalSuccess(object result, string output = null, long executionTimeMs = 0, List<DiagnosticInfo> diagnostics = null)
         {
             return new EvalResponse
@@ -42,6 +47,11 @@ namespace Unity.Pipeline.Models
         /// <summary>
         /// Create a failed evaluation response.
         /// </summary>
+        /// <param name="error">Error message.</param>
+        /// <param name="errorDetails">Additional error details for debugging.</param>
+        /// <param name="executionTimeMs">How long execution took, in milliseconds.</param>
+        /// <param name="diagnostics">Compilation diagnostics (errors, warnings) from Roslyn.</param>
+        /// <returns>A failed response.</returns>
         public static EvalResponse EvalFailure(string error, string errorDetails = null, long executionTimeMs = 0, List<DiagnosticInfo> diagnostics = null)
         {
             return new EvalResponse

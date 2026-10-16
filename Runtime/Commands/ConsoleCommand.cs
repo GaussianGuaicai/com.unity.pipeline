@@ -22,7 +22,7 @@ namespace Unity.Pipeline.Runtime.Commands
     /// Reads only the in-memory buffer (no Unity main-thread APIs), so it is marked
     /// <c>MainThreadRequired = false</c> for fast polling.
     /// </summary>
-    public static class ConsoleCommand
+    static class ConsoleCommand
     {
         /// <summary>Default number of entries returned when <c>tail</c> is not supplied.</summary>
         public const int DefaultTail = 100;

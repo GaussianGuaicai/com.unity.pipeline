@@ -14,7 +14,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// Tests for <see cref="ConsoleLogBuffer"/> — the ring buffer behind the console command.
     /// Exercised directly (no Unity log capture) for determinism.
     /// </summary>
-    public class ConsoleLogBufferTests
+    class ConsoleLogBufferTests
     {
         static readonly DateTime k_Ts = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
 

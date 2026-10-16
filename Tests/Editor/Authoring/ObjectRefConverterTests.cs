@@ -13,7 +13,7 @@ namespace Unity.Pipeline.Tests.Editor.Authoring
     /// deserialize fully, and serialization still emits a JSON object. Plus one end-to-end ViaClient
     /// test proving a string target flows through the real /api/exec dispatch path.
     /// </summary>
-    public class ObjectRefConverterTests
+    class ObjectRefConverterTests
     {
         private static ObjectRef Parse(string handle) =>
             JsonConvert.DeserializeObject<ObjectRef>("\"" + handle + "\"");

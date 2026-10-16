@@ -10,6 +10,9 @@ using UnityEditor;
 using UnityEditor.Build;
 using UnityEditor.Build.Reporting;
 using UnityEngine;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Editor.Commands.Build
 {
@@ -32,7 +35,10 @@ namespace Unity.Pipeline.Editor.Commands.Build
     /// survives the domain reload a build can incur, so the last report is retained until the next build.
     /// </summary>
     [InitializeOnLoad]
-    public static class BuildCommand
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
+    static class BuildCommand
     {
         const string StatusFile = "Temp/pipeline_build_status.json";
 

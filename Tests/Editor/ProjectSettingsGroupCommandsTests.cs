@@ -14,7 +14,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// and the confirm/dry-run gate — without committing a change to the test project's real settings.
     /// End-to-end mutate-and-read-back coverage per group belongs to the dedicated test step.
     /// </summary>
-    public class ProjectSettingsGroupCommandsTests
+    class ProjectSettingsGroupCommandsTests
     {
         [SetUp]
         public void SetUp()

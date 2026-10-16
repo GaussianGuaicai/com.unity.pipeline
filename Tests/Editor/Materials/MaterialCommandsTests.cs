@@ -16,7 +16,7 @@ namespace Unity.Pipeline.Tests.Editor.Materials
     /// afterwards. URP-specific assertions (e.g. _BaseColor / _Metallic Range / _BaseMap) are guarded
     /// so the suite still runs (with Assert.Ignore) on a Built-in RP project that lacks URP/Lit.
     /// </summary>
-    public class MaterialCommandsTests
+    class MaterialCommandsTests
     {
         private const string Root = "Assets/__CLI213MaterialTest";
         private const string UrpLitShader = "Universal Render Pipeline/Lit";
@@ -98,12 +98,12 @@ namespace Unity.Pipeline.Tests.Editor.Materials
 
         private static int GetRawRenderQueue(Material material)
         {
-    #if UNITY_6000_0_OR_NEWER
+#if UNITY_6000_0_OR_NEWER
             return material.rawRenderQueue;
-    #else
+#else
             var property = new SerializedObject(material).FindProperty("m_CustomRenderQueue");
             return property != null ? property.intValue : material.renderQueue;
-    #endif
+#endif
         }
 
         /// <summary>

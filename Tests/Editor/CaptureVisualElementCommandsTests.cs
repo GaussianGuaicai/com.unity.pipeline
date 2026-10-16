@@ -20,7 +20,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// <c>capture_editor_element</c> command is covered for its validation/miss branches plus a
     /// GPU-gated happy path.
     /// </summary>
-    public class CaptureVisualElementCommandsTests
+    class CaptureVisualElementCommandsTests
     {
         // -- Selector resolver -------------------------------------------------------------------
 

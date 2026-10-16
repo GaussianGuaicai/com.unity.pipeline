@@ -9,7 +9,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// Tests for the runtime application commands (quit, set_target_framerate, set_timescale),
     /// exercised directly and via PipelineClient.
     /// </summary>
-    public class RuntimeApplicationCommandTests
+    class RuntimeApplicationCommandTests
     {
         #region Direct - set_target_framerate
 

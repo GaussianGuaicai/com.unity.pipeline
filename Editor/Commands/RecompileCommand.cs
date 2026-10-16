@@ -6,6 +6,9 @@ using Unity.Pipeline.Commands;
 using UnityEditor;
 using UnityEditor.Compilation;
 using UnityEngine;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Editor.Commands
 {
@@ -26,7 +29,10 @@ namespace Unity.Pipeline.Editor.Commands
     /// "completed" or "up_to_date". The client must tolerate connection errors during the reload.
     /// </summary>
     [InitializeOnLoad]
-    public static class RecompileCommand
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
+    static class RecompileCommand
     {
         const string StatusFile = "Temp/pipeline_recompile_status.json";
 

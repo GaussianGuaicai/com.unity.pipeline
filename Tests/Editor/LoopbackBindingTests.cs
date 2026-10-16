@@ -13,7 +13,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// versa). Note: Unity's Mono HttpListener cannot serve requests that arrive over the IPv6
     /// loopback (it mis-parses the "[::1]" host and returns 400), so IPv4 is the reliable channel.
     /// </summary>
-    public class LoopbackBindingTests
+    class LoopbackBindingTests
     {
         private static int GetStatus(string url)
         {

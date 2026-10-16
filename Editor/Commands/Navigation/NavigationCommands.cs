@@ -19,7 +19,7 @@ namespace Unity.Pipeline.Editor.Commands.Navigation
     /// follow-up call. All commands are read-only or non-destructive (set_selection only changes the
     /// Editor selection, which carries no undo/safety policy), and run on the main thread.
     /// </summary>
-    public static class NavigationCommands
+    static class NavigationCommands
     {
         private const int MaxSearchResults = 200;
 
@@ -234,7 +234,7 @@ namespace Unity.Pipeline.Editor.Commands.Navigation
     /// populated by set_selection (inputs that did not resolve to a loaded object/asset).
     /// </summary>
     [Serializable]
-    public class SelectionResult
+    class SelectionResult
     {
         /// <summary>Number of selected objects (excludes nulls).</summary>
         [JsonProperty("count")]
@@ -258,7 +258,7 @@ namespace Unity.Pipeline.Editor.Commands.Navigation
     /// mapped <see cref="SearchResultItem"/> rows (capped at the requested limit).
     /// </summary>
     [Serializable]
-    public class SearchResult
+    class SearchResult
     {
         /// <summary>The query that was executed (echoed back).</summary>
         [JsonProperty("query")]
@@ -278,7 +278,7 @@ namespace Unity.Pipeline.Editor.Commands.Navigation
     /// when the item resolves to an asset object.
     /// </summary>
     [Serializable]
-    public class SearchResultItem
+    class SearchResultItem
     {
         /// <summary>Provider-specific item id (e.g. an asset path or scene object id).</summary>
         [JsonProperty("id")]

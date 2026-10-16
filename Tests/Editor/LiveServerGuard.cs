@@ -25,7 +25,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// because exec-ing a real (main-thread) command from a teardown would deadlock.
     /// </summary>
     [AttributeUsage(AttributeTargets.Assembly)]
-    public sealed class LiveServerGuardAttribute : Attribute, ITestAction
+    sealed class LiveServerGuardAttribute : Attribute, ITestAction
     {
         private InstanceDescriptor m_Before;
 

@@ -11,7 +11,7 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
     /// Get/set the project's default render pipeline (CLI-202). The settable field is a handle to a
     /// <see cref="RenderPipelineAsset"/>; an empty reference selects the built-in pipeline (no SRP).
     /// </summary>
-    public static class GraphicsSettingsCommands
+    static class GraphicsSettingsCommands
     {
         const string Group = "graphics";
 
@@ -79,7 +79,7 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
     }
 
     /// <summary>Graphics settings to change. Null/omitted fields are left unchanged.</summary>
-    public class GraphicsSettingsInput : IStructuredCommandInput
+    class GraphicsSettingsInput : IStructuredCommandInput
     {
         [CliArg("renderPipelineAsset", "Reference (path / guid / globalId) to a RenderPipelineAsset to set as the default. Pass an empty reference ({}) to select the built-in pipeline; omit to leave unchanged.")]
         public ObjectRef RenderPipelineAsset { get; set; }

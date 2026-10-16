@@ -31,7 +31,7 @@ namespace Unity.Pipeline.Editor.Commands.Animation
     /// Out of scope (v1): markers, signal emitters/receivers, custom playable tracks, and track bindings
     /// to scene objects.
     /// </summary>
-    public static class TimelineCommands
+    static class TimelineCommands
     {
         private const string Asm = "Unity.Timeline";
 
@@ -561,7 +561,7 @@ namespace Unity.Pipeline.Editor.Commands.Animation
     // ---- result models ----
 
     [Serializable]
-    public class TimelineTrackSummary
+    class TimelineTrackSummary
     {
         [JsonProperty("name")]
         public string Name { get; set; }
@@ -571,14 +571,14 @@ namespace Unity.Pipeline.Editor.Commands.Animation
     }
 
     [Serializable]
-    public class AddTimelineTrackResult : AuthoringResult
+    class AddTimelineTrackResult : AuthoringResult
     {
         [JsonProperty("track")]
         public TimelineTrackSummary Track { get; set; }
     }
 
     [Serializable]
-    public class TimelineClipSummary
+    class TimelineClipSummary
     {
         [JsonProperty("track")]
         public string Track { get; set; }
@@ -591,14 +591,14 @@ namespace Unity.Pipeline.Editor.Commands.Animation
     }
 
     [Serializable]
-    public class AddTimelineClipResult : AuthoringResult
+    class AddTimelineClipResult : AuthoringResult
     {
         [JsonProperty("clip")]
         public TimelineClipSummary Clip { get; set; }
     }
 
     [Serializable]
-    public class TimelineInfo
+    class TimelineInfo
     {
         [JsonProperty("assetPath")]
         public string AssetPath { get; set; }
@@ -614,7 +614,7 @@ namespace Unity.Pipeline.Editor.Commands.Animation
     }
 
     [Serializable]
-    public class TimelineTrackInfo
+    class TimelineTrackInfo
     {
         [JsonProperty("name")]
         public string Name { get; set; }
@@ -627,7 +627,7 @@ namespace Unity.Pipeline.Editor.Commands.Animation
     }
 
     [Serializable]
-    public class TimelineClipInfo
+    class TimelineClipInfo
     {
         [JsonProperty("start")]
         public double Start { get; set; }

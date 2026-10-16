@@ -10,7 +10,7 @@ namespace Unity.Pipeline.Tests.Editor
     /// Tests for the build-time collection of hot reload roots. The build injection itself runs only
     /// inside a real player build, but the root-collection helper is editor-callable and verifiable.
     /// </summary>
-    public class PipelineRuntimeBuildProcessorTests
+    class PipelineRuntimeBuildProcessorTests
     {
         [Test]
         public void CollectProjectRoots_IncludesAssetsFolder()

@@ -11,31 +11,33 @@ namespace Unity.Pipeline.Tests.Editor.ServerLifecyle
     /// Tests for simultaneous operation of Editor and Runtime servers.
     /// Validates port range separation and dual server functionality.
     ///
-    /// Marked [Explicit]: starts a real EditorPipelineServer + RuntimePipelineManager, which
+    /// Marked [Explicit]: starts a real EditorPipelineServer + RuntimePipelineDriver, which
     /// conflict with the live editor server present in every editor session. Excluded from the
     /// normal/dogfood run; run deliberately (e.g. Test Runner window). See [[GlobalServerStateGuard]].
     /// </summary>
     [Explicit("Server-lifecycle test; conflicts with the live editor server. Run deliberately.")]
     [Category("ServerLifecycle")]
-    public class DualServerTests
+    class DualServerTests
     {
         private GameObject m_TestGameObject;
-        private RuntimePipelineManager m_RuntimeManager;
+        private RuntimePipelineDriver m_RuntimeManager;
+        private Unity.Pipeline.Config.RuntimePipelineConfig m_RuntimeConfig;
         private EditorPipelineServer m_EditorServer;
 
         [SetUp]
         public void SetUp()
         {
-            // RuntimePipelineManager + EditorPipelineServer here mutate global state shared with
+            // RuntimePipelineDriver + EditorPipelineServer here mutate global state shared with
             // the live editor server (descriptor file, command discovery).
             GlobalServerStateGuard.Capture();
 
-            // Create test GameObject with RuntimePipelineManager
-            m_TestGameObject = new GameObject("TestRuntimePipelineManager");
-            m_RuntimeManager = m_TestGameObject.AddComponent<RuntimePipelineManager>();
+            // Create test GameObject with RuntimePipelineDriver
+            m_RuntimeConfig = ScriptableObject.CreateInstance<Unity.Pipeline.Config.RuntimePipelineConfig>();
+            m_RuntimeConfig.enableInBuilds = true;
 
-            // Configure for testing
-            m_RuntimeManager.enableInBuilds = true;
+            m_TestGameObject = new GameObject("TestRuntimePipelineDriver");
+            m_RuntimeManager = m_TestGameObject.AddComponent<RuntimePipelineDriver>();
+            m_RuntimeManager.Initialize(m_RuntimeConfig, null);
 
             // Create Editor server for dual-server tests
             m_EditorServer = new EditorPipelineServer();
@@ -59,6 +61,11 @@ namespace Unity.Pipeline.Tests.Editor.ServerLifecyle
             if (m_TestGameObject != null)
             {
                 Object.DestroyImmediate(m_TestGameObject);
+            }
+
+            if (m_RuntimeConfig != null)
+            {
+                Object.DestroyImmediate(m_RuntimeConfig);
             }
 
             // Restore global state the servers/manager mutated (runs last, after our own cleanup).

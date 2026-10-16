@@ -10,6 +10,9 @@ using Newtonsoft.Json;
 using Unity.Pipeline.Commands;
 using UnityEditor;
 using UnityEngine;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Editor.Commands.ProjectAudit
 {
@@ -36,7 +39,10 @@ namespace Unity.Pipeline.Editor.Commands.ProjectAudit
     /// Hence the registered-modules check, reported as <c>unavailable</c>.
     /// </summary>
     [InitializeOnLoad]
-    public static class ProjectAuditCommands
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
+    static class ProjectAuditCommands
     {
         const string StatusFile = "Temp/pipeline_audit_status.json";
         const string CsvDirectory = "Temp/pipeline-audit";
@@ -575,7 +581,7 @@ namespace Unity.Pipeline.Editor.Commands.ProjectAudit
 
     /// <summary>Status/result payload for the <c>audit</c> / <c>audit_status</c> commands.</summary>
     [Serializable]
-    public class AuditStatus
+    class AuditStatus
     {
         [JsonProperty("status")]
         public string Status { get; set; }

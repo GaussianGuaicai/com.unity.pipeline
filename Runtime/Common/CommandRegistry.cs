@@ -7,6 +7,9 @@ using UnityEngine;
 #if UNITY_6000_3_OR_NEWER
 using UnityEngine.Assemblies;
 #endif
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Commands
 {
@@ -15,7 +18,10 @@ namespace Unity.Pipeline.Commands
     /// Scans for methods marked with [CliCommand] attribute across all assemblies.
     /// Based on unity-tools ToolRegistry patterns adapted for Pipeline requirements.
     /// </summary>
-    public static class CommandRegistry
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
+    static class CommandRegistry
     {
         private static IReadOnlyList<CommandInfo> m_CachedCommands;
         private static ICommandDiscovery m_Discovery;
@@ -25,6 +31,7 @@ namespace Unity.Pipeline.Commands
         /// Set the command discovery mechanism.
         /// Editor assembly provides TypeCache-based discovery, Runtime uses reflection fallback.
         /// </summary>
+        /// <param name="discovery">The discovery mechanism to use.</param>
         public static void SetDiscovery(ICommandDiscovery discovery)
         {
             m_Discovery = discovery;
@@ -36,6 +43,7 @@ namespace Unity.Pipeline.Commands
         /// Uses injected discovery mechanism (TypeCache in Editor, reflection in Runtime).
         /// Results are cached until domain reload.
         /// </summary>
+        /// <returns>All discovered commands.</returns>
         public static IEnumerable<CommandInfo> DiscoverCommands()
         {
             if (m_CachedCommands != null)

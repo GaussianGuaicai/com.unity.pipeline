@@ -8,7 +8,7 @@ namespace Unity.Pipeline.Editor.Commands.Authoring
     /// bare authoring paths resolve against and that authoring writes are confined to. Persisted
     /// per project; the default is "Assets" (full Assets access).
     /// </summary>
-    public static class AuthoringConfigCommands
+    static class AuthoringConfigCommands
     {
         [CliCommand("get_authoring_root", "Get the base folder (under Assets/) that bare authoring paths resolve against.", Tags = new[] { "authoring" })]
         public static object GetAuthoringRoot()

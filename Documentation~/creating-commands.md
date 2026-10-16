@@ -41,6 +41,7 @@ Every shipped command carries at least one tag (enforced by `CommandRegistration
 | `animation` | Animation authoring | `animator`, `clip`, `timeline` |
 | `assets` | Asset CRUD and search | `import`, `text` |
 | `authoring` | Authoring-root configuration | — |
+| `batch` | Transactional multi-command execution (`batch`) | — |
 | `baking` | Bake pipelines | `lighting`, `navmesh`, `occlusion` |
 | `build` | Player builds | `settings`, `targets` |
 | `capture` | Screenshots and view/element capture | — |
@@ -77,6 +78,26 @@ Tag each parameter with `[CliArg]`:
 
 `[CliArg]` is optional metadata. A parameter without it still works: its name defaults to the C# parameter name and `Required` defaults to "does this parameter lack a C# default value?".
 
+#### Declaration order and `Required` are wire API
+
+Clients may send an unparsed command line (`argv`/`commandLine` on `/api/exec`), and the server
+binds positionals into **required parameters in declaration order, then optional parameters in
+declaration order**. Three consequences for command authors:
+
+- **Reordering parameters, or flipping one between required and optional, is a breaking change**
+  for those clients even though the C# signature still compiles. Append new optional parameters at
+  the end.
+- **Enum parameters are validated by name** (case-insensitively), and an invalid value is rejected
+  with the legal set echoed back — you get that for free, no attribute needed. A `[Flags]` enum
+  also takes a comma-separated combination (`--channels Info,Warning`), and a numeric value is
+  accepted, because validation defers to the same converter the executor uses.
+- **Structured (`IStructuredCommandInput` / `JObject`) parameters are reachable from a command
+  line only as a JSON-valued flag**, e.g. `--payload '{"name":"x"}'`. Single quotes are the
+  practical form; see the tokenizer dialect in [Connectivity](connectivity.md).
+
+A token the declared type cannot accept is now a hard `400` on the raw path, rather than the
+parameter silently dropping out and the command running with a default.
+
 ## Worked example 1 — returning a string
 
 A command can return a plain `string`. The server places it in the response `result` field.
@@ -104,30 +125,45 @@ Calling `editor_play` yields a `CommandExecutionResponse` whose `result` is `"En
 
 ## Worked example 2 — returning a response model
 
-For richer results, return a model. Returning a type that extends `CommandExecutionResponse` (like `EvalResponse`) lets you populate response fields directly; you can also return any plain serializable model (like `AuthoringResult`) and let the server wrap it.
+For richer results, return a model. Extending `CommandExecutionResponse` lets you populate response fields directly; you can also return any plain serializable model (like `AuthoringResult`) and let the server wrap it.
 
 ```csharp
+using System;
 using Unity.Pipeline.Commands;
 using Unity.Pipeline.Models;
-using Unity.Pipeline.Compilation;
 
-public static class CodeEvalCommand
+public class WordCountResponse : CommandExecutionResponse
 {
-    [CliCommand("eval", "Evaluate C# code dynamically using Roslyn compiler", MainThreadRequired = true)]
-    public static EvalResponse EvaluateCode(
-        [CliArg("code", "C# code to evaluate", Required = true)] string code,
-        [CliArg("timeout", "Timeout in milliseconds")] int timeout = 5000)
-    {
-        if (string.IsNullOrWhiteSpace(code))
-            return EvalResponse.EvalFailure("Bad Request", "Code parameter is required and cannot be empty");
+    public int WordCount { get; set; }
 
-        var result = EvalCodeCompiler.CompileAndExecuteOnMainThread(code, timeout, null);
-        return result ?? EvalResponse.EvalFailure("Unknown Error", "Compilation returned null result");
+    public static WordCountResponse Counted(int wordCount) => new WordCountResponse
+    {
+        Success = true,
+        WordCount = wordCount
+    };
+
+    public static WordCountResponse Failed(string error) => new WordCountResponse
+    {
+        Success = false,
+        Error = error
+    };
+}
+
+public static class TextCommands
+{
+    [CliCommand("word_count", "Count the words in a string")]
+    public static WordCountResponse CountWords(
+        [CliArg("text", "Text to count words in", Required = true)] string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return WordCountResponse.Failed("text parameter is required and cannot be empty");
+
+        return WordCountResponse.Counted(text.Split((char[])null, StringSplitOptions.RemoveEmptyEntries).Length);
     }
 }
 ```
 
-`EvalResponse` adds `output` and `diagnostics` on top of the standard envelope. Another common shape is a domain model such as `AuthoringResult` — the canonical identity (asset path, GUID, instance id, hierarchy path) of an object a command created, returned so the client can reference it in a follow-up call.
+`WordCountResponse` adds `wordCount` on top of the standard envelope. Another common shape is a domain model such as `AuthoringResult` — the canonical identity (asset path, GUID, instance id, hierarchy path) of an object a command created, returned so the client can reference it in a follow-up call.
 
 ## Structured (multi-field) parameters
 
@@ -135,13 +171,13 @@ When a command needs a structured argument with several fields, don't spread the
 
 ```csharp
 [CliCommand("set_time_settings", "Change Time settings. Requires confirm=true; use dry_run to preview.")]
-public static ProjectSettingsResponse Set(
-    [CliArg("settings", "Fields to change; omitted fields are left unchanged.")] TimeSettingsInput settings = null,
+public static CommandExecutionResponse Set(
+    [CliArg("settings", "Fields to change; omitted fields are left unchanged.")] TimeSettingsArgs settings = null,
     [CliArg("confirm", "Apply the change. Without it the call is refused.")] bool confirm = false,
     [CliArg("dry_run", "Preview the change without applying it.")] bool dryRun = false)
 { /* ... */ }
 
-public class TimeSettingsInput : IStructuredCommandInput
+public class TimeSettingsArgs : IStructuredCommandInput
 {
     [CliArg("fixedDeltaTime", "Fixed timestep in seconds (e.g. 0.02).")]
     public float? FixedDeltaTime { get; set; }
@@ -163,13 +199,52 @@ public class TimeSettingsInput : IStructuredCommandInput
 
 Whatever your handler returns, the client receives a `CommandExecutionResponse`:
 
-| Field | Type | Meaning |
-|-------|------|---------|
-| `success` | `bool` | Whether the command ran without throwing. |
-| `command` | `string` | The command name. |
-| `result` | `object` | Your handler's return value (a string, model, anonymous object, or `null`). |
-| `executionTimeMs` | `long?` | How long the command took. |
-| `error` | `string` | Error summary when `success` is `false`. |
+| Field | Type | Meaning | In lean reply? |
+|-------|------|---------|----------------|
+| `success` | `bool` | Whether the command ran without throwing. | always |
+| `result` | `object` | Your handler's return value (a string, model, anonymous object, or `null`). | always on success, explicitly `null` when null; omitted on failure |
+| `error` | `string` | Error summary when `success` is `false`. | when non-null |
+| `errorDetails` | `string` | Extra error context. | when non-null |
+| `warnings` | `string[]` | Corrective guidance the server wants the caller to see (e.g. an unrecognized option value). | when non-null (omitted when there is nothing to say, in every mode) |
+| `command` | `string` | The command name. | verbose only |
+| `executedAt` | `DateTime` | When the reply was produced. | verbose only |
+| `executionTimeMs` | `long?` | How long the command took. | verbose only |
+
+The envelope is **lean by default** (AUTHAPI-21): serialized compact (no indentation), with the
+envelope's own null keys omitted and the always-on metadata (`command`, `executedAt`,
+`executionTimeMs`) dropped. A minimal success is just `{"success":true,"result":...}`. Agents
+consume the JSON directly; a client can pretty-print for a human if needed.
+
+The boundaries of the lean contract, worth knowing:
+
+- **Only the envelope's nulls are omitted; your `result` payload keeps explicit nulls.** The
+  envelope's null keys are redundant (`success` already disambiguates: `error` is null on success),
+  so they are dropped. Inside `result` the opposite holds — a scene object's `AuthoringResult`
+  still carries `"assetPath": null` — because an absent payload key would be indistinguishable
+  from a nonexistent or misspelled one.
+- **A successful reply always carries `result`, even when its value is null — in every mode.** A
+  null result on success is the command's actual value (e.g. a `format="value"` read of an
+  unassigned object-reference field), never a droppable envelope null. Only a *failure* omits the
+  `result` key.
+- **The metadata gating applies to the whole graph.** A command whose result is itself a response
+  model (e.g. `eval` returns an `EvalResponse` nested under `result`) has its nested
+  `executedAt`/`executionTimeMs` stripped in lean mode too — and restored by verbose along with
+  everything else.
+
+Two independent request flags adjust the shape:
+
+- `"verbose": true` — full fidelity back: every envelope field, explicit nulls, and nested response
+  metadata, for debugging or correlation. Honored on request-validation failures too.
+- `"omitNulls": true` — drop null keys from the whole reply **inside `result`** (the success
+  `result` key itself always survives, see above). Opt in only when the result schema is already
+  known and the nulls are pure bytes — the payoff case is bulk list reads (e.g. `list_shaders`
+  over hundreds of built-ins repeating `"assetPath": null` per item).
+
+The `GET`-style endpoints (`/api/job`, `/api/progress`) have no envelope/payload split — every field
+is payload — so they include null keys explicitly by default and accept `omit_nulls=true` as a query
+parameter instead. An unrecognized value (e.g. `omit_nulls=1`) is not silently coerced: the reply
+keeps its nulls and carries a `warnings` array naming the accepted values, so an agent can correct
+itself instead of guessing.
 
 If your handler throws, the server catches it and returns a failure envelope with `success = false` and the exception message in `error` — you do not need to catch-and-wrap yourself unless you want a tailored message.
 

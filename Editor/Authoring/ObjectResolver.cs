@@ -17,6 +17,10 @@ namespace Unity.Pipeline.Editor.Authoring
         /// Try to resolve a handle to a loaded object. Returns false with an <paramref name="error"/>
         /// when the handle is empty or does not resolve.
         /// </summary>
+        /// <param name="handle">The agent-supplied object reference.</param>
+        /// <param name="obj">The resolved object, or null on failure.</param>
+        /// <param name="error">A human-readable reason on failure, or null on success.</param>
+        /// <returns>True if the handle resolved.</returns>
         public static bool TryResolve(ObjectRef handle, out Object obj, out string error)
         {
             obj = null;
@@ -151,6 +155,8 @@ namespace Unity.Pipeline.Editor.Authoring
         /// Produce the canonical identity for an object (assets get path/guid/fileId; loaded objects
         /// get instanceId/hierarchyPath). Returns null for a null object.
         /// </summary>
+        /// <param name="obj">The object to describe.</param>
+        /// <returns>The object's canonical identity, or null if <paramref name="obj"/> is null.</returns>
         public static AuthoringResult Describe(Object obj)
         {
             if (obj == null)

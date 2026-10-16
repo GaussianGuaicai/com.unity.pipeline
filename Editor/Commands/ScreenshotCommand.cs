@@ -20,7 +20,7 @@ namespace Unity.Pipeline.Editor.Commands
     /// wait for that, and it does nothing for the Scene view in edit mode. Camera.Render() into a
     /// RenderTexture is synchronous, needs no play mode, and handles both views identically.
     /// </summary>
-    public static class ScreenshotCommand
+    static class ScreenshotCommand
     {
         const int k_DefaultWidth = 1920;
         const int k_DefaultHeight = 1080;
@@ -169,7 +169,7 @@ namespace Unity.Pipeline.Editor.Commands
     /// output; the human formatter reads <see cref="Path"/>.
     /// </summary>
     [Serializable]
-    public class ScreenshotResponse
+    class ScreenshotResponse
     {
         [JsonProperty("success")]
         public bool Success { get; set; }

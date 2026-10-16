@@ -216,60 +216,6 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 50, y: -30, z: 0}
---- !u!1 &494037149
-GameObject:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  serializedVersion: 6
-  m_Component:
-  - component: {fileID: 494037151}
-  - component: {fileID: 494037150}
-  m_Layer: 0
-  m_Name: PipelineServer
-  m_TagString: Untagged
-  m_Icon: {fileID: 0}
-  m_NavMeshLayer: 0
-  m_StaticEditorFlags: 0
-  m_IsActive: 1
---- !u!114 &494037150
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 494037149}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: dd4ab1c9091e0194196b5f5d51cb932f, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Unity.Pipeline::Unity.Pipeline.RuntimePipelineManager
-  enableInBuilds: 1
-  port: 0
-  securityLevel: 0
-  customToken: 
-  ipAllowlist:
-  - 127.0.0.1
-  requestTimeoutMs: 30000
-  enableAuditLogging: 1
-  autoStart: 1
-  maxWorkItemsPerFrame: 10
---- !u!4 &494037151
-Transform:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 494037149}
-  serializedVersion: 2
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 1, y: 0.7, z: 1}
-  m_LocalScale: {x: 1, y: 1, z: 1}
-  m_ConstrainProportionsScale: 0
-  m_Children: []
-  m_Father: {fileID: 0}
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &1321733044
 GameObject:
   m_ObjectHideFlags: 0
@@ -627,5 +573,4 @@ SceneRoots:
   - {fileID: 1366089695}
   - {fileID: 434715462}
   - {fileID: 1321733049}
-  - {fileID: 494037151}
   - {fileID: 1487321925}
