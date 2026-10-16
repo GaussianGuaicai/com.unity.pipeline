@@ -1,8 +1,13 @@
+// The package bundles Roslyn renamed with a "UnityPipeline." prefix (Runtime/Plugins/CodeAnalysis);
+// the dotnet test projects reference the same DLLs (IlInterpreter/BundledRoslyn.props). Those plugins
+// ship only to the Editor and desktop players, so mobile/console players compile this file out; the
+// dotnet harnesses define PIPELINE_HAS_ROSLYN.
+#if UNITY_EDITOR || UNITY_STANDALONE || PIPELINE_HAS_ROSLYN
 using System.Collections.Generic;
 using System.Text;
-using Microsoft.CodeAnalysis;
-using Microsoft.CodeAnalysis.CSharp;
-using Microsoft.CodeAnalysis.CSharp.Syntax;
+using UnityPipeline.Microsoft.CodeAnalysis;
+using UnityPipeline.Microsoft.CodeAnalysis.CSharp;
+using UnityPipeline.Microsoft.CodeAnalysis.CSharp.Syntax;
 
 namespace Unity.Pipeline.Compilation
 {
@@ -80,3 +85,4 @@ namespace Unity.Pipeline.Compilation
         }
     }
 }
+#endif

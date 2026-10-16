@@ -3,10 +3,12 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
-using System.Reflection.Metadata;
 using System.Runtime.InteropServices;
-using System.Reflection.Metadata.Ecma335;
-using System.Reflection.PortableExecutable;
+// The package bundles System.Reflection.Metadata renamed with a "UnityPipeline." prefix (Runtime/Plugins/CodeAnalysis);
+// the dotnet test projects reference the same DLLs (IlInterpreter/BundledRoslyn.props).
+using UnityPipeline.System.Reflection.Metadata;
+using UnityPipeline.System.Reflection.Metadata.Ecma335;
+using UnityPipeline.System.Reflection.PortableExecutable;
 using System.Runtime.CompilerServices;
 
 namespace IlInterpreter.Interpreter
@@ -25,6 +27,9 @@ sealed partial class ScriptInterpreter : IDisposable
     readonly IFrameAllocator _allocator;
     Vm?                      _vm;        // lazily created on first Invoke
     ParsedAssembly?          _parsed;
+    // The loaded assembly's parse state, for test/fuzz tooling that inspects script storage
+    // directly (see IlInterpreter.Fuzz's StaticSnapshot). Null before Load.
+    internal ParsedAssembly? Parsed => _parsed;
     ScriptObject?            _instance; // the live "Script" instance (null for static-only scripts)
 
     // Per-size thread-local buffers for host-call arguments (sizes 0-8).
@@ -47,12 +52,12 @@ sealed partial class ScriptInterpreter : IDisposable
         _allocator = allocator ?? MarshalFrameAllocator.Instance;
     }
 
-    // Parse the script IL; disposes any previously loaded assembly first (hot reload).
+    // Parse the script IL; disposes any previously loaded assembly first (code reload).
     // Throws ScriptValidationException if any method can't be lowered — failing at Load,
     // where the user can act on it, rather than at Invoke time.
     // lenient=true keeps loading when individual methods can't be lowered (each becomes a skipped
     // stub queryable via TryGetLoweringSkip) instead of throwing for the whole assembly — see
-    // IrLowerer.LowerAll. Hot reload passes true so one bad method doesn't drop a whole file's reload.
+    // IrLowerer.LowerAll. Code reload passes true so one bad method doesn't drop a whole file's reload.
     public void Load(IScript script, bool lenient = false)
     {
         _parsed?.PdbProvider?.Dispose();
@@ -75,6 +80,18 @@ sealed partial class ScriptInterpreter : IDisposable
             throw new ScriptValidationException(sb.ToString());
         }
         IrLowerer.BuildIrBlob(_parsed);
+        // Wire ScriptObject.ToString dispatch: a script ToString override must run wherever .NET
+        // formats the box (string.Concat/Format included), and only the loaded interpreter can
+        // execute it. Parse is static, so the instance hook lands here.
+        // The invoker belongs to THIS parse: a host that kept a script object across a reload and
+        // formats it later must not run the old ParsedMethod against the new IR blob (its offsets
+        // would execute unrelated code). Stale objects get the default (type name) instead.
+        var generation = _parsed;
+        foreach (var d in _parsed.TypesByName.Values)
+            d.ScriptToStringInvoker = (so, m) =>
+                ReferenceEquals(_parsed, generation)
+                    ? (_vm ??= new Vm(this)).Invoke((ParsedMethod)m, new object?[] { so })?.ToString() ?? ""
+                    : so.Type.Name;
         _instance = MakeInstance(_parsed);
         // Run script static constructors eagerly (CLR runs them lazily; eager keeps the VM free of
         // per-access init checks). The load-bearing case is the compiler-generated `<>c..cctor`
@@ -114,7 +131,7 @@ sealed partial class ScriptInterpreter : IDisposable
     }
 
     // True if the loaded script defines a method with this (simple) name. Lets callers
-    // probe for an optional entry point (e.g. a hot-reload override) without catching the
+    // probe for an optional entry point (e.g. a code-reload override) without catching the
     // "method not found" exception that Invoke throws.
     public bool HasMethod(string name) => _parsed != null && _parsed.ByName.ContainsKey(name);
 
@@ -126,7 +143,7 @@ sealed partial class ScriptInterpreter : IDisposable
 
     // A method that exists but was skipped at load — Lowered==null with a reason — because it
     // couldn't be lowered under lenient loading (see Load). Its call sites throw the reason if
-    // reached, so the hot-reload executor skips registering just that override instead of the file.
+    // reached, so the code-reload executor skips registering just that override instead of the file.
     public bool TryGetLoweringSkip(string methodName, out string reason)
     {
         if (_parsed != null && _parsed.ByName.TryGetValue(methodName, out var m)
@@ -248,6 +265,14 @@ sealed partial class ScriptInterpreter : IDisposable
         return d;
     }
 
+    // Build the internal value for a delegate whose type names a script type (see ScriptDelegate).
+    // Unlike GetOrCreateDelegate there is no CLR Delegate and no per-receiver caching: the value is a
+    // plain reference stored in an O slot, and invoke_script_delegate re-enters the VM on it.
+    // The site's DelegateType is null here (that is what routed the executor to this path), so the
+    // diagnostics name the delegate generically.
+    internal ScriptDelegate CreateScriptDelegate(DelegateSite site, object? receiver)
+        => new ScriptDelegate(ResolveScriptDelegateTarget(site, receiver, "delegate"), receiver, _parsed!);
+
     Delegate CreateDelegateCore(DelegateSite site, object? receiver)
     {
         if (site.HostMethod is { } hm)
@@ -259,7 +284,27 @@ sealed partial class ScriptInterpreter : IDisposable
                     $"Cannot create a {site.DelegateType.Name} over instance method '{hm.Name}' with a null receiver");
             return Delegate.CreateDelegate(site.DelegateType, receiver, hm);
         }
-        return ScriptDelegateAdapter.Create(this, site.DelegateType, site.ScriptMethod!, receiver);
+        var target = ResolveScriptDelegateTarget(site, receiver, site.DelegateType.Name);
+        return ScriptDelegateAdapter.Create(this, site.DelegateType, target, receiver);
+    }
+
+    // The script method a delegate over `site` runs for `receiver`. Shared by the CLR-adapter path
+    // and the script-typed ScriptDelegate path so both agree on the creation-time semantics:
+    // CLR throws at delegate CREATION over an instance method with a null receiver, and an
+    // ldvirtftn group resolves the receiver's override once, at creation.
+    static ParsedMethod ResolveScriptDelegateTarget(DelegateSite site, object? receiver, string delegateName)
+    {
+        var target = site.ScriptMethod!;
+        if (!target.IsStatic && receiver == null)
+            throw new ScriptRuntimeException(
+                $"NullReferenceException: cannot create a {delegateName} over instance method '{target.Name}' with a null receiver");
+        if (site.VirtualResolve && receiver is ScriptObject rso
+            && Vm.ResolveScriptVirtual(rso.Type, target) is { } ovr)
+            target = ovr;
+        if (target.Lowered == null)
+            throw new ScriptRuntimeException(
+                $"Cannot create a {delegateName} over '{target.Name}': no runnable implementation");
+        return target;
     }
 
     public object? Execute(IScript script, string methodName = "Run")
@@ -278,6 +323,18 @@ sealed partial class ScriptInterpreter : IDisposable
         public int     LocalCount;
         public byte[]  IlBytes = null!;
         public bool    IsStatic;
+        // Declared virtual (incl. overrides). A `callvirt` on such a method lowers to
+        // call_script_virt, which re-resolves the target from the receiver's runtime type via
+        // ScriptTypeDescriptor.VirtualsBySig; plain `call` (base.M()) stays statically bound.
+        public bool    IsVirtual;
+        // Dispatch identity for VirtualsBySig: name + the full method signature blob, so
+        // overloads (`F(int)` / `F(string)`) get distinct slots. An override and the virtual it
+        // overrides share the key because their signatures are byte-identical within one assembly.
+        public string  VirtKey = "";
+        // Bodyless signature stub for an interface member: only a callvirt dispatch anchor —
+        // never lowered (no IL), never invocable directly; the executor requires the receiver
+        // walk to produce a real implementation.
+        public bool    IsAbstractStub;
         public bool    IsVoid;
         // True when the declared return type is bool (which stores as I4). The method-return boxing
         // uses this to hand back a boxed bool rather than a boxed int, so a host caller casting the
@@ -413,12 +470,15 @@ sealed partial class ScriptInterpreter : IDisposable
         public Type DelegateType = null!;
         public MethodInfo? HostMethod;      // exactly one of HostMethod / ScriptMethod is set
         public ParsedMethod? ScriptMethod;
+        // ldvirtftn site over a virtual script method: CreateDelegateCore re-resolves the target
+        // from the receiver's runtime type (once, at creation — CLR ldvirtftn semantics).
+        public bool VirtualResolve;
         // Receiverless creations (static target) share one delegate per site, so repeated
         // event `+=`/`-=` over the same method group observe delegate equality.
         public Delegate? CachedStatic;
     }
 
-    sealed class HostEntry
+    internal sealed class HostEntry
     {
         public HostBinding.Entry Binding = null!; // the registered entry (handles int→bool coercion); always set at construction
         public bool IsVoid;      // true when return type is void — don't push result
@@ -448,9 +508,22 @@ sealed partial class ScriptInterpreter : IDisposable
         // I4-mapped receivers whose boxed identity changes the result (byte/short/... render the same
         // digits as int). None for every other receiver.
         public ReceiverBoxKind ReceiverBox;
+        // Per explicit parameter, from the call site's METADATA signature: 4 = uint, 8 = ulong, 0 =
+        // anything else; null when no parameter is unsigned. uint/ulong ride the signed I4/I8 slots,
+        // so RdArg boxes them as int/long — a string-keyed shim switching on the runtime type then
+        // sees `uint.MaxValue` as `-1` (Math.Max(uint.MaxValue, 0u) returned 0). The call site
+        // re-boxes by the declared type before invoking (see call_host in VmEngine).
+        public byte[]? UnsignedParams;
     }
 
-    enum ReceiverBoxKind : byte { None, Char, Bool }
+    // OR'ed into a MemberRef token to address the NON-virtual binding of a member that also has a
+    // virtual one. `base.ToString()` compiles to a plain `call Object::ToString`; the shared shim does
+    // `recv.ToString()`, which is virtual and re-enters the script override forever. The plain-call
+    // lowering uses this token and Parse registers the non-virtual entry beside the virtual one.
+    // Bit 30 is outside every metadata table id.
+    internal const int NonVirtualCallBit = 0x40000000;
+
+    internal enum ReceiverBoxKind : byte { None, Char, Bool }
 
 
     // Driver members of a script enumerator type (iterator state machine): what the host
@@ -466,7 +539,7 @@ sealed partial class ScriptInterpreter : IDisposable
         }
     }
 
-    sealed class ParsedAssembly
+    internal sealed class ParsedAssembly
     {
         // Every non-nullable field is set by Parse's object initializer before the instance escapes.
         public Dictionary<int, ParsedMethod>              ByToken = null!;
@@ -474,9 +547,15 @@ sealed partial class ScriptInterpreter : IDisposable
         public Dictionary<int, HostEntry>                 HostCalls = null!;   // MemberRef token → host method
         public Dictionary<int, HostEntry>                 HostCtors = null!;   // MemberRef token → host constructor
         public Dictionary<int, HostBinding.FieldEntry>    HostFields = null!;  // MemberRef token → host field
+        public Dictionary<int, int>                       HostFieldDeclTypeTok = null!; // host field MemberRef token → declaring TypeRef token (ensure-init of boxed struct locals)
         public Dictionary<int, string>                    TokenNames = null!;  // MemberRef token → "Type.Method/N" for diagnostics
         public Dictionary<int, (ScriptTypeDescriptor, int)> FieldSlots = null!;     // FieldDef token → (type, slot)
         public Dictionary<int, SType>                        FieldSTypes = null!;  // FieldDef token → numeric type (for IR lowering)
+        // FieldDef token → I8/R8 for long/ulong/double script fields. Their STORAGE stays boxed in
+        // a ref slot (FieldSTypes says O — an 8-byte PrimBytes cell would ripple through every
+        // offset consumer), but field LOADS must unbox into a correctly-typed wide slot: two
+        // O-typed operands fall into the i4 arithmetic path and truncate (found by fuzzing).
+        public Dictionary<int, SType>                        FieldWide = null!;
         public HashSet<int>                               FieldIsScriptStruct = null!; // FieldDef tokens whose type is a script-defined struct (O storage, needs clone on value-load)
         public Dictionary<int, int>                       FieldToTypeDef = null!;   // FieldDef token → declaring TypeDef token
         public Dictionary<int, ScriptTypeDescriptor>      CtorToType = null!;      // .ctor MethodDef token → type
@@ -519,6 +598,102 @@ sealed partial class ScriptInterpreter : IDisposable
 
     // CLR full name for a TypeRef — namespace-qualified, nested types joined with '+' — matching
     // what Assembly.GetType expects. A nested TypeRef's ResolutionScope is its declaring TypeRef.
+    // Virtual SLOT identity. Name + signature is not enough: `new virtual F()` (MethodAttributes.NewSlot)
+    // hides Base.F in a fresh slot, so `Base b = new Derived(); b.F()` must still run Base.F. Rule:
+    // a NewSlot method that hides a same-named, same-signature virtual somewhere up the SCRIPT base
+    // chain gets its own key (`name/sig@typedef`); an override (no NewSlot) inherits the key of the
+    // nearest such base method; everything else keeps the plain `name/sig` key — interface stubs,
+    // their implicit implementations, and slots owned outside the assembly (ToString) all meet on it.
+    static void AssignVirtualSlotKeys(MetadataReader reader, Dictionary<int, ParsedMethod> byToken)
+    {
+        var owner = new Dictionary<int, (TypeDefinitionHandle Type, MethodDefinition Def)>();
+        foreach (var th in reader.TypeDefinitions)
+            foreach (var mh in reader.GetTypeDefinition(th).GetMethods())
+                owner[MetadataTokens.GetToken(mh)] = (th, reader.GetMethodDefinition(mh));
+        var memo = new Dictionary<int, string>();
+
+        string KeyFor(int tok)
+        {
+            if (memo.TryGetValue(tok, out var k)) return k;
+            var (th, md) = owner[tok];
+            var name = reader.GetString(md.Name);
+            var sig = reader.GetBlobBytes(md.Signature);
+            string plain = ScriptTypeDescriptor.VirtualKey(name, sig);
+            k = plain;
+            int hidden = FindBaseVirtual(th, name, sig);
+            if (hidden != 0)
+                k = (md.Attributes & MethodAttributes.NewSlot) != 0
+                    ? $"{plain}@{MetadataTokens.GetToken(th):X8}"   // hides it: a new slot
+                    : KeyFor(hidden);                               // overrides it: the same slot
+            memo[tok] = k;
+            return k;
+        }
+
+        // The nearest virtual with this name and signature on a base TypeDef of this assembly; 0 if
+        // the chain leaves the assembly first (host base such as Object/MonoBehaviour).
+        int FindBaseVirtual(TypeDefinitionHandle th, string name, byte[] sig)
+        {
+            var bt = reader.GetTypeDefinition(th).BaseType;
+            while (!bt.IsNil && bt.Kind == HandleKind.TypeDefinition)
+            {
+                var bth = (TypeDefinitionHandle)bt;
+                var btd = reader.GetTypeDefinition(bth);
+                foreach (var mh in btd.GetMethods())
+                {
+                    var bmd = reader.GetMethodDefinition(mh);
+                    if ((bmd.Attributes & MethodAttributes.Virtual) == 0 || (bmd.Attributes & MethodAttributes.Static) != 0) continue;
+                    if (reader.GetString(bmd.Name) != name) continue;
+                    if (reader.GetBlobBytes(bmd.Signature).AsSpan().SequenceEqual(sig)) return MetadataTokens.GetToken(mh);
+                }
+                bt = btd.BaseType;
+            }
+            return 0;
+        }
+
+        foreach (var (tok, pm) in byToken)
+            if (pm.IsVirtual && !pm.IsStatic && owner.ContainsKey(tok))
+                pm.VirtKey = KeyFor(tok);
+    }
+
+    // Register a type's interface implementations in its dispatch map under the INTERFACE method's
+    // key: explicit ones from the MethodImpl table (`IThing.M` bodies), and implicit ones whose own
+    // key was suffixed because the method also hides a base virtual. Interfaces from other
+    // assemblies (MemberRef declarations) are host-dispatched and skipped.
+    static void RegisterInterfaceImplementations(MetadataReader reader, TypeDefinition typeDef,
+        ScriptTypeDescriptor desc, Dictionary<int, ParsedMethod> byToken)
+    {
+        foreach (var mih in typeDef.GetMethodImplementations())
+        {
+            var mi = reader.GetMethodImplementation(mih);
+            if (mi.MethodDeclaration.Kind != HandleKind.MethodDefinition || mi.MethodBody.Kind != HandleKind.MethodDefinition) continue;
+            if (byToken.TryGetValue(MetadataTokens.GetToken(mi.MethodDeclaration), out var decl)
+                && byToken.TryGetValue(MetadataTokens.GetToken(mi.MethodBody), out var body))
+                (desc.VirtualsBySig ??= new Dictionary<string, object>())[decl.VirtKey] = body;
+        }
+        foreach (var ih in typeDef.GetInterfaceImplementations())
+        {
+            var iface = reader.GetInterfaceImplementation(ih).Interface;
+            if (iface.Kind != HandleKind.TypeDefinition) continue;
+            foreach (var imh in reader.GetTypeDefinition((TypeDefinitionHandle)iface).GetMethods())
+            {
+                if (!byToken.TryGetValue(MetadataTokens.GetToken(imh), out var stub)) continue;
+                var imd = reader.GetMethodDefinition(imh);
+                var name = reader.GetString(imd.Name); var sig = reader.GetBlobBytes(imd.Signature);
+                foreach (var mh in typeDef.GetMethods())
+                {
+                    var md = reader.GetMethodDefinition(mh);
+                    if ((md.Attributes & MethodAttributes.Virtual) == 0 || reader.GetString(md.Name) != name) continue;
+                    if (!reader.GetBlobBytes(md.Signature).AsSpan().SequenceEqual(sig)) continue;
+                    if (byToken.TryGetValue(MetadataTokens.GetToken(mh), out var impl) && impl.VirtKey != stub.VirtKey)
+                    {
+                        var map = desc.VirtualsBySig ??= new Dictionary<string, object>();
+                        if (!map.ContainsKey(stub.VirtKey)) map[stub.VirtKey] = impl;   // an explicit impl wins
+                    }
+                }
+            }
+        }
+    }
+
     static string TypeRefFullName(MetadataReader reader, TypeReferenceHandle handle)
     {
         var tr   = reader.GetTypeReference(handle);
@@ -532,7 +707,7 @@ sealed partial class ScriptInterpreter : IDisposable
     static ParsedAssembly Parse(byte[] bytes, HostBinding? binding, Action<string> logSink)
     {
         var pe     = new PEReader(new MemoryStream(bytes), PEStreamOptions.PrefetchEntireImage);
-        var reader = pe.GetMetadataReader();
+        MetadataReader reader = pe.GetMetadataReader();
 
         // --- Demand-time auto-bind: register this script's referenced host types on first use ---
         // When the binding carries an AutoBindResolver policy, resolve every TypeRef the script
@@ -555,7 +730,33 @@ sealed partial class ScriptInterpreter : IDisposable
             var name  = reader.GetString(def.Name);
             var token = MetadataTokens.GetToken(handle);
 
-            if (def.RelativeVirtualAddress == 0) continue;
+            if (def.RelativeVirtualAddress == 0)
+            {
+                // Bodyless ABSTRACT VIRTUAL method — in practice an INTERFACE member. Callvirt
+                // sites need a signature STUB in ByToken so they lower to call_script_virt and
+                // resolve the implementation from the receiver's runtime type (C#'s implicit
+                // interface impls are `virtual final` in metadata, so they sit in VirtualsBySig).
+                // Without the stub the token fell into the host-member decode and died with a raw
+                // BadImageFormatException (found by fuzzing probes). Not registered in ByName —
+                // stubs aren't invocable — and skipped by LowerAll (no IL to lower).
+                if ((def.Attributes & MethodAttributes.Abstract) != 0
+                    && (def.Attributes & MethodAttributes.Virtual) != 0
+                    && (def.Attributes & MethodAttributes.Static) == 0)
+                {
+                    var stubSig = reader.GetBlobBytes(def.Signature);
+                    var (stubVoid, stubRet, stubRetBool) = SigReturn(stubSig);
+                    var stubArgs = SigParamSTypes(stubSig);
+                    byToken[token] = new ParsedMethod
+                    {
+                        Name = name, Token = token, ArgCount = 1 + stubArgs.Length,
+                        IlBytes = Array.Empty<byte>(), IsStatic = false, IsVirtual = true,
+                        IsAbstractStub = true, IsVoid = stubVoid, ReturnIsBool = stubRetBool,
+                        VirtKey = ScriptTypeDescriptor.VirtualKey(name, stubSig),
+                        ReturnSType = stubRet, ArgSTypes = stubArgs,
+                    };
+                }
+                continue;
+            }
 
             var body       = pe.GetMethodBody(def.RelativeVirtualAddress);
             var ilBytes    = body.GetILBytes() ?? Array.Empty<byte>();
@@ -564,6 +765,7 @@ sealed partial class ScriptInterpreter : IDisposable
             var localScSt  = ReadLocalIsScriptStruct(reader, body.LocalSignature, localCount, out var localScTds);
             var localSTps  = ReadLocalSTypes(reader, body.LocalSignature, localCount);
             var isStatic   = (def.Attributes & MethodAttributes.Static) != 0;
+            var isVirtual  = (def.Attributes & MethodAttributes.Virtual) != 0;
             var sigBytes   = reader.GetBlobBytes(def.Signature);
             var (isVoid, retSType, retIsBool) = SigReturn(sigBytes);
             var argSTypes  = SigParamSTypes(sigBytes);
@@ -605,14 +807,19 @@ sealed partial class ScriptInterpreter : IDisposable
             var (retScTd, argScTds) = ReadSigScriptStructTokens(sigBytes);
             int declTypeDef = 0;
             try { declTypeDef = MetadataTokens.GetToken(def.GetDeclaringType()); } catch (Exception) { }
-            var m = new ParsedMethod { Name = name, Token = token, DeclaringTypeDef = declTypeDef, ArgCount = argCount, LocalCount = localCount, IlBytes = ilBytes, IsStatic = isStatic, IsVoid = isVoid, ReturnIsBool = retIsBool, ReturnSType = retSType, ArgSTypes = argSTypes, LocalStructLayouts = localStrs, LocalSTypes = localSTps, LocalIsScriptStruct = localScSt, LocalScriptStructTypeDefs = localScTds, ArgScriptStructTypeDefs = argScTds, ReturnScriptStructTypeDef = retScTd, FinallyRegions = finRegions, FaultHandlerStarts = faultHandlerStarts, HasUnsupportedEhClauses = unsupportedEh };
+            var m = new ParsedMethod { Name = name, Token = token, DeclaringTypeDef = declTypeDef, ArgCount = argCount, LocalCount = localCount, IlBytes = ilBytes, IsStatic = isStatic, IsVirtual = isVirtual, VirtKey = ScriptTypeDescriptor.VirtualKey(name, sigBytes), IsVoid = isVoid, ReturnIsBool = retIsBool, ReturnSType = retSType, ArgSTypes = argSTypes, LocalStructLayouts = localStrs, LocalSTypes = localSTps, LocalIsScriptStruct = localScSt, LocalScriptStructTypeDefs = localScTds, ArgScriptStructTypeDefs = argScTds, ReturnScriptStructTypeDef = retScTd, FinallyRegions = finRegions, FaultHandlerStarts = faultHandlerStarts, HasUnsupportedEhClauses = unsupportedEh };
             byToken[token] = m;
             byName[name]   = m;
         }
 
+        // Virtual slot identity for the dispatch maps (see AssignVirtualSlotKeys): needs every
+        // ParsedMethod to exist, so it runs between the method pass and the type pass.
+        AssignVirtualSlotKeys(reader, byToken);
+
         // --- Script-defined types: field slots, .ctor → type mapping, and name → type ---
         var fieldSlots       = new Dictionary<int, (ScriptTypeDescriptor, int)>();
         var fieldSTypes      = new Dictionary<int, SType>();
+        var fieldWide        = new Dictionary<int, SType>(); // long/ulong/double fields (see ParsedAssembly.FieldWide)
         var fieldIsScStruct  = new HashSet<int>();
         var fieldToTypeDef   = new Dictionary<int, int>(); // FieldDef token → declaring TypeDef token
         var ctorToType       = new Dictionary<int, ScriptTypeDescriptor>();
@@ -624,6 +831,9 @@ sealed partial class ScriptInterpreter : IDisposable
         var enumeratorTypes  = new Dictionary<ScriptTypeDescriptor, EnumeratorMembers>();
         // (descriptor, per-field nested-struct TypeDef token) pending resolution once all types exist.
         var pendingStructFields = new List<(ScriptTypeDescriptor desc, int[] typeDefs)>();
+        // Script base-class links, resolved after all descriptors exist (declaration order is
+        // arbitrary). Feeds virtual dispatch (BaseDesc chain walk in call_script_virt).
+        var pendingBaseLinks = new List<(ScriptTypeDescriptor desc, int baseTypeDefTok)>();
 
         // This type's own INSTANCE fields, declaration order. Statics are excluded: an enum's
         // members are static literals typed as the enum itself, which made the descriptor
@@ -651,7 +861,9 @@ sealed partial class ScriptInterpreter : IDisposable
                     "base-type chain is too deep or cyclic — malformed metadata");
             List<FieldDefinitionHandle> fields;
             var bt = td.BaseType;
-            if (bt.Kind == HandleKind.TypeDefinition)
+            // NIL base (interfaces) still reads Kind == TypeDefinition — dereferencing it threw
+            // BadImageFormatException (same hole as the isStructType check above).
+            if (!bt.IsNil && bt.Kind == HandleKind.TypeDefinition)
             {
                 var baseTd   = reader.GetTypeDefinition((TypeDefinitionHandle)bt);
                 var baseName = reader.GetString(baseTd.Name);
@@ -680,12 +892,20 @@ sealed partial class ScriptInterpreter : IDisposable
             {
                 var bt = typeDef.BaseType;
                 string baseName = "";
-                if (bt.Kind == HandleKind.TypeReference)
+                // INTERFACES have a NIL base handle (Kind still reads TypeDefinition) — reading
+                // through it threw BadImageFormatException "Read out of bounds" (found by fuzzing
+                // probes the moment a script interface appeared).
+                if (bt.IsNil) { }
+                else if (bt.Kind == HandleKind.TypeReference)
                     baseName = reader.GetString(reader.GetTypeReference((TypeReferenceHandle)bt).Name);
                 else if (bt.Kind == HandleKind.TypeDefinition)
                     baseName = reader.GetString(reader.GetTypeDefinition((TypeDefinitionHandle)bt).Name);
                 isStructType = baseName == "ValueType"; // "Enum" (also a value type) intentionally excluded
             }
+            // A TypeDefinition base = a SCRIPT base class: link descriptors after the loop so
+            // virtual dispatch can walk the chain (see pendingBaseLinks).
+            int scriptBaseTok = !typeDef.BaseType.IsNil && typeDef.BaseType.Kind == HandleKind.TypeDefinition
+                ? MetadataTokens.GetToken((TypeDefinitionHandle)typeDef.BaseType) : 0;
 
             // Assign field slots in declaration order, BASE-FIRST: inherited fields occupy the front
             // (same indices/offsets as in their own descriptor), then this type's own fields. See
@@ -693,6 +913,7 @@ sealed partial class ScriptInterpreter : IDisposable
             var typeFields = BuildBaseFirstFields(typeDef, out int ownFieldStart).ToArray();
             var fieldSlotMap  = new Dictionary<int, int>(typeFields.Length);
             var fldTypes      = new SType[typeFields.Length];
+            byte[]? fldWideKinds = null; // 1 = I8, 2 = R8 (see ScriptTypeDescriptor.FieldWideKinds)
             var fldOffsets    = new int[typeFields.Length];
             HostBinding.StructLayout?[]? fldVtLayouts = null; // allocated on demand
             bool[]? fldIsScStruct = null;                     // allocated on demand (nested value-type fields)
@@ -728,6 +949,14 @@ sealed partial class ScriptInterpreter : IDisposable
                         fst = SType.I4;
                     else if (tb == 0x0C)
                         fst = SType.R4;
+                    else if (tb is 0x0A or 0x0B or 0x0D)
+                    {
+                        // long/ulong/double: fst stays O (boxed ref-slot storage), but record the
+                        // true width so loads unbox into a wide slot (see ParsedAssembly.FieldWide)
+                        // and Create pre-boxes a typed zero (see FieldWideKinds).
+                        if (isOwnField) fieldWide[fieldToken] = tb == 0x0D ? SType.R8 : SType.I8;
+                        (fldWideKinds ??= new byte[typeFields.Length])[i] = tb == 0x0D ? (byte)2 : (byte)1;
+                    }
                     else if (tb == 0x11 && fSig.Length >= 3)
                     {
                         // VALUETYPE: try to decode the TypeRef name and look up a struct layout
@@ -811,6 +1040,7 @@ sealed partial class ScriptInterpreter : IDisposable
                 VtFieldLayouts = fldVtLayouts,
                 FieldIsScriptStruct = fldIsScStruct,
                 IsScriptStructValue = isStructType,
+                FieldWideKinds = fldWideKinds,
             };
 
             // Patch back the type reference into fieldSlots — OWN fields only (see isOwnField above).
@@ -820,6 +1050,7 @@ sealed partial class ScriptInterpreter : IDisposable
 
             typesByName[typeName] = desc;
             if (fldScStructTypeDef != null) pendingStructFields.Add((desc, fldScStructTypeDef));
+            if (scriptBaseTok != 0) pendingBaseLinks.Add((desc, scriptBaseTok));
 
             // Map TypeDef token → type descriptor (used by initobj lowering).
             int typeDefTok = MetadataTokens.GetToken(typeHandle);
@@ -835,14 +1066,34 @@ sealed partial class ScriptInterpreter : IDisposable
             {
                 var mDef   = reader.GetMethodDefinition(methodHandle);
                 var mName  = reader.GetString(mDef.Name);
-                if (mName != ".ctor") continue;
+                // Virtual instance methods (incl. overrides) join the type's dispatch map, keyed
+                // by name + signature (VirtKey) — call_script_virt walks the BaseDesc chain from
+                // the RECEIVER's descriptor so `((Base)derived).M()` runs the override.
+                if (mName != ".ctor")
+                {
+                    int vTok = MetadataTokens.GetToken(methodHandle);
+                    if ((mDef.Attributes & MethodAttributes.Virtual) != 0
+                        && (mDef.Attributes & MethodAttributes.Static) == 0
+                        && byToken.TryGetValue(vTok, out var vM))
+                        (desc.VirtualsBySig ??= new Dictionary<string, object>())[vM.VirtKey] = vM;
+                    continue;
+                }
                 int ctorTok = MetadataTokens.GetToken(methodHandle);
                 ctorToType[ctorTok] = desc;
-                // Record the first ctor as the default; prefer the 0-arg ctor (ArgCount==1 = just `this`)
-                if (!typeDefToCtorTok.TryGetValue(typeDefTok, out _) ||
-                    (byToken.TryGetValue(ctorTok, out var ctorM) && ctorM.ArgCount == 1))
+                // Record ONLY a genuine 0-arg ctor (ArgCount==1 = just `this`) as the default.
+                // The old first-ctor fallback made initobj on a type with only PARAMETERIZED
+                // ctors call one with argc=0 — the ctor body ran over unwritten (pooled-garbage)
+                // arg slots and corrupted the zero-init default (found by fuzzing). A type with
+                // no 0-arg ctor zero-inits via initobj_script instead, which is what C#'s
+                // `new S()` / default(S) means anyway.
+                if (byToken.TryGetValue(ctorTok, out var ctorM) && ctorM.ArgCount == 1)
                     typeDefToCtorTok[typeDefTok] = ctorTok;
             }
+
+            // Interface dispatch: explicit implementations (MethodImpl rows: the body is named
+            // `IThing.M`, the stub `M`) and implicit ones whose own slot key differs from the
+            // interface method's (a class method that also hides a base virtual).
+            RegisterInterfaceImplementations(reader, typeDef, desc, byToken);
 
             // --- Enumerator (iterator state-machine) detection ---
             // A script type implementing System.Collections.IEnumerator — in practice a Roslyn
@@ -891,6 +1142,21 @@ sealed partial class ScriptInterpreter : IDisposable
                 if (moveNext != null && getCurrent != null)
                     enumeratorTypes[desc] = new EnumeratorMembers(moveNext, getCurrent, dispose);
             }
+        }
+
+        // Link script base classes now that every descriptor exists (see pendingBaseLinks).
+        foreach (var (bDesc, bTok) in pendingBaseLinks)
+            if (typeDefToType.TryGetValue(bTok, out var bBase))
+                bDesc.BaseDesc = bBase;
+        // Guarantee the BaseDesc graph is ACYCLIC at load, so every runtime chain walk
+        // (virtual dispatch, subtype casts, ScriptObject.ToString) can loop without guards.
+        // Hostile metadata can encode A : B : A — that must fail the Load, not hang the VM.
+        foreach (var (bDesc, _) in pendingBaseLinks)
+        {
+            int steps = 0;
+            for (var d = bDesc.BaseDesc; d != null; d = d.BaseDesc)
+                if (++steps > 512)
+                    throw new ScriptValidationException($"cyclic base-class chain through '{bDesc.Name}'");
         }
 
         // Resolve each script-struct field's nested TypeDef token to a descriptor now that every type
@@ -952,6 +1218,7 @@ sealed partial class ScriptInterpreter : IDisposable
         var hostCalls  = new Dictionary<int, HostEntry>();
         var hostCtors  = new Dictionary<int, HostEntry>();
         var hostFields = new Dictionary<int, HostBinding.FieldEntry>();
+        var hostFieldDeclTypeTok = new Dictionary<int, int>();
         var tokenNames = new Dictionary<int, string>();
         var unboundHostMembers = new List<string>();
 
@@ -981,6 +1248,8 @@ sealed partial class ScriptInterpreter : IDisposable
                 if (binding != null && binding.TryGetField($"{typeName2}.{memberName}", out var fe))
                 {
                     hostFields[token] = fe!;
+                    if (memberRef.Parent.Kind == HandleKind.TypeReference)
+                        hostFieldDeclTypeTok[token] = MetadataTokens.GetToken(memberRef.Parent);
                     // Classify the field type so the IR lowerer can emit ldfld_i4/ldfld_r4. Prefer the
                     // binding's FieldSt (derived from the CLR field type, so it knows an enum is I4); the
                     // signature-byte guess below can't distinguish an enum (0x11 VALUETYPE) from a struct
@@ -1164,6 +1433,24 @@ sealed partial class ScriptInterpreter : IDisposable
                 {
                     hostCalls[token] = new HostEntry
                     { Binding = objIntrinsic, IsVoid = false, SigRetSType = sigRetSType };
+                    // `base.ToString()` inside a script override is a plain `call` on this token. The
+                    // virtual intrinsic above would land in ScriptObject.ToString and re-enter the
+                    // override forever; the statically bound answer is Object's default, the type name.
+                    // The plain-call lowering addresses this entry via NonVirtualCallBit.
+                    if (memberName == "ToString" && objHasThis && memberParamCount == 0)
+                    {
+                        hostCalls[token | NonVirtualCallBit] = new HostEntry
+                        {
+                            Binding = new HostBinding.Entry
+                            {
+                                Delegate = (recv, _) => recv is ScriptObject so ? so.Type.Name : recv != null ? recv.ToString()
+                                    : throw new ScriptRuntimeException("NullReferenceException: called Object.ToString on a null object"),
+                                ParamCount = 0, HasThis = true,
+                            },
+                            IsVoid = false, SigRetSType = sigRetSType,
+                        };
+                        tokenNames[token | NonVirtualCallBit] = "Object.ToString/0 (base call)";
+                    }
                     continue;
                 }
             }
@@ -1314,7 +1601,8 @@ sealed partial class ScriptInterpreter : IDisposable
                         (TypeSpecificationHandle)memberRef.Parent, sigBytes, binding);
                     if (d != SType.O) invRetSt = d;
                 }
-                hostCalls[token] = new HostEntry { Binding = entry2!, IsVoid = sigIsVoid, SigRetSType = invRetSt, ReceiverBox = ReceiverBoxFor(typeName2) };
+                hostCalls[token] = new HostEntry { Binding = entry2!, IsVoid = sigIsVoid, SigRetSType = invRetSt, ReceiverBox = ReceiverBoxFor(typeName2),
+                                                   UnsignedParams = UnsignedParamKinds(sigBytes) };
             }
             else
             {
@@ -1467,6 +1755,32 @@ sealed partial class ScriptInterpreter : IDisposable
                 if (name != "" && binding.TryGetTypeByName(name, out var t) && t != null)
                     tokenTypes[tok] = t;
             }
+
+            // `new S { x = 1 }` / `default(S)` on a BOXED host struct local (AllowType, the
+            // auto-bind default) lowers to `ldloca; initobj S; ldloca; stfld x`. The O slot has
+            // no box yet, and stfld on null threw "Non-static field requires a target" (found
+            // live in CubeFlipr's Update). Give initobj a 0-arg "ctor" keyed by the TYPE token
+            // — disjoint from the MemberRef tokens real ctors use — so the lowerer can emit
+            // newobj_host to produce the default box for the following stores to mutate in
+            // place. Nullable<T> keeps the ldnull path (null IS its representation here);
+            // primitives/enums live in numeric slots; flat structs never reach the O-slot path.
+            foreach (var kv in tokenTypes)
+            {
+                var vt = kv.Value;
+                if (!vt.IsValueType || vt.IsPrimitive || vt.IsEnum || Nullable.GetUnderlyingType(vt) != null)
+                    continue;
+                if (hostCtors.ContainsKey(kv.Key)) continue;
+                var vtLocal = vt;
+                hostCtors[kv.Key] = new HostEntry
+                {
+                    Binding = new HostBinding.Entry
+                    {
+                        Delegate = (_, _) => Activator.CreateInstance(vtLocal),
+                        ParamCount = 0, HasThis = false,
+                    },
+                    IsVoid = true,
+                };
+            }
         }
 
         // --- Embedded PDB: read sequence points for source-mapped errors ---
@@ -1483,7 +1797,7 @@ sealed partial class ScriptInterpreter : IDisposable
         {
             var pdbReader = pdbProvider.GetMetadataReader();
             // Document handle → short file name, resolved once per document. With #line directives
-            // in the compiled source (the hot-reload transform emits them), documents are the USER's
+            // in the compiled source (the code-reload transform emits them), documents are the USER's
             // files, so the name makes error locations self-locating: " at line 394 (TankAI.cs)".
             var docNames = new Dictionary<DocumentHandle, string>();
             foreach (var handle in reader.MethodDefinitions)
@@ -1522,10 +1836,12 @@ sealed partial class ScriptInterpreter : IDisposable
             ByName      = byName,
             HostCalls   = hostCalls,
             HostCtors   = hostCtors,
+            HostFieldDeclTypeTok = hostFieldDeclTypeTok,
             HostFields  = hostFields,
             TokenNames  = tokenNames,
             FieldSlots     = fieldSlots,
             FieldSTypes    = fieldSTypes,
+            FieldWide      = fieldWide,
             FieldIsScriptStruct = fieldIsScStruct,
             FieldToTypeDef = fieldToTypeDef,
             CtorToType       = ctorToType,
@@ -1599,10 +1915,15 @@ sealed partial class ScriptInterpreter : IDisposable
             case "Boolean": case "Char": case "SByte": case "Byte":
             case "Int16": case "UInt16": case "Int32": case "UInt32":
                 return SType.I4;
-            case "Single": case "Double":
+            case "Single":
                 return SType.R4;
+            // Wide type args ride wide (two-cell) slots.
+            case "Double":
+                return SType.R8;
+            case "Int64": case "UInt64":
+                return SType.I8;
             default:
-                return SType.O; // long/ulong/enums/ref types stay boxed
+                return SType.O; // enums/ref types stay boxed
         }
     }
 
@@ -2036,6 +2357,28 @@ sealed partial class ScriptInterpreter : IDisposable
 
     // Parse explicit parameter types from a method signature blob.
     // Returns SType[] of length = explicit param count (not counting implicit `this`).
+    // Per explicit parameter: 4 for uint (0x09), 8 for ulong (0x0B), 0 otherwise; null when none is
+    // unsigned. See HostEntry.UnsignedParams.
+    static byte[]? UnsignedParamKinds(byte[] sig)
+    {
+        if (sig.Length < 2) return null;
+        int idx = 1;
+        int paramCount = DecompressIntAdv(sig, ref idx);
+        if (paramCount == 0) return null;
+        while (idx < sig.Length && (sig[idx] == 0x1F || sig[idx] == 0x20)) { idx++; DecompressIntAdv(sig, ref idx); }
+        if (idx < sig.Length) SkipSigType(sig, ref idx);
+        byte[]? kinds = null;
+        for (int p = 0; p < paramCount && idx < sig.Length; p++)
+        {
+            while (idx < sig.Length && (sig[idx] == 0x1F || sig[idx] == 0x20)) { idx++; DecompressIntAdv(sig, ref idx); }
+            if (idx >= sig.Length) break;
+            byte tb = sig[idx];
+            if (tb == 0x09 || tb == 0x0B) (kinds ??= new byte[paramCount])[p] = tb == 0x09 ? (byte)4 : (byte)8;
+            if (!SkipSigType(sig, ref idx)) break;
+        }
+        return kinds;
+    }
+
     static SType[] SigParamSTypes(byte[] sig)
     {
         if (sig.Length < 2) return Array.Empty<SType>();
@@ -2056,7 +2399,7 @@ sealed partial class ScriptInterpreter : IDisposable
             while (idx < sig.Length && (sig[idx] == 0x1F || sig[idx] == 0x20))
             { idx++; DecompressIntAdv(sig, ref idx); }
             if (idx >= sig.Length) break;
-            byte tb = sig[idx++];
+            byte tb = sig[idx];
             result[p] = tb switch
             {
                 // 0x03 = ELEMENT_TYPE_CHAR — I4-typed in the VM (see SigReturn).
@@ -2067,11 +2410,11 @@ sealed partial class ScriptInterpreter : IDisposable
                 0x0D => SType.R8,         // double — wide slot
                 _ => SType.O,
             };
-            // VALUETYPE (0x11) and CLASS (0x12) are followed by a compressed type token — skip it.
-            if (tb == 0x11 || tb == 0x12) DecompressIntAdv(sig, ref idx);
-            // Array/generic params carry a nested type — skip it so the next param's tag is read
-            // from the right position (e.g. `(int[] a, MyStruct s)` would otherwise desync).
-            else if (tb == 0x1D || tb == 0x15) SkipSigType(sig, ref idx);
+            // Advance over the WHOLE type (coded token, byref/array inner type, generic
+            // instantiation with all its arguments, VAR index) so the next parameter's tag is read
+            // from the right byte. Skipping only part of a compound type mistyped every later
+            // parameter: `(Action<Node,S> f, Node n, S s)` read `n` as I4 and lost `s`'s struct-ness.
+            if (!SkipSigType(sig, ref idx)) break;
         }
         return result;
     }
@@ -2088,15 +2431,11 @@ sealed partial class ScriptInterpreter : IDisposable
         { idx++; DecompressIntAdv(sig, ref idx); }
         if (idx >= sig.Length) return (0, null);
 
-        int retTok = 0;
-        byte retTb = sig[idx++];
-        if (retTb == 0x11 || retTb == 0x12)
-        {
-            int coded = DecompressIntAdv(sig, ref idx);
-            if (retTb == 0x11 && (coded & 0x03) == 0)
-                retTok = MetadataTokens.GetToken(MetadataTokens.TypeDefinitionHandle(coded >> 2));
-        }
-        else if (retTb == 0x1D) SkipSigType(sig, ref idx); // SZARRAY return
+        // Peek the tag, capture a VALUETYPE TypeDef, then advance over the WHOLE type with
+        // SkipSigType — a partial skip of a compound type (generic instantiation, byref) misreads
+        // every later parameter (see SigParamSTypes).
+        int retTok = ScriptStructTypeDefAt(sig, idx);
+        if (!SkipSigType(sig, ref idx)) return (retTok, null);
 
         int[]? paramToks = null;
         for (int pi = 0; pi < paramCount && idx < sig.Length; pi++)
@@ -2104,18 +2443,21 @@ sealed partial class ScriptInterpreter : IDisposable
             while (idx < sig.Length && (sig[idx] == 0x1F || sig[idx] == 0x20))
             { idx++; DecompressIntAdv(sig, ref idx); }
             if (idx >= sig.Length) break;
-            byte tb = sig[idx++];
-            if (tb == 0x11 || tb == 0x12)
-            {
-                int coded = DecompressIntAdv(sig, ref idx);
-                if (tb == 0x11 && (coded & 0x03) == 0)
-                    (paramToks ??= new int[paramCount])[pi] =
-                        MetadataTokens.GetToken(MetadataTokens.TypeDefinitionHandle(coded >> 2));
-            }
-            else if (tb == 0x1D) SkipSigType(sig, ref idx); // SZARRAY param
-            else if (tb == 0x15) SkipSigType(sig, ref idx); // GENERICINST — conservative skip
+            int tok = ScriptStructTypeDefAt(sig, idx);
+            if (tok != 0) (paramToks ??= new int[paramCount])[pi] = tok;
+            if (!SkipSigType(sig, ref idx)) break;
         }
         return (retTok, paramToks);
+    }
+
+    // The TypeDef token when the sig type at `idx` is VALUETYPE over a type of this assembly (a
+    // script-defined struct); 0 for anything else. Does not advance.
+    static int ScriptStructTypeDefAt(byte[] sig, int idx)
+    {
+        if (idx >= sig.Length || sig[idx] != 0x11) return 0;
+        int i = idx + 1;
+        int coded = DecompressIntAdv(sig, ref i);
+        return (coded & 0x03) == 0 ? MetadataTokens.GetToken(MetadataTokens.TypeDefinitionHandle(coded >> 2)) : 0;
     }
 
     static int DecompressInt(byte[] b, int i)
@@ -2174,6 +2516,14 @@ sealed partial class ScriptInterpreter : IDisposable
                         return SType.I4;
                     case 0x0C:
                         return SType.R4;
+                    // Wide type args ride wide slots — this predated I8/R8, so a
+                    // Func<long,long>.Invoke result typed O and every consumer (neg/ceq/add/conv)
+                    // used the 32-bit op over the boxed long (found by fuzzing under release
+                    // codegen: `if (dg(x) == -dg(x))` read the boxed long as 0).
+                    case 0x0A: case 0x0B:
+                        return SType.I8;
+                    case 0x0D:
+                        return SType.R8;
                     case 0x11: // VALUETYPE coded index — enum type args ride I4
                     {
                         int c = b + 1;
@@ -2426,6 +2776,134 @@ sealed partial class ScriptInterpreter : IDisposable
             }
             default: return null; // unsupported tag — fall through
         }
+    }
+
+    // Classify a `callvirt X::Invoke(...)` whose token didn't resolve to a host or script method as a
+    // SCRIPT-TYPED DELEGATE invoke — the delegate type mentions a script type, so it has no runtime
+    // System.Type and its value is a ScriptDelegate (see the invoke_script_delegate op). Returns the
+    // Invoke arity + return classification the lowerer needs to type the result slot. False (leaving the
+    // call to fall through to notSupported) unless: the member is named "Invoke", its parent is a generic
+    // instantiation that does NOT fully resolve to a host Type (i.e. it names a script type), and that
+    // instantiation's open generic definition is a delegate family (System.Action`N / System.Func`N / a
+    // custom host generic delegate). retSType mirrors the host call_host dst typing: I4/R4 for a numeric
+    // Func result, O otherwise; sdVoid true for Action.
+    static bool TryClassifyScriptDelegateInvoke(
+        ParsedAssembly asm, int tok, out int argc, out bool isVoid, out SType retSType)
+    {
+        argc = 0; isVoid = true; retSType = SType.O;
+        if (asm.HostSurface == null) return false;
+        try
+        {
+            var h = MetadataTokens.EntityHandle(tok);
+            if (h.Kind != HandleKind.MemberReference) return false;
+            var mr = asm.Reader.GetMemberReference((MemberReferenceHandle)h);
+            if (asm.Reader.GetString(mr.Name) != "Invoke") return false;
+            if (mr.Parent.Kind != HandleKind.TypeSpecification) return false;
+            var spec = (TypeSpecificationHandle)mr.Parent;
+            // Fully host-resolvable delegate types are handled by the normal host path — this
+            // classifier is only for a delegate type with no runtime Type (it names a script type).
+            if (ResolveClosedSpecType(asm.Reader, spec, asm.HostSurface) != null) return false;
+            // ...and positively names a script type: a host delegate the binding merely failed to
+            // resolve (nested host type, type outside the binding) keeps its host shim path.
+            if (!TypeSpecNamesScriptType(asm.Reader, spec)) return false;
+            if (!TypeSpecOpenDefIsDelegate(asm.Reader, spec)) return false;
+
+            var sig = asm.Reader.GetBlobBytes(mr.Signature);
+            argc = DecompressInt(sig, 1); // paramCount, after the calling-convention byte
+            (isVoid, retSType, _) = SigReturn(sig);
+            // A Func<...,TResult>::Invoke returns the generic VAR `!n`; resolve it against the
+            // TypeSpec's type args (SigReturn maps the raw VAR tag to O). Void (Action) stays void.
+            // UPGRADE only, like the call_host path: a concrete return (Predicate<T> → bool,
+            // Comparison<T> → int) is already typed by SigReturn, and GenericVarReturnSType answers O
+            // for any non-VAR return — overwriting bool with O made `if (p(n))` a null test on a box.
+            if (!isVoid && retSType == SType.O)
+            {
+                var d = GenericVarReturnSType(asm.Reader, spec, sig, asm.HostSurface);
+                if (d != SType.O) retSType = d;
+            }
+            return true;
+        }
+        catch { return false; }
+    }
+
+    // True when a closed generic instantiation (TypeSpec) names a type DEFINED IN THE SCRIPT anywhere
+    // in its type arguments — `Action<Node>`, `Func<List<Node>, int>`. This is the positive test for
+    // "script-typed delegate": "the host could not resolve it" is not the same thing (a host nested
+    // type or a type outside the binding also fails to resolve, and must keep its host path).
+    static bool TypeSpecNamesScriptType(MetadataReader reader, TypeSpecificationHandle spec)
+    {
+        try
+        {
+            var blob = reader.GetBlobBytes(reader.GetTypeSpecification(spec).Signature);
+            int idx = 0;
+            return SigTypeNamesScriptType(blob, ref idx);
+        }
+        catch { return false; }
+    }
+
+    // The ctor MemberRef of a `newobj D::.ctor(object, IntPtr)` delegate construction: true when D is
+    // a generic instantiation naming a script type (see TypeSpecNamesScriptType).
+    static bool CtorParentNamesScriptType(ParsedAssembly asm, int ctorTok)
+    {
+        try
+        {
+            var h = MetadataTokens.EntityHandle(ctorTok);
+            if (h.Kind != HandleKind.MemberReference) return false;
+            var mr = asm.Reader.GetMemberReference((MemberReferenceHandle)h);
+            return mr.Parent.Kind == HandleKind.TypeSpecification
+                && TypeSpecNamesScriptType(asm.Reader, (TypeSpecificationHandle)mr.Parent);
+        }
+        catch { return false; }
+    }
+
+    // Walk one sig type (II.23.2.12) — the same grammar DecodeSigType decodes — answering whether a
+    // TypeDef (table tag 0: a type of this assembly, i.e. a script type) appears anywhere in it.
+    // Returns false and stops at any tag it does not know, so an unknown shape is never classified.
+    static bool SigTypeNamesScriptType(byte[] blob, ref int idx)
+    {
+        if (idx >= blob.Length) return false;
+        byte tag = blob[idx++];
+        switch (tag)
+        {
+            case 0x01: case 0x02: case 0x03: case 0x04: case 0x05: case 0x06: case 0x07:
+            case 0x08: case 0x09: case 0x0A: case 0x0B: case 0x0C: case 0x0D: case 0x0E:
+            case 0x18: case 0x19: case 0x1C:
+                return false;                                    // primitives / string / object
+            case 0x13: case 0x1E: DecompressIntAdv(blob, ref idx); return false; // VAR / MVAR
+            case 0x11: case 0x12:                                // VALUETYPE / CLASS coded TypeDefOrRef
+                return (DecompressIntAdv(blob, ref idx) & 0x03) == 0;
+            case 0x10: case 0x1D: case 0x45:                     // BYREF / SZARRAY / PINNED — recurse
+                return SigTypeNamesScriptType(blob, ref idx);
+            case 0x15:                                           // GENERICINST
+            {
+                if (idx >= blob.Length) return false;
+                idx++;                                           // CLASS or VALUETYPE of the open def
+                bool any = (DecompressIntAdv(blob, ref idx) & 0x03) == 0; // a script generic def
+                int argc = DecompressIntAdv(blob, ref idx);
+                for (int i = 0; i < argc; i++)
+                    if (SigTypeNamesScriptType(blob, ref idx)) any = true;
+                return any;
+            }
+            default: return false;
+        }
+    }
+
+    // True when a TypeSpec generic instantiation's OPEN generic definition is a delegate type — even
+    // when the closed instantiation itself is unresolvable (a script type arg). Resolves only the open
+    // definition (System.Action`1, System.Func`2, a custom host delegate), which is always a host type.
+    static bool TypeSpecOpenDefIsDelegate(MetadataReader reader, TypeSpecificationHandle spec)
+    {
+        var blob = reader.GetBlobBytes(reader.GetTypeSpecification(spec).Signature);
+        if (blob.Length < 3 || blob[0] != 0x15) return false; // GENERICINST
+        int coded = DecompressInt(blob, 2);                   // [1] is the CLASS/VALUETYPE tag
+        if ((coded & 0x03) != 1) return false;                // open def must be a TypeRef (host type)
+        var tr = reader.GetTypeReference(MetadataTokens.TypeReferenceHandle(coded >> 2));
+        var name = reader.GetString(tr.Name);
+        var full = tr.Namespace.IsNil ? name : reader.GetString(tr.Namespace) + "." + name;
+        var open = FindTypeByFullName(full);
+        // Every delegate type derives directly from MulticastDelegate (reliable for open generic defs,
+        // where typeof(Delegate).IsAssignableFrom can be finicky).
+        return open != null && (open.BaseType == typeof(MulticastDelegate) || open.IsSubclassOf(typeof(Delegate)));
     }
 
     // Resolve the runtime Type a ctor MemberRef constructs — used by delegate-creation lowering,
@@ -2690,7 +3168,7 @@ sealed partial class ScriptInterpreter : IDisposable
     // Walks one ParsedMethod's IL, simulates the eval stack symbolically to determine
     // operand types, allocates frame slots, and emits uint[] IR. All methods in the
     // assembly are lowered at Load time and cached on ParsedMethod.Lowered.
-    static class IrLowerer
+    internal static class IrLowerer
     {
         // Returns a list of (methodName, reason) for any method that failed to lower.
         // Empty list means full success. Load throws when this is non-empty.
@@ -2700,11 +3178,28 @@ sealed partial class ScriptInterpreter : IDisposable
         // reload uses this so one unsupported method (e.g. SetupUI referencing a member missing on
         // the running build) doesn't poison every other reloaded method in the same file. Strict
         // (default) stays all-or-nothing for the fuzzer/tests, where a failure is a bug to surface.
+        // Environment kill switches for the optimizer, read once per Load (LowerAll refreshes
+        // them) rather than once per method. Not `static readonly`: the fuzz self-diff and
+        // LoweringConfigSelfDiffTests flip them between Loads in one process.
+        static class Knobs
+        {
+            public static bool NoOpt;
+            public static string SkipPass = "";
+
+            public static void Refresh()
+            {
+                NoOpt    = Environment.GetEnvironmentVariable("ILINTERPRETER_NOOPT") != null;
+                SkipPass = Environment.GetEnvironmentVariable("ILINTERPRETER_SKIP_PASS") ?? "";
+            }
+        }
+
         public static List<(string Name, string Reason)> LowerAll(ParsedAssembly asm, bool lenient = false)
         {
+            Knobs.Refresh();
             var failures = new List<(string, string)>();
             foreach (var m in asm.ByToken.Values)
             {
+                if (m.IsAbstractStub) continue; // interface stub: no IL; dispatch anchor only
                 try { m.Lowered = LowerMethod(m, asm); }
                 catch (NotSupportedException ex)
                 {
@@ -2738,7 +3233,9 @@ sealed partial class ScriptInterpreter : IDisposable
                     if (callees == null) continue;
                     foreach (var callee in callees)
                     {
-                        if (callee == null || callee.Lowered != null) continue;
+                        // Interface stubs legitimately have no IL — the executor resolves the
+                        // real implementation from the receiver at dispatch time.
+                        if (callee == null || callee.Lowered != null || callee.IsAbstractStub) continue;
                         var reason = $"calls '{callee.Name}', which could not be lowered: {callee.LoweringSkipReason}";
                         m.Lowered = null!;
                         if (m.IsColdEnumeratorMember || lenient) m.LoweringSkipReason = reason;
@@ -2992,6 +3489,22 @@ sealed partial class ScriptInterpreter : IDisposable
             for (int i = 0; i < method.ArgCount;   i++) argTypes[i]   = slotTypes[argFrameSlot[i]];
             for (int i = 0; i < method.LocalCount; i++) localTypes[i] = slotTypes[localFrameSlot[i]];
 
+            // Parameters holding a BOXED script struct (an O ScriptObject: the struct has a
+            // string/long/double field, so it has no flat layout). PushArg clones these on load for
+            // struct copy semantics. Index space is the lowerer's (slot 0 = `this` on instance
+            // methods, never cloned: struct `this` is byref); ArgScriptStructTypeDefs is per
+            // signature parameter. Flat struct params are Vt, byref params are not recorded.
+            var argIsBoxedSc = new bool[method.ArgCount];
+            if (method.ArgScriptStructTypeDefs is { } argScTdsL)
+            {
+                int thisOff = method.IsStatic ? 0 : 1;
+                for (int i = thisOff; i < method.ArgCount; i++)
+                {
+                    int sigIdx = i - thisOff;
+                    argIsBoxedSc[i] = sigIdx < argScTdsL.Length && argScTdsL[sigIdx] != 0 && argTypes[i] == SType.O;
+                }
+            }
+
             // A script-defined struct local is always an O ScriptObject. PreClassifyLocals infers a
             // local's type from the first value stored into it, and a generic `ldelem <T>` (from
             // `s = arr[i]`) can be mis-inferred as I4 — which would then suppress clone-on-load and
@@ -3062,6 +3575,7 @@ sealed partial class ScriptInterpreter : IDisposable
             // C# always emits immediately after (`ldnull|recv[; dup]; ld(virt)ftn M; newobj D`).
             // Anything else between them is unsupported IL for this lowerer.
             int pendingFtnTok = 0;
+            bool pendingFtnVirt = false; // ldvirtftn (vs ldftn): resolve the override at delegate creation
 
             // Byref locals carry an ADDRESS. Roslyn spills a managed pointer (&x.f from ldflda,
             // &a[i] from ldelema, &local from ldloca) into a local when control flow sits between
@@ -3193,9 +3707,26 @@ sealed partial class ScriptInterpreter : IDisposable
                             evalStack[sp++] = (phDup, SType.O);
                             break;
                         }
+                        // CLR `dup` of a FLAT struct is a full value copy. A 4-byte `mov` copied
+                        // only the first word, leaving every later field poisoned/stale — release
+                        // codegen's `ldloc <struct>; dup` (e.g. a `(v.f, v.f)` tuple) then read a
+                        // garbage field (found by fuzzing under release+poison). Copy all the bytes
+                        // via mov_vt over a layout-carrying dst slot.
+                        if (t == SType.Vt && slotStructs[src] is { } dupLay)
+                        {
+                            int vdst = AllocStructSlot(ref frameSize, slotTypes, slotStructs, dupLay);
+                            evalStack[sp++] = (vdst, SType.Vt);
+                            Emit3(ir, irToIl, Op.mov_vt, vdst, src, instrStart);
+                            break;
+                        }
                         int dst = AllocSlot(ref frameSize, slotTypes, slotStructs, t, null);
                         evalStack[sp++] = (dst, t);
-                        Emit3(ir, irToIl, Op.mov, dst, src, instrStart);
+                        // A boxed script-struct rides an O slot, so a plain mov would alias the two
+                        // copies — release codegen's `ldloc; dup; stloc` then let a write through one
+                        // corrupt the other. clone_sc clones only script-structs and passes
+                        // references through, so it is correct for every O value (strings/arrays/
+                        // class instances keep their identity).
+                        Emit3(ir, irToIl, t == SType.O ? Op.clone_sc : Op.mov, dst, src, instrStart);
                         break;
                     }
 
@@ -3304,12 +3835,12 @@ sealed partial class ScriptInterpreter : IDisposable
                     }
 
                     // --- Args ---
-                    case ILOpCode.Ldarg_0: PushArg(evalStack, ref sp, 0, argTypes, argFrameSlot); break;
-                    case ILOpCode.Ldarg_1: PushArg(evalStack, ref sp, 1, argTypes, argFrameSlot); break;
-                    case ILOpCode.Ldarg_2: PushArg(evalStack, ref sp, 2, argTypes, argFrameSlot); break;
-                    case ILOpCode.Ldarg_3: PushArg(evalStack, ref sp, 3, argTypes, argFrameSlot); break;
-                    case ILOpCode.Ldarg_s: PushArg(evalStack, ref sp, il[ip++], argTypes, argFrameSlot); break;
-                    case ILOpCode.Ldarg:   PushArg(evalStack, ref sp, ReadU16(il, ref ip), argTypes, argFrameSlot); break;
+                    case ILOpCode.Ldarg_0: PushArg(ir, irToIl, evalStack, ref sp, ref frameSize, slotTypes, slotStructs, argIsBoxedSc, instrStart, 0, argTypes, argFrameSlot); break;
+                    case ILOpCode.Ldarg_1: PushArg(ir, irToIl, evalStack, ref sp, ref frameSize, slotTypes, slotStructs, argIsBoxedSc, instrStart, 1, argTypes, argFrameSlot); break;
+                    case ILOpCode.Ldarg_2: PushArg(ir, irToIl, evalStack, ref sp, ref frameSize, slotTypes, slotStructs, argIsBoxedSc, instrStart, 2, argTypes, argFrameSlot); break;
+                    case ILOpCode.Ldarg_3: PushArg(ir, irToIl, evalStack, ref sp, ref frameSize, slotTypes, slotStructs, argIsBoxedSc, instrStart, 3, argTypes, argFrameSlot); break;
+                    case ILOpCode.Ldarg_s: PushArg(ir, irToIl, evalStack, ref sp, ref frameSize, slotTypes, slotStructs, argIsBoxedSc, instrStart, il[ip++], argTypes, argFrameSlot); break;
+                    case ILOpCode.Ldarg:   PushArg(ir, irToIl, evalStack, ref sp, ref frameSize, slotTypes, slotStructs, argIsBoxedSc, instrStart, ReadU16(il, ref ip), argTypes, argFrameSlot); break;
                     case ILOpCode.Starg_s: StoreArg(ir, irToIl, evalStack, ref sp, il[ip++], argTypes, argFrameSlot, slotTypes, slotStructs, ref frameSize, instrStart); break;
                     case ILOpCode.Starg:   StoreArg(ir, irToIl, evalStack, ref sp, ReadU16(il, ref ip), argTypes, argFrameSlot, slotTypes, slotStructs, ref frameSize, instrStart); break;
 
@@ -3522,8 +4053,13 @@ sealed partial class ScriptInterpreter : IDisposable
                         if (st == SType.I4) break; // already int
                         int dst = AllocSlot(ref frameSize, slotTypes, slotStructs, SType.I4, null);
                         evalStack[sp - 1] = (dst, SType.I4);
+                        // An O source is a BOXED numeric (a generic host/delegate call result —
+                        // `(int)dg(x)` where dg is Func<long,long>): a coercing mov reads it via
+                        // CoerceBoxedI4 (truncates boxed long/double). conv_r4_i4 would misread the
+                        // box as raw float bits (found by fuzzing under release codegen).
                         var cvOp = st == SType.I8 ? Op.conv_i4_i8
                                  : st == SType.R8 ? Op.conv_i4_r8
+                                 : st == SType.O ? Op.mov
                                  : Op.conv_r4_i4;
                         Emit3(ir, irToIl, cvOp, dst, src, instrStart);
                         break;
@@ -3539,6 +4075,10 @@ sealed partial class ScriptInterpreter : IDisposable
                         Op cvOp;
                         if (st == SType.R4) { if (zext) goto notSupported; cvOp = Op.conv_i8_r4; }
                         else if (st == SType.R8) { if (zext) goto notSupported; cvOp = Op.conv_i8_r8; }
+                        // O source is a boxed numeric (generic call result): a coercing mov reads
+                        // it via RdI8/CoerceBoxedI8, which keeps the full 64 bits — conv_i8_i4 would
+                        // truncate a boxed long through int first (see Conv_i4).
+                        else if (st == SType.O) cvOp = Op.mov;
                         else cvOp = zext ? Op.conv_i8_u4 : Op.conv_i8_i4;
                         int dst = AllocSlot(ref frameSize, slotTypes, slotStructs, SType.I8, null);
                         evalStack[sp - 1] = (dst, SType.I8);
@@ -3603,6 +4143,7 @@ sealed partial class ScriptInterpreter : IDisposable
                         evalStack[sp - 1] = (dst, SType.R4);
                         var cvOp = st == SType.I8 ? Op.conv_r4_i8
                                  : st == SType.R8 ? Op.conv_r4_r8
+                                 : st == SType.O ? Op.mov // boxed numeric → R4 via CoerceBoxedR4 (see Conv_i4)
                                  : Op.conv_i4_r4;
                         Emit3(ir, irToIl, cvOp, dst, src, instrStart);
                         break;
@@ -3617,6 +4158,7 @@ sealed partial class ScriptInterpreter : IDisposable
                         evalStack[sp - 1] = (dst, SType.R8);
                         var cvOp = st == SType.I8 ? Op.conv_r8_i8
                                  : st == SType.R4 ? Op.conv_r8_r4
+                                 : st == SType.O ? Op.mov // boxed numeric → R8 via RdR8/CoerceBoxedR8 (see Conv_i4)
                                  : Op.conv_r8_i4;
                         Emit3(ir, irToIl, cvOp, dst, src, instrStart);
                         break;
@@ -3938,8 +4480,58 @@ sealed partial class ScriptInterpreter : IDisposable
                     case ILOpCode.Callvirt:
                     {
                         int tok = BitConverter.ToInt32(il, ip); ip += 4;
+                        // A plain `call` on a member that also has a virtual binding (`base.ToString()`)
+                        // must bind statically: use the non-virtual entry Parse registered beside it.
+                        if (op == ILOpCode.Call && asm.HostCalls.ContainsKey(tok | NonVirtualCallBit))
+                            tok |= NonVirtualCallBit;
                         int tokIdx = tokens.Count; tokens.Add(tok);
                         int ctok = constrainedTok; constrainedTok = 0; // consume the prefix, if any
+                        // `callvirt` dispatches on the receiver's runtime type; a plain `call` binds
+                        // statically. C# emits `call` (not callvirt) for `base.M()`, so a base call to a
+                        // virtual method must stay statically bound — hence the opcode is load-bearing.
+                        bool isCallvirt = op == ILOpCode.Callvirt;
+
+                        // `f(args)` where f's TYPE names a script type (e.g. Action<Node>) compiles to
+                        // `callvirt <ScriptTypedDelegate>::Invoke(args)`. Its Invoke is a TypeSpec MemberRef
+                        // that the binding ALSO resolves to a host DynamicInvoke shim (Action`1::Invoke keyed
+                        // by short name), so it would otherwise take the CLR call_host path and fault trying
+                        // to cast the ScriptDelegate to System.Delegate. Intercept BEFORE resolution — but
+                        // only when the delegate type mentions a script type (TryClassify... returns false
+                        // for a host-typed Action<int>, which keeps its working CLR delegate + shim path).
+                        if (isCallvirt && !asm.ByToken.ContainsKey(tok)
+                            && TryClassifyScriptDelegateInvoke(asm, tok, out int sdArgc, out bool sdVoid, out SType sdRet))
+                        {
+                            // The receiver (the delegate value) sits below the explicit args; re-enter the
+                            // VM on the delegate's target. Executor boxes each arg by slot type (call_host's
+                            // slow-path marshalling). A null receiver at runtime is a real null-deref (C#
+                            // short-circuits `?.Invoke` before this op), reported by the executor.
+                            int spBase = sp - sdArgc - 1;
+                            int recvSlot = evalStack[spBase].slot;
+                            if (recvSlot < 0 || addrTagBySlot[recvSlot] != -2)
+                                goto notSupported; // delegate value must be a plain O reference
+                            // Explicit args must be plain values (no ldloca/ldflda byref phantoms — ref/out
+                            // delegate params are unsupported, matching the CLR adapter path).
+                            for (int k = 0; k < sdArgc; k++)
+                            {
+                                int aSlot = evalStack[spBase + 1 + k].slot;
+                                if (aSlot >= 0 && addrTagBySlot[aSlot] != -2) goto notSupported;
+                            }
+                            int dst = sdVoid ? -1
+                                : (sdRet is SType.I4 or SType.R4 or SType.I8 or SType.R8)
+                                    ? AllocSlot(ref frameSize, slotTypes, slotStructs, sdRet, null)
+                                    : AllocSlot(ref frameSize, slotTypes, slotStructs, SType.O, null);
+                            ir.Add((uint)Op.invoke_script_delegate); irToIl.Add(instrStart);
+                            ir.Add((uint)(sdVoid ? -1 : dst)); irToIl.Add(instrStart);
+                            ir.Add((uint)tokIdx); irToIl.Add(instrStart);
+                            ir.Add((uint)recvSlot); irToIl.Add(instrStart);
+                            ir.Add((uint)sdArgc); irToIl.Add(instrStart);
+                            for (int k = 0; k < sdArgc; k++)
+                            { ir.Add((uint)evalStack[spBase + 1 + k].slot); irToIl.Add(instrStart); }
+                            sp = spBase;
+                            if (!sdVoid) evalStack[sp++] = (dst, sdRet);
+                            ensuredScriptSlots.Clear();
+                            break;
+                        }
 
                         if (asm.ByToken.TryGetValue(tok, out var callee))
                         {
@@ -4104,7 +4696,10 @@ sealed partial class ScriptInterpreter : IDisposable
                                         goto notSupported;
                                 }
                                 // [call_script, dst, tok_idx, argc, arg0, arg1, ...]
-                                ir.Add((uint)Op.call_script); irToIl.Add(instrStart);
+                                // callvirt on a virtual script method dispatches on the RECEIVER's
+                                // runtime type; plain `call` (base.M()) stays statically bound.
+                                bool virtDispatch = op == ILOpCode.Callvirt && callee.IsVirtual && !callee.IsStatic;
+                                ir.Add((uint)(virtDispatch ? Op.call_script_virt : Op.call_script)); irToIl.Add(instrStart);
                                 ir.Add((uint)(isVoid ? -1 : dst)); irToIl.Add(instrStart);
                                 ir.Add((uint)tokIdx); irToIl.Add(instrStart);
                                 ir.Add((uint)argc); irToIl.Add(instrStart);
@@ -4536,6 +5131,7 @@ sealed partial class ScriptInterpreter : IDisposable
                     case ILOpCode.Ldvirtftn:
                     {
                         pendingFtnTok = BitConverter.ToInt32(il, ip); ip += 4;
+                        pendingFtnVirt = true;
                         // Pops the dup'd receiver copy, pushes the fn pointer placeholder — the
                         // original receiver stays beneath for the delegate newobj.
                         evalStack[sp - 1] = (-1, SType.I4);
@@ -4551,23 +5147,45 @@ sealed partial class ScriptInterpreter : IDisposable
                         {
                             // Delegate construction: `recv|null; ftn; newobj D::.ctor(object, IntPtr)`.
                             int ftnTok = pendingFtnTok; pendingFtnTok = 0;
+                            bool ftnVirt = pendingFtnVirt; pendingFtnVirt = false;
                             var delegateType = ResolveCtorParentType(asm, tok);
-                            if (delegateType == null || !typeof(Delegate).IsAssignableFrom(delegateType))
+                            // A delegate TYPE that names a script type (e.g. Action<Node>) has NO runtime
+                            // System.Type — ResolveCtorParentType returns null because MakeGenericType needs
+                            // a real Type for the script-class arg. We can't build a CLR delegate over it (a
+                            // CLR Invoke(Node) can't carry a ScriptObject), so lower to an internal
+                            // ScriptDelegate over the interpreted target and invoke it by VM re-entry. A
+                            // host-resolvable delegate type keeps the CLR ScriptDelegateAdapter path below.
+                            // Positive test: the type ARGUMENTS must name a script type. A host delegate the
+                            // binding merely failed to resolve (nested host type, type outside the binding)
+                            // is not script-typed and keeps the unresolvable-type rejection below.
+                            bool scriptTyped = delegateType == null && CtorParentNamesScriptType(asm, tok);
+                            if (!scriptTyped && !typeof(Delegate).IsAssignableFrom(delegateType))
                                 throw new NotSupportedException(
                                     $"IR lowering: delegate construction in '{method.Name}' at IL+0x{instrStart:X4}" +
                                     $" over an unresolvable delegate type (token 0x{tok:X8})");
-                            var site = new DelegateSite { DelegateType = delegateType };
+                            var site = new DelegateSite { DelegateType = delegateType! };
                             if (asm.ByToken.TryGetValue(ftnTok, out var scriptTarget))
+                            {
                                 site.ScriptMethod = scriptTarget;
-                            else if (asm.HostCalls.TryGetValue(ftnTok, out var hostTarget)
+                                // ldvirtftn on a virtual script method: CLR resolves the override
+                                // ONCE at delegate creation from the receiver's runtime type —
+                                // binding the base statically ran the wrong body (found by fuzzing
+                                // probes). Plain ldftn (e.g. a `base.M` group) stays static.
+                                site.VirtualResolve = ftnVirt && scriptTarget.IsVirtual && !scriptTarget.IsStatic;
+                            }
+                            else if (!scriptTyped && asm.HostCalls.TryGetValue(ftnTok, out var hostTarget)
                                      && (hostTarget.ResolvedMethod ?? hostTarget.Binding.Method as MethodInfo) is { } mi)
                                 site.HostMethod = mi;
                             else
                             {
                                 asm.TokenNames.TryGetValue(ftnTok, out var ftnName);
-                                throw new NotSupportedException(
-                                    $"IR lowering: method group '{ftnName ?? $"token 0x{ftnTok:X8}"}' in " +
-                                    $"'{method.Name}' at IL+0x{instrStart:X4} did not resolve to a host or script method");
+                                throw new NotSupportedException(scriptTyped
+                                    ? $"IR lowering: a delegate whose type names a script type in '{method.Name}' " +
+                                      $"at IL+0x{instrStart:X4} targets '{ftnName ?? $"token 0x{ftnTok:X8}"}', which is " +
+                                      "not an interpreted method — script-typed delegates are supported only over " +
+                                      "script methods and lambdas"
+                                    : $"IR lowering: method group '{ftnName ?? $"token 0x{ftnTok:X8}"}' in " +
+                                      $"'{method.Name}' at IL+0x{instrStart:X4} did not resolve to a host or script method");
                             }
                             (delegateSiteByTokIdx ??= new Dictionary<int, DelegateSite>())[tokIdx] = site;
 
@@ -4575,6 +5193,8 @@ sealed partial class ScriptInterpreter : IDisposable
                             if (recvSlot < 0 || addrTagBySlot[recvSlot] != -2)
                                 goto notSupported; // phantom/placeholder receiver — not a plain O value
                             int dst = AllocSlot(ref frameSize, slotTypes, slotStructs, SType.O, null);
+                            // Always new_delegate; the executor picks the ScriptDelegate path when the
+                            // site's DelegateType is null (scriptTyped) — no separate op needed.
                             ir.Add((uint)Op.new_delegate); irToIl.Add(instrStart);
                             ir.Add((uint)dst); irToIl.Add(instrStart);
                             ir.Add((uint)tokIdx); irToIl.Add(instrStart);
@@ -4866,6 +5486,17 @@ sealed partial class ScriptInterpreter : IDisposable
                             var ldfldOp = fst == SType.I4 ? Op.ldfld_i4 : fst == SType.R4 ? Op.ldfld_r4 : Op.ldfld_o;
                             Emit4(ir, irToIl, ldfldOp, dst2, actualObj, tokIdx, instrStart);
                         }
+                        // Wide (long/double) script field: the load above fetched the BOXED value
+                        // into an O slot. Unbox into a correctly-typed wide slot — mov with a wide
+                        // dst reads the src via RdI8/RdR8, which coerce boxed values — so downstream
+                        // arithmetic takes the i8/r8 path instead of the truncating i4 one.
+                        if (fst == SType.O && asm.FieldWide.TryGetValue(tok, out var wfst))
+                        {
+                            var (boxSlot, _) = evalStack[sp - 1];
+                            int wdst = AllocSlot(ref frameSize, slotTypes, slotStructs, wfst, null);
+                            Emit3(ir, irToIl, Op.mov, wdst, boxSlot, instrStart);
+                            evalStack[sp - 1] = (wdst, wfst);
+                        }
                         // Value-load of a script-struct field: clone so the pushed value is an
                         // independent copy (struct copy semantics). Field mutation uses ldflda, which
                         // takes a different path and is unaffected.
@@ -4972,7 +5603,20 @@ sealed partial class ScriptInterpreter : IDisposable
                                 // instance or heap-struct local): offset-mode phantom rooted at the
                                 // OBJECT slot, so consumers read/write PrimBytes in place —
                                 // materializing would copy and lose mutations (h.pos.x = 3).
-                                int baseObj = inTag >= 0 ? inTag : obj;
+                                int baseObj;
+                                if (inTag == -3)
+                                {
+                                    // BOXED array element (no flat layout): `obj` is the ldelema
+                                    // placeholder, never a real object. Materialize the element via
+                                    // ldelem_o — it returns the ScriptObject reference the array
+                                    // holds, so PrimBytes reads/writes at the field offset hit the
+                                    // live element in place (found by fuzzing: `a[i].n.f0` NRE'd on
+                                    // a null placeholder receiver).
+                                    int arrS = addrFldObjBySlot[obj], idxS = addrFldTokBySlot[obj];
+                                    baseObj = AllocSlot(ref frameSize, slotTypes, slotStructs, SType.O, null);
+                                    Emit4(ir, irToIl, Op.ldelem_o, baseObj, arrS, idxS, instrStart);
+                                }
+                                else baseObj = inTag >= 0 ? inTag : obj;
                                 addrTagBySlot[dst]    = -1;
                                 addrFldObjBySlot[dst] = baseObj;
                                 addrFldOffBySlot[dst] = fOff;
@@ -4984,7 +5628,38 @@ sealed partial class ScriptInterpreter : IDisposable
 
                         // Classic path: address of a field on a (heap) object — resolve ldloca
                         // bases to the actual slot; consumers materialize via the token.
-                        int actualObj = inTag >= 0 ? inTag : obj;
+                        int actualObj;
+                        if (inTag == -3)
+                        {
+                            // Field address inside a BOXED (non-flat) array element — e.g.
+                            // `sa[i].f0 += 1` where the struct has a ref-slot field (string/long/
+                            // double). Materialize the element: it's a ScriptObject, a reference
+                            // INTO the array, so writes through it stick. Rooting the phantom at
+                            // the raw -3 slot handed consumers a never-written null receiver
+                            // (found by fuzzing).
+                            int arrSlotA = addrFldObjBySlot[obj];
+                            int idxSlotA = addrFldTokBySlot[obj];
+                            actualObj = AllocSlot(ref frameSize, slotTypes, slotStructs, SType.O, null);
+                            Emit4(ir, irToIl, Op.ldelem_o, actualObj, arrSlotA, idxSlotA, instrStart);
+                        }
+                        else if (inTag == -1 && addrFldOffBySlot[obj] < 0)
+                        {
+                            // Field address chained on an unmaterialized token-mode FIELD phantom
+                            // whose outer field is boxed (O storage — a script struct with ref
+                            // fields): materialize the outer field; the loaded ScriptObject is the
+                            // same reference the outer field's ref slot holds, so writes stick.
+                            int outObjA  = addrFldObjBySlot[obj];
+                            int outTokiA = addrFldTokBySlot[obj];
+                            int outTokA  = tokens[outTokiA];
+                            actualObj = AllocSlot(ref frameSize, slotTypes, slotStructs, SType.O, null);
+                            if (asm.FieldSlots.TryGetValue(outTokA, out var outFsA))
+                                Emit4(ir, irToIl, Op.ldfld_sc_o, actualObj, outObjA,
+                                    outFsA.Item1.FieldOffsets[outFsA.Item2], instrStart);
+                            else
+                                Emit4(ir, irToIl, Op.ldfld_o, actualObj, outObjA, outTokiA, instrStart);
+                        }
+                        else
+                            actualObj = inTag >= 0 ? inTag : obj;
                         addrTagBySlot[dst]    = -1; // field address
                         addrFldObjBySlot[dst] = actualObj;
                         addrFldTokBySlot[dst] = tokIdx;
@@ -5119,8 +5794,14 @@ sealed partial class ScriptInterpreter : IDisposable
                         // any execution path would NRE without this guard.
                         // Optimization: skip if the slot is already known initialized in this basic block
                         // (tracked in ensuredScriptSlots). Cleared at block boundaries and after calls/branches.
+                        // Same for a BOXED host struct local (`S s; s.x = 1; s.y = 2;` with no
+                        // initobj): the field's declaring TypeRef token has a synthetic default
+                        // ctor (see the parse-time hostCtors registration), and ensure_script
+                        // creates the box through it when the slot is still null.
                         if (tag >= 0 && slotTypes[actualObj] == SType.O
-                            && asm.FieldToTypeDef.TryGetValue(tok, out int fieldTypeDef))
+                            && (asm.FieldToTypeDef.TryGetValue(tok, out int fieldTypeDef)
+                                || (asm.HostFieldDeclTypeTok.TryGetValue(tok, out fieldTypeDef)
+                                    && asm.HostCtors.ContainsKey(fieldTypeDef))))
                         {
                             if (!ensuredScriptSlots.Contains(actualObj))
                             {
@@ -5309,6 +5990,17 @@ sealed partial class ScriptInterpreter : IDisposable
                         int dst = AllocSlot(ref frameSize, slotTypes, slotStructs, SType.O, null);
                         evalStack[sp++] = (dst, SType.O);
                         Emit3(ir, irToIl, Op.ldsfld_o, dst, tokIdx, instrStart);
+                        // Wide (long/double) SCRIPT static: reads come from the boxed store — unbox
+                        // into a wide slot so arithmetic over two statics doesn't fall into the
+                        // truncating i4 path (mirrors the Ldfld wide unbox; found by fuzzing).
+                        // Statics aren't in FieldWide (the field-slot pass walks instance fields
+                        // only), so classify from the signature blob.
+                        if (ScriptStaticWideSType(asm, tok) is { } wsst)
+                        {
+                            int wdst = AllocSlot(ref frameSize, slotTypes, slotStructs, wsst, null);
+                            Emit3(ir, irToIl, Op.mov, wdst, dst, instrStart);
+                            evalStack[sp - 1] = (wdst, wsst);
+                        }
                         break;
                     }
                     case ILOpCode.Ldsflda:
@@ -5335,6 +6027,16 @@ sealed partial class ScriptInterpreter : IDisposable
                         int adst = AllocSlot(ref frameSize, slotTypes, slotStructs, SType.O, null);
                         evalStack[sp++] = (adst, SType.O);
                         Emit3(ir, irToIl, Op.ldsfld_o, adst, tokIdx, instrStart);
+                        // Wide SCRIPT static addressed for a member call (`s_wl.ToString()`):
+                        // unbox like Ldsfld — a never-written static's boxed store is null, and a
+                        // null receiver rendered "" where C# prints 0 (found by fuzzing). The mov
+                        // coerces null to a typed 0; the constrained call re-boxes from the wide slot.
+                        if (ScriptStaticWideSType(asm, tok) is { } wast)
+                        {
+                            int wadst = AllocSlot(ref frameSize, slotTypes, slotStructs, wast, null);
+                            Emit3(ir, irToIl, Op.mov, wadst, adst, instrStart);
+                            evalStack[sp - 1] = (wadst, wast);
+                        }
                         break;
                     }
                     case ILOpCode.Stsfld:
@@ -5547,6 +6249,11 @@ sealed partial class ScriptInterpreter : IDisposable
                         addrFldTokBySlot[dst] = idxSlot; // reuse slot — points to index slot, not a token
                         if (FlatElemLayout(asm, lmaTok) is { } lmaFlat)
                             addrElemLayoutBySlot[dst] = lmaFlat; // flat elem: consumers ldelem_vt/stelem_vt
+                        // .NET bounds-checks AT ldelema; the phantom defers the check to whatever
+                        // consumes the address, so an UNCONSUMED element address (unused ref/local,
+                        // common under release codegen) skipped it — `var _ = a[oob]` returned
+                        // normally instead of throwing (found by fuzzing the unmasked-index axis).
+                        Emit3(ir, irToIl, Op.arr_bounds_check, arrSlot, idxSlot, instrStart);
                         evalStack[sp++] = (dst, SType.O);
                         break;
                     }
@@ -5616,6 +6323,18 @@ sealed partial class ScriptInterpreter : IDisposable
                                 slotTypes[targetSlot] = pst;
                                 Emit3(ir, irToIl, pst == SType.R4 ? Op.ldc_r4 : Op.ldc_i4, targetSlot, 0, instrStart);
                             }
+                            else if (asm.HostCtors.ContainsKey(typeDefTok))
+                            {
+                                // Boxed host struct local: materialize the default box so the
+                                // initializer's stfld sequence has a target (registered at parse
+                                // time, keyed by the type token).
+                                int hostTypeTokIdx = tokens.Count; tokens.Add(typeDefTok);
+                                ir.Add((uint)Op.newobj_host); irToIl.Add(instrStart);
+                                ir.Add((uint)targetSlot); irToIl.Add(instrStart);
+                                ir.Add((uint)hostTypeTokIdx); irToIl.Add(instrStart);
+                                ir.Add(0u); irToIl.Add(instrStart); // argc = 0
+                                ensuredScriptSlots.Add(targetSlot);
+                            }
                             else
                             {
                                 Emit2(ir, irToIl, Op.ldnull, targetSlot, instrStart);
@@ -5669,6 +6388,13 @@ sealed partial class ScriptInterpreter : IDisposable
                             int zeroSlot = AllocSlot(ref frameSize, slotTypes, slotStructs, fst2, null);
                             if (fst2 == SType.I4 || fst2 == SType.R4)
                                 Emit3(ir, irToIl, Op.ldc_i4, zeroSlot, 0, instrStart);
+                            // initobj on a SCRIPT-STRUCT field (boxed O storage — e.g. a struct
+                            // local with a ref-slot field hoisted into an iterator state machine):
+                            // C# semantics are a fresh ZEROED instance, not null — a null field
+                            // NREs the next read (found by fuzzing: crash-e049406a).
+                            else if (asm.TypeDefToType.TryGetValue(typeDefTok, out var initFldType)
+                                     && initFldType.IsScriptStructValue)
+                                EmitFreshScriptStruct(ir, irToIl, tokens, asm, typeDefTok, zeroSlot, instrStart);
                             else
                                 Emit2(ir, irToIl, Op.ldnull, zeroSlot, instrStart);
                             if (asm.FieldSlots.TryGetValue(tok2, out var sfScFsI))
@@ -5691,11 +6417,17 @@ sealed partial class ScriptInterpreter : IDisposable
                         }
                         else if (tag == -3)
                         {
-                            // array-element initobj: stelem of null/0.
+                            // array-element initobj: stelem of null/0 — except a SCRIPT-STRUCT
+                            // element (`sa[i] = default` on a boxed struct), which must become a
+                            // fresh zeroed instance, not null (same rule as the field branch above).
                             int arrSlot = addrFldObjBySlot[addrSlot];
                             int idxSlot = addrFldTokBySlot[addrSlot];
                             int zeroSlot = AllocSlot(ref frameSize, slotTypes, slotStructs, SType.O, null);
-                            Emit2(ir, irToIl, Op.ldnull, zeroSlot, instrStart);
+                            if (asm.TypeDefToType.TryGetValue(typeDefTok, out var initElemType)
+                                && initElemType.IsScriptStructValue)
+                                EmitFreshScriptStruct(ir, irToIl, tokens, asm, typeDefTok, zeroSlot, instrStart);
+                            else
+                                Emit2(ir, irToIl, Op.ldnull, zeroSlot, instrStart);
                             ir.Add((uint)Op.stelem_o); irToIl.Add(instrStart);
                             ir.Add((uint)arrSlot); irToIl.Add(instrStart);
                             ir.Add((uint)idxSlot); irToIl.Add(instrStart);
@@ -5713,15 +6445,23 @@ sealed partial class ScriptInterpreter : IDisposable
                     case ILOpCode.Ldind_i1: case ILOpCode.Ldind_u1: case ILOpCode.Ldind_i2:
                     case ILOpCode.Ldind_u2: case ILOpCode.Ldind_i4: case ILOpCode.Ldind_u4:
                     case ILOpCode.Ldind_i:  case ILOpCode.Ldind_r4: case ILOpCode.Ldind_r8:
-                    case ILOpCode.Ldind_ref:
+                    case ILOpCode.Ldind_i8: case ILOpCode.Ldind_ref:
                     {
                         var (addrSlot, _) = evalStack[--sp];
                         int tag = addrTagBySlot[addrSlot];
-                        SType ldindT = (op == ILOpCode.Ldind_r4 || op == ILOpCode.Ldind_r8) ? SType.R4
-                                     : (op == ILOpCode.Ldind_ref) ? SType.O : SType.I4;
+                        // Honest suffix typing: r8/i8 dereferences produce wide slots. Typing r8 as
+                        // R4 silently read doubles as floats through ldelema (found by fuzzing).
+                        SType ldindT = op == ILOpCode.Ldind_r4 ? SType.R4
+                                     : op == ILOpCode.Ldind_r8 ? SType.R8
+                                     : op == ILOpCode.Ldind_i8 ? SType.I8
+                                     : op == ILOpCode.Ldind_ref ? SType.O : SType.I4;
+                        bool wideInd = ldindT is SType.I8 or SType.R8;
                         if (tag == -1 && addrFldOffBySlot[addrSlot] >= 0)
                         {
                             // Composed inline address on a heap ScriptObject: direct PrimBytes access.
+                            // Flat storage holds only 4-byte-or-narrower cells — a wide dereference
+                            // here has no 8-byte cell to read; keep it loud rather than truncate.
+                            if (wideInd) goto notSupported;
                             int objSlot = addrFldObjBySlot[addrSlot];
                             int cOff = addrFldOffBySlot[addrSlot];
                             var pst = ldindT == SType.R4 ? SType.R4 : SType.I4;
@@ -5749,11 +6489,22 @@ sealed partial class ScriptInterpreter : IDisposable
                                 var ldfldOp2 = fst2 == SType.I4 ? Op.ldfld_i4 : fst2 == SType.R4 ? Op.ldfld_r4 : Op.ldfld_o;
                                 Emit4(ir, irToIl, ldfldOp2, dst2, objSlot, tokIdx2, instrStart);
                             }
+                            // Wide script field through an address (compound assign lowers to
+                            // ldflda + ldind.i8/r8): unbox the boxed ref-slot value into a wide
+                            // slot, same as the plain Ldfld path.
+                            if (fst2 == SType.O && asm.FieldWide.TryGetValue(tok2, out var wfst2))
+                            {
+                                int wdst2 = AllocSlot(ref frameSize, slotTypes, slotStructs, wfst2, null);
+                                Emit3(ir, irToIl, Op.mov, wdst2, dst2, instrStart);
+                                evalStack[sp - 1] = (wdst2, wfst2);
+                            }
                         }
                         else if (tag == -3 && addrElemLayoutBySlot[addrSlot] != null)
                         {
                             // Flat array element field read via address: materialize the element
-                            // and read the field at the composed offset.
+                            // and read the field at the composed offset. Flat layouts hold no wide
+                            // cells (see the composed-address branch above) — keep wide loud.
+                            if (wideInd) goto notSupported;
                             int arrSlot = addrFldObjBySlot[addrSlot];
                             int idxSlot = addrFldTokBySlot[addrSlot];
                             int elemTmp = AllocStructSlot(ref frameSize, slotTypes, slotStructs, addrElemLayoutBySlot[addrSlot]!);
@@ -5782,6 +6533,8 @@ sealed partial class ScriptInterpreter : IDisposable
                                 // Address inside a flat struct's bytes: read the field at the
                                 // composed byte offset — a plain mov reads word 0 regardless of
                                 // the addressed field and silently misreads offsets > 0.
+                                // Flat layouts hold no wide cells — keep wide dereferences loud.
+                                if (wideInd) goto notSupported;
                                 int vOff2 = addrByteOffBySlot[addrSlot];
                                 var pst = ldindT == SType.R4 ? SType.R4 : SType.I4;
                                 int dst2 = AllocSlot(ref frameSize, slotTypes, slotStructs, pst, null);
@@ -5811,17 +6564,23 @@ sealed partial class ScriptInterpreter : IDisposable
                     //   • an array-element address (addrTagBySlot[s] == -3): emit stelem
                     case ILOpCode.Stind_ref: case ILOpCode.Stind_i1: case ILOpCode.Stind_i2:
                     case ILOpCode.Stind_i4:  case ILOpCode.Stind_r4: case ILOpCode.Stind_r8:
+                    case ILOpCode.Stind_i8:
                     {
                         var (val, _) = evalStack[--sp];
                         var (addrSlot, _) = evalStack[--sp];
                         int tag = addrTagBySlot[addrSlot];
+                        // Wide stores can't land in flat (PrimBytes/Vt) storage — those cells are
+                        // 4 bytes; a stfld_sc_i4/r4 there would silently truncate. Keep them loud
+                        // on the flat branches; the boxed and array branches handle them typed.
+                        bool wideSt = op == ILOpCode.Stind_i8 || op == ILOpCode.Stind_r8;
 
                         if (tag == -1 && addrFldOffBySlot[addrSlot] >= 0)
                         {
                             // Composed inline address on a heap ScriptObject: write PrimBytes direct.
+                            if (wideSt) goto notSupported;
                             int objSlot = addrFldObjBySlot[addrSlot];
                             int cOff = addrFldOffBySlot[addrSlot];
-                            bool isR4s = op == ILOpCode.Stind_r4 || op == ILOpCode.Stind_r8;
+                            bool isR4s = op == ILOpCode.Stind_r4;
                             Emit4(ir, irToIl, isR4s ? Op.stfld_sc_r4 : Op.stfld_sc_i4, objSlot, cOff, val, instrStart);
                         }
                         else if (tag == -1)
@@ -5853,11 +6612,12 @@ sealed partial class ScriptInterpreter : IDisposable
                         {
                             // Flat array element field write via address: read-modify-write the
                             // whole element (materialize, patch the field, memcpy back).
+                            if (wideSt) goto notSupported;
                             int arrSlot = addrFldObjBySlot[addrSlot];
                             int idxSlot = addrFldTokBySlot[addrSlot];
                             int elemTmp = AllocStructSlot(ref frameSize, slotTypes, slotStructs, addrElemLayoutBySlot[addrSlot]!);
                             Emit4(ir, irToIl, Op.ldelem_vt, elemTmp, arrSlot, idxSlot, instrStart);
-                            bool isR4st = op == ILOpCode.Stind_r4 || op == ILOpCode.Stind_r8;
+                            bool isR4st = op == ILOpCode.Stind_r4;
                             Emit4(ir, irToIl, isR4st ? Op.stfld_vt_r4 : Op.stfld_vt_i4,
                                 elemTmp, addrByteOffBySlot[addrSlot], val, instrStart);
                             Emit4(ir, irToIl, Op.stelem_vt, arrSlot, idxSlot, elemTmp, instrStart);
@@ -5878,7 +6638,8 @@ sealed partial class ScriptInterpreter : IDisposable
                                 // Write the field at the composed byte offset within the flat
                                 // struct's bytes (a plain mov would clobber word 0 AND retarget
                                 // nothing at offsets > 0).
-                                bool isR4s2 = op == ILOpCode.Stind_r4 || op == ILOpCode.Stind_r8;
+                                if (wideSt) goto notSupported;
+                                bool isR4s2 = op == ILOpCode.Stind_r4;
                                 Emit4(ir, irToIl, isR4s2 ? Op.stfld_vt_r4 : Op.stfld_vt_i4, tag, addrByteOffBySlot[addrSlot], val, instrStart);
                             }
                             else
@@ -6080,8 +6841,8 @@ sealed partial class ScriptInterpreter : IDisposable
             bool hasWideSlots = false;
             for (int wi = 0; wi < slotTypesArr.Length; wi++)
                 if (slotTypesArr[wi] is SType.I8 or SType.R8) { hasWideSlots = true; break; }
-            if (!hasWideSlots && Environment.GetEnvironmentVariable("ILINTERPRETER_NOOPT") == null) {
-            var skip = Environment.GetEnvironmentVariable("ILINTERPRETER_SKIP_PASS") ?? "";
+            if (!hasWideSlots && !Knobs.NoOpt) {
+            var skip = Knobs.SkipPass;
             if (!skip.Contains("frl")) ForwardRedundantLoads(ref irArray, ref irToIlArr, slotTypesArr, tokensArr);
             if (!skip.Contains("fci")) FoldConstantImmediates(ref irArray, ref irToIlArr, slotTypesArr);
             if (!skip.Contains("cdm")) CoalesceDestMovs(ref irArray, ref irToIlArr, slotTypesArr);
@@ -6186,7 +6947,7 @@ sealed partial class ScriptInterpreter : IDisposable
 
         // Runtime Type for a `box` token that names a HOST enum (TypeRef parent), null otherwise.
         // Script-declared enums are TypeDefs — no runtime Type exists, so they keep the int form.
-        static Type ResolveHostEnumType(ParsedAssembly asm, int tok)
+        static Type? ResolveHostEnumType(ParsedAssembly asm, int tok)
         {
             if (asm.HostSurface == null) return null;
             try
@@ -6202,7 +6963,7 @@ sealed partial class ScriptInterpreter : IDisposable
         // Slot type for a SCRIPT static field (FieldDef) whose signature is an I4/R4-mapped
         // primitive; null for host fields, reference/struct/wide types (those stay boxed O).
         // Enums included: a script enum static's underlying value rides the I4 slot.
-        static SType? ScriptStaticPrimitiveSType(ParsedAssembly asm, int tok)
+        internal static SType? ScriptStaticPrimitiveSType(ParsedAssembly asm, int tok)
         {
             var h = MetadataTokens.EntityHandle(tok);
             if (h.Kind != HandleKind.FieldDefinition) return null;
@@ -6231,6 +6992,52 @@ sealed partial class ScriptInterpreter : IDisposable
                 }
             }
             catch { return null; }
+        }
+
+        // I8/R8 when a script static field is long/ulong/double — the wide sibling of
+        // ScriptStaticPrimitiveSType (which deliberately leaves wides on the boxed O path;
+        // the Ldsfld lowering unboxes them into a wide slot after the boxed load).
+        internal static SType? ScriptStaticWideSType(ParsedAssembly asm, int tok)
+        {
+            var h = MetadataTokens.EntityHandle(tok);
+            if (h.Kind != HandleKind.FieldDefinition) return null;
+            try
+            {
+                var blob = asm.Reader.GetBlobBytes(
+                    asm.Reader.GetFieldDefinition((FieldDefinitionHandle)h).Signature);
+                if (blob.Length < 2 || blob[0] != 0x06) return null;
+                return blob[1] switch
+                {
+                    0x0A or 0x0B => SType.I8, // long/ulong
+                    0x0D => SType.R8,         // double
+                    _ => null,
+                };
+            }
+            catch { return null; }
+        }
+
+        // Emit IR that fills `dstSlot` (an O slot) with a fresh zero-initialized instance of the
+        // script struct `typeDefTok` — via its 0-arg ctor when one exists (newobj_script), else
+        // initobj_script. Used by the initobj lowering wherever C#'s default(T)/new T() semantics
+        // require a usable zeroed instance rather than null (O-stored script structs).
+        static void EmitFreshScriptStruct(List<uint> ir, List<int> irToIl, List<int> tokens,
+            ParsedAssembly asm, int typeDefTok, int dstSlot, int instrStart)
+        {
+            if (asm.TypeDefToCtorTok.TryGetValue(typeDefTok, out int ctorTok))
+            {
+                int ctorTokIdx = tokens.Count; tokens.Add(ctorTok);
+                ir.Add((uint)Op.newobj_script); irToIl.Add(instrStart);
+                ir.Add((uint)dstSlot); irToIl.Add(instrStart);
+                ir.Add((uint)ctorTokIdx); irToIl.Add(instrStart);
+                ir.Add(0u); irToIl.Add(instrStart); // argc = 0 explicit args
+            }
+            else
+            {
+                int tdTokIdx = tokens.Count; tokens.Add(typeDefTok);
+                ir.Add((uint)Op.initobj_script); irToIl.Add(instrStart);
+                ir.Add((uint)dstSlot); irToIl.Add(instrStart);
+                ir.Add((uint)tdTokIdx); irToIl.Add(instrStart);
+            }
         }
 
         // True when a static field's type is immutable-by-value (primitive or string), so its
@@ -6663,6 +7470,8 @@ sealed partial class ScriptInterpreter : IDisposable
                     }
 
                     case Op.call_script:
+                    case Op.call_script_virt:
+                    case Op.invoke_script_delegate: // re-enters the VM → may mutate any field/static/array
                     case Op.call_host:
                     case Op.call_host_byref:
                     case Op.newobj_script:
@@ -6780,6 +7589,8 @@ sealed partial class ScriptInterpreter : IDisposable
                 case Op.nop: case Op.ret_void: case Op.br:
                 case Op.push_cont: case Op.br_cont: return;
 
+                case Op.arr_bounds_check: RW(1); RW(2); return; // both words are read slots, no dst
+
                 case Op.mov: case Op.box: case Op.mov_vt: case Op.box_vt: case Op.unbox_vt:
                 case Op.clone_sc:
                 case Op.ldlen:
@@ -6838,6 +7649,7 @@ sealed partial class ScriptInterpreter : IDisposable
                     RW(1); RW(3); return; // dst, receiver slot (word 2 is a tokIdx)
 
                 case Op.call_script:
+                case Op.call_script_virt:
                 case Op.newobj_script:
                 case Op.newobj_host:
                 {
@@ -6850,6 +7662,14 @@ sealed partial class ScriptInterpreter : IDisposable
                 case Op.call_host:
                 {
                     RW(1); RW(2);
+                    int argc = (int)ir[ip + 4];
+                    for (int k = 0; k < argc; k++) RW(5 + k);
+                    return;
+                }
+
+                case Op.invoke_script_delegate:
+                {
+                    RW(1); RW(3); // dst, delegate receiver slot (word 2 is a tokIdx)
                     int argc = (int)ir[ip + 4];
                     for (int k = 0; k < argc; k++) RW(5 + k);
                     return;
@@ -7600,8 +8420,8 @@ sealed partial class ScriptInterpreter : IDisposable
             if (Is4WordArithForCoalesce(op)) return true;
             return op switch
             {
-                Op.call_host or Op.call_script or Op.newobj_host or Op.newobj_script
-                    or Op.new_delegate => true,
+                Op.call_host or Op.call_script or Op.call_script_virt or Op.newobj_host
+                    or Op.newobj_script or Op.new_delegate or Op.invoke_script_delegate => true,
                 Op.ldc_i4 or Op.ldc_r4 or Op.ldnull or Op.ldstr => true,
                 Op.neg_i4 or Op.neg_i4_n or Op.neg_r4 or Op.neg_r4_n
                     or Op.not_i4 or Op.not_i4_n => true,
@@ -7654,6 +8474,8 @@ sealed partial class ScriptInterpreter : IDisposable
                     or Op.conv_r8_u8
                     or Op.brtrue_i8 or Op.brfalse_i8 => 3,
 
+                Op.arr_bounds_check => 3,
+
                 Op.mov or Op.box or Op.mov_vt or Op.box_vt or Op.unbox_vt or Op.clone_sc
                     or Op.ldlen or Op.neg_i4 or Op.neg_i4_n or Op.neg_r4 or Op.neg_r4_n
                     or Op.not_i4 or Op.not_i4_n
@@ -7680,9 +8502,11 @@ sealed partial class ScriptInterpreter : IDisposable
 
                 Op.newarr or Op.newarr_i4 or Op.newarr_r4 or Op.newarr_vt => 5,
 
-                Op.call_script or Op.newobj_script or Op.newobj_host
+                Op.call_script or Op.call_script_virt or Op.newobj_script or Op.newobj_host
                     => ip + 3 < ir.Length ? 4 + (int)ir[ip + 3] : -1,
                 Op.call_host
+                    => ip + 4 < ir.Length ? 5 + (int)ir[ip + 4] : -1,
+                Op.invoke_script_delegate // [op, dst, tokIdx, recv, argc, arg0..] — like call_host
                     => ip + 4 < ir.Length ? 5 + (int)ir[ip + 4] : -1,
                 Op.call_host_byref => CallHostByrefWidthForCoalesce(ir, ip),
                 Op.switch_i4 => ip + 2 < ir.Length ? 4 + (int)ir[ip + 2] : -1,
@@ -7776,6 +8600,9 @@ sealed partial class ScriptInterpreter : IDisposable
                 case Op.conv_i4_i2: case Op.conv_i4_u2:
                     W((int)ir[ip + 1]); R((int)ir[ip + 2]); return;
 
+                case Op.arr_bounds_check: // reads arr + idx, defines nothing (side-effect: throw)
+                    R((int)ir[ip + 1]); R((int)ir[ip + 2]); return;
+
                 case Op.ldc_i4: case Op.ldc_r4: case Op.ldstr:
                 case Op.ldsfld_i4: case Op.ldsfld_r4: case Op.ldsfld_o: case Op.ldsfld_struct:
                 case Op.ldtoken:
@@ -7824,6 +8651,7 @@ sealed partial class ScriptInterpreter : IDisposable
                     W((int)ir[ip + 1]); R((int)ir[ip + 3]); return; // word 2 is a tokIdx
 
                 case Op.call_script:
+                case Op.call_script_virt:
                 case Op.newobj_script:
                 case Op.newobj_host:
                 {
@@ -7836,6 +8664,14 @@ sealed partial class ScriptInterpreter : IDisposable
                 case Op.call_host:
                 {
                     W((int)ir[ip + 1]); R((int)ir[ip + 2]);
+                    int argc = (int)ir[ip + 4];
+                    for (int k = 0; k < argc; k++) R((int)ir[ip + 5 + k]);
+                    return;
+                }
+
+                case Op.invoke_script_delegate:
+                {
+                    W((int)ir[ip + 1]); R((int)ir[ip + 3]); // dst, delegate receiver (word 2 is a tokIdx)
                     int argc = (int)ir[ip + 4];
                     for (int k = 0; k < argc; k++) R((int)ir[ip + 5 + k]);
                     return;
@@ -8678,8 +9514,21 @@ sealed partial class ScriptInterpreter : IDisposable
             Emit3(ir, irToIl, Op.mov, dst, src, instrStart);
         }
 
-        static void PushArg((int, SType)[] stack, ref int sp, int argIdx, SType[] argTypes, int[] argFrameSlot)
+        // Value-load an argument. A boxed script-struct parameter (O ScriptObject) is cloned like
+        // PushLocal does for locals, so forwarding it (`Mut(s)`, `f(n, s)`) or storing it hands out
+        // an independent copy — the callee's writes to its by-value parameter must not reach the
+        // caller's argument. `this` and byref parameters are never in argIsBoxedSc.
+        static void PushArg(List<uint> ir, List<int> irToIl, (int, SType)[] stack, ref int sp,
+            ref int frameSize, List<SType> slotTypes, List<HostBinding.StructLayout?> slotStructs,
+            bool[] argIsBoxedSc, int instrStart, int argIdx, SType[] argTypes, int[] argFrameSlot)
         {
+            if (argIsBoxedSc[argIdx] && argTypes[argIdx] == SType.O)
+            {
+                int dst = AllocSlot(ref frameSize, slotTypes, slotStructs, SType.O, null);
+                Emit3(ir, irToIl, Op.clone_sc, dst, argFrameSlot[argIdx], instrStart);
+                stack[sp++] = (dst, SType.O);
+                return;
+            }
             stack[sp++] = (argFrameSlot[argIdx], argTypes[argIdx]);
         }
 

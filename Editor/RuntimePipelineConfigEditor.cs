@@ -77,7 +77,9 @@ namespace Unity.Pipeline.Editor
                     MessageType.Info);
             }
 
-            serializedObject.ApplyModifiedProperties();
+            // WithoutUndo on purpose: this config is never an asset, and Unity files an undo record
+            // for a non-persistent object under the active scene, dirtying it.
+            serializedObject.ApplyModifiedPropertiesWithoutUndo();
 
             EditorGUIUtility.labelWidth = previousLabelWidth;
         }
@@ -85,29 +87,31 @@ namespace Unity.Pipeline.Editor
         /// <summary>
         /// Core status-message logic, factored out so it's unit-testable without rendering IMGUI.
         /// Always returns a message: an informative description of the feature when there is
-        /// nothing to warn about, a Warning when enabled in a development build, or an Error when
-        /// enabled without Development Build (about to ship remote code execution in a release build).
+        /// nothing to warn about, a Warning when enabled in a development build (the server, and
+        /// with it remote code execution, will be in that build), or an Info note when enabled
+        /// without Development Build, where the setting has no effect.
         /// </summary>
         public static (string Message, MessageType Type) GetStatusMessage(bool enableInBuilds, bool developmentBuildCurrentlyOn)
         {
             if (!enableInBuilds)
             {
                 return ("Runtime Pipeline lets a Player build be remotely controlled over HTTP — " +
-                    "hot-reload code, run commands, inspect state — without a domain reload. Enable " +
+                    "code-reload code, run commands, inspect state — without a domain reload. Enable " +
                     "'Enable In Builds' below to include it in Player builds.",
                     MessageType.Info);
             }
 
             if (!developmentBuildCurrentlyOn)
             {
-                return ("SECURITY RISK: enableInBuilds is on but Development Build is currently off " +
-                    "— the next build would ship the Pipeline HTTP server, including remote code " +
-                    "execution, in a RELEASE build. Enable Development Build or turn this off before building.",
-                    MessageType.Error);
+                return ("'Enable In Builds' is on, but Development Build is currently off — the " +
+                    "Pipeline assemblies are excluded from non-development Player builds, so this " +
+                    "setting has no effect on the next build. Enable Development Build to include " +
+                    "the Pipeline server.",
+                    MessageType.Info);
             }
 
             return ("Pipeline server will be enabled in builds. Only ship this in development/QA " +
-                "builds — it exposes code execution and hot reload over a local HTTP server.",
+                "builds — it exposes code execution and code reload over a local HTTP server.",
                 MessageType.Warning);
         }
     }

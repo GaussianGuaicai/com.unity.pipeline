@@ -17,8 +17,8 @@ namespace Unity.Pipeline.Editor
     ///
     /// Static owner of the live editor server: a static owner survives domain reloads cleanly
     /// (re-created by [InitializeOnLoad]), whereas a ScriptableObject's lifetime does not track the
-    /// server across editor events. <see cref="EditorPipelineManager"/> is an optional, inspectable
-    /// settings asset whose config is read here at start.
+    /// server across editor events. <see cref="EditorPipelineConfig"/> holds the optional authored
+    /// settings (ProjectSettings/, never an asset), read here at start.
     /// </summary>
     [InitializeOnLoad]
 #if UNITY_6000_5_OR_NEWER
@@ -30,7 +30,7 @@ namespace Unity.Pipeline.Editor
 
         /// <summary>
         /// The live editor pipeline server instance (null when stopped). Exposed so the test guard
-        /// can disable its watchdog for a test run and the EditorPipelineManager inspector can read
+        /// can disable its watchdog for a test run and the EditorPipelineConfig inspector can read
         /// live status.
         /// </summary>
         public static EditorPipelineServer Server => m_Server;
@@ -52,21 +52,34 @@ namespace Unity.Pipeline.Editor
             // Clean up any stale instance descriptor files from previous sessions
             CleanupStaleDescriptors();
 
-            var cfg = EditorPipelineManager.Load();
+            // Tell a project still carrying the pre-AUTHAPI-66 settings asset, once, that it is inert.
+            EditorPipelineLegacyAssetNotice.WarnOncePerSession();
 
-            // Apply the local eval-usage telemetry config on EVERY domain reload, not only when
-            // the server starts (AUTHAPI-29): recording hooks eval itself, not the server
-            // lifecycle, so an AutoStart=false session must still honor the configured opt-outs
-            // instead of falling back to the hardcoded defaults.
-            ApplyEvalTelemetrySettings(cfg);
+            var cfg = EditorPipelineConfig.Load();
+            bool autoStart;
+            try
+            {
+                // Apply the local eval-usage telemetry config on EVERY domain reload, not only when
+                // the server starts (AUTHAPI-29): recording hooks eval itself, not the server
+                // lifecycle, so an AutoStart=false session must still honor the configured opt-outs
+                // instead of falling back to the hardcoded defaults.
+                ApplyEvalTelemetrySettings(cfg);
+                autoStart = cfg?.AutoStart ?? EditorPipelineConfig.DefaultAutoStart;
+            }
+            finally
+            {
+                if (cfg != null)
+                    UnityEngine.Object.DestroyImmediate(cfg);
+            }
 
-            // Start the pipeline server (respecting the settings asset's autoStart if one exists)
-            if (cfg?.AutoStart ?? true)
+            // Start the pipeline server (respecting the authored autoStart if settings exist)
+            if (autoStart)
                 StartServer();
 
             // Handle domain reloads and editor shutdown
             EditorApplication.playModeStateChanged += OnPlayModeStateChanged;
             EditorApplication.quitting += OnEditorQuitting;
+            EditorApplication.wantsToQuit += OnEditorWantsToQuit;
 
             // Handle domain reload detection
             AssemblyReloadEvents.beforeAssemblyReload += OnBeforeAssemblyReload;
@@ -112,32 +125,6 @@ namespace Unity.Pipeline.Editor
         [MenuItem("Window/Pipeline/Stop Server", true)]
         private static bool MenuStopServerValidate() => m_Server != null && m_Server.IsRunning;
 
-        /// <summary>
-        /// Select the EditorPipelineManager settings asset, creating it under Assets/Settings/Pipeline
-        /// on first use (the live server otherwise runs from built-in defaults).
-        /// </summary>
-        [MenuItem("Window/Pipeline/Settings...")]
-        private static void OpenSettings()
-        {
-            var mgr = EditorPipelineManager.Load();
-            if (mgr == null)
-            {
-                const string folder = "Assets/Settings/Pipeline";
-                if (!AssetDatabase.IsValidFolder(folder))
-                {
-                    if (!AssetDatabase.IsValidFolder("Assets/Settings"))
-                        AssetDatabase.CreateFolder("Assets", "Settings");
-                    AssetDatabase.CreateFolder("Assets/Settings", "Pipeline");
-                }
-
-                mgr = ScriptableObject.CreateInstance<EditorPipelineManager>();
-                AssetDatabase.CreateAsset(mgr, folder + "/EditorPipelineManager.asset");
-                AssetDatabase.SaveAssets();
-            }
-            Selection.activeObject = mgr;
-            EditorGUIUtility.PingObject(mgr);
-        }
-
         internal static bool IsMainProcess()
         {
             // Check command line arguments for asset import worker indicators
@@ -164,52 +151,76 @@ namespace Unity.Pipeline.Editor
         /// dataPath-derived default on the main thread, so off-main-thread readers (report_evals)
         /// and the background record task never touch Unity APIs.
         ///
-        /// Internal (not private): this is the ONE place that knows how to turn the settings asset
+        /// Internal (not private): this is the ONE place that knows how to turn the authored settings
         /// into the static telemetry config, so every push site — the domain-reload static ctor,
-        /// server start, and <see cref="EditorPipelineManagerEditor"/>'s live inspector push — calls
+        /// server start, and <see cref="EditorPipelineConfigEditor"/>'s live inspector push — calls
         /// through here rather than re-deriving the two-field mapping independently, which would
         /// silently drift the moment a fourth push site (or a third telemetry field) showed up.
         /// </summary>
-        internal static void ApplyEvalTelemetrySettings(EditorPipelineManager cfg)
+        internal static void ApplyEvalTelemetrySettings(EditorPipelineConfig cfg)
         {
-            EvalUsageTelemetry.Enabled = cfg?.EvalTelemetryEnabled ?? true;
-            EvalUsageTelemetry.StoreSource = cfg?.StoreEvalSource ?? false;
+            EvalUsageTelemetry.Enabled = cfg?.EvalTelemetryEnabled ?? EditorPipelineConfig.DefaultEvalTelemetryEnabled;
+            EvalUsageTelemetry.StoreSource = cfg?.StoreEvalSource ?? EditorPipelineConfig.DefaultStoreEvalSource;
             EvalUsageTelemetry.ResolveDirectory();
         }
 
         /// <summary>
-        /// Start the Pipeline HTTP server, reading configuration from the EditorPipelineManager
-        /// settings asset if one exists (otherwise using defaults).
+        /// Push every setting that takes effect without a restart — the watchdog, request logging
+        /// and the eval-telemetry statics — onto the live server. Port and AutoStart are absent on
+        /// purpose: they only apply at the next start.
+        ///
+        /// Both surfaces that can change these values go through here: the settings page's
+        /// interactive edits, and its reload when the file changed underneath it (a hand edit, a
+        /// second editor, or the leftover-asset notice's copy button). Reloading used to refresh
+        /// only what was displayed, leaving the running server on the old values until the next GUI
+        /// edit or restart.
+        /// </summary>
+        internal static void ApplyLiveSettings(EditorPipelineConfig cfg)
+        {
+            var server = m_Server;
+            if (server != null)
+            {
+                server.WatchdogEnabled = cfg?.WatchdogEnabled ?? EditorPipelineConfig.DefaultWatchdogEnabled;
+                server.WatchdogIntervalSeconds = cfg?.WatchdogIntervalSeconds ?? EditorPipelineConfig.DefaultWatchdogIntervalSeconds;
+                server.LogRequestsResponses = cfg?.LogRequestsResponses ?? EditorPipelineConfig.DefaultLogRequestsResponses;
+            }
+
+            ApplyEvalTelemetrySettings(cfg);
+        }
+
+        /// <summary>
+        /// Start the Pipeline HTTP server, reading the authored EditorPipelineConfig settings if any
+        /// exist (otherwise using defaults).
         /// </summary>
         private static void StartServer()
         {
             if (m_Server != null && m_Server.IsRunning)
                 return;
 
+            var cfg = EditorPipelineConfig.Load();
             try
             {
-                var cfg = EditorPipelineManager.Load();
                 m_Server = new EditorPipelineServer
                 {
-                    // Self-healing watchdog: if the listener dies without a Stop() (an unexpected fault
-                    // outside a domain reload), the watchdog re-opens it so the dogfood loop doesn't
-                    // wedge. Set before Start() (Start arms the watchdog).
-                    WatchdogEnabled = cfg?.WatchdogEnabled ?? true,
-                    WatchdogIntervalSeconds = cfg?.WatchdogIntervalSeconds ?? 5,
-                    LogRequestsResponses = cfg?.LogRequestsResponses ?? false,
-                    AllowSandboxedBrowserClients = cfg?.AllowBrowserClients ?? false,
+                    // Only the settings that cannot change without a restart. Everything that applies
+                    // live comes from ApplyLiveSettings below, so the fallbacks for those fields exist
+                    // in exactly one place.
+                    AllowSandboxedBrowserClients = cfg?.AllowBrowserClients ?? EditorPipelineConfig.DefaultAllowBrowserClients,
                     MaxRequestBodyBytes = 32L * 1024 * 1024
                 };
+
+                // Self-healing watchdog: if the listener dies without a Stop() (an unexpected fault
+                // outside a domain reload), the watchdog re-opens it so the dogfood loop doesn't
+                // wedge. Must run before Start(), which arms the watchdog. Also re-applies the
+                // eval-telemetry statics on every server start, so edits made this session stick
+                // even without a domain reload (the static ctor covers the reload path).
+                ApplyLiveSettings(cfg);
 
                 // Rotate the transaction log once per Unity session (main thread; SessionState-gated).
                 // The append path runs off-thread and can't touch SessionState.
                 PipelineTransactionLog.RotateForNewSession();
 
-                // Re-applied on every server start so inspector edits made this session stick
-                // even without a domain reload (the static ctor covers the reload path).
-                ApplyEvalTelemetrySettings(cfg);
-
-                m_Server.Start(cfg?.Port ?? 0); // 0 auto-assigns from the 7800-7849 range.
+                m_Server.Start(cfg?.Port ?? EditorPipelineConfig.DefaultPort); // 0 auto-assigns from the 7800-7849 range.
 
                 // Restore whatever auto-tick state the user last set this session (survives the
                 // domain reload that just wiped AutoTickCommand's statics). Only a session with no
@@ -224,6 +235,11 @@ namespace Unity.Pipeline.Editor
             catch (System.Exception ex)
             {
                 Debug.LogError($"Failed to start Pipeline Server: {ex.Message}");
+            }
+            finally
+            {
+                if (cfg != null)
+                    UnityEngine.Object.DestroyImmediate(cfg);
             }
         }
 
@@ -293,6 +309,18 @@ namespace Unity.Pipeline.Editor
             // free. Restore TypeCache discovery explicitly here instead of relying on that reload.
             if (state == PlayModeStateChange.EnteredEditMode)
                 CommandRegistry.SetDiscovery(new TypeCacheCommandDiscovery());
+
+            // Dynamic command registrations (CommandRegistry.RegisterCommand) are static state with
+            // domain-reload lifetime, and a script registering from Awake/OnEnable re-registers on
+            // every Play Mode entry. With domain reload disabled nothing resets the registry between
+            // sessions, so the second entry would throw "already registered dynamically" and a
+            // surviving entry would hold a delegate bound to the previous session's destroyed
+            // object. Bracket the session here to clear what it registered; registrations made in
+            // Edit Mode are kept, since nothing re-runs to restore them.
+            if (state == PlayModeStateChange.ExitingEditMode)
+                CommandRegistry.PlayModeSessionStarted();
+            else if (state == PlayModeStateChange.EnteredEditMode)
+                CommandRegistry.PlayModeSessionEnded();
         }
 
         /// <summary>
@@ -301,12 +329,13 @@ namespace Unity.Pipeline.Editor
         private static void OnEditorQuitting()
         {
             StopServer(); // Stop() shuts down the server's own dispatcher.
+        }
 
-            // After StopServer, so the session is closed last. A command that finished in the same
-            // frame as the quit may still have its report queued on the dispatcher, and Shutdown
-            // drops it — a lost report is preferable to running arbitrary queued work while the
-            // Editor tears down.
+        private static bool OnEditorWantsToQuit()
+        {
+            // WARNING: we need to fire SessionStop in WantsToQuit. Firing in Quits won't actually send the event.
             PipelineAnalytics.SendSessionStoppedIfStarted();
+            return true;
         }
 
         /// <summary>

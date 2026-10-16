@@ -9,7 +9,7 @@ namespace Unity.Pipeline.Runtime.Commands
     /// </summary>
     static class RuntimeLogCommand
     {
-        [CliCommand("log", "Write a message to Unity console", MainThreadRequired = true, RuntimeOnly = true, Tags = new[] { "observability/console" })]
+        [CliCommand("log", "Write a message to Unity console", MainThreadRequired = true, Tags = new[] { "observability/console", "runtime" })]
         public static string LogMessage(
             [CliArg("message", "Message to log to console", Required = true)] string message,
             [CliArg("level", "Log level: info, warning, error")] string level = "info")

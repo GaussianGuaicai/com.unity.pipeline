@@ -1,12 +1,19 @@
 using System;
 using System.IO;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using Unity.Pipeline.Commands;
 using UnityEditor;
 using UnityEngine;
 #if UNITY_6000_5_OR_NEWER
 using Unity.Scripting.LifecycleManagement;
 #endif
+
+// Every occlusion API this file drives -- StaticOcclusionCulling -- is [Obsolete] from 6000.7
+// (superseded by GPU Occlusion Culling, which has no equivalent bake-and-poll API yet). It all
+// still functions, and this type exists for no other purpose, so the deprecation warning is
+// suppressed for the whole type rather than at each of its fourteen call sites.
+#pragma warning disable CS0618
 
 namespace Unity.Pipeline.Editor.Commands.Baking
 {
@@ -113,11 +120,9 @@ namespace Unity.Pipeline.Editor.Commands.Baking
         }
 
         [CliCommand("occlusion_bake_status", "Get the status of the last occlusion bake: idle | baking | completed.", MainThreadRequired = false, Tags = new[] { "baking/occlusion" })]
-        public static string OcclusionBakeStatus()
+        public static JToken OcclusionBakeStatus()
         {
-            if (File.Exists(StatusFile))
-                return File.ReadAllText(StatusFile);
-            return "{\"status\":\"idle\"}";
+            return StatusFileReader.ReadOrIdle(StatusFile);
         }
 
         [CliCommand("cancel_occlusion_bake", "Cancel an in-progress occlusion bake (StaticOcclusionCulling.Cancel()).", Tags = new[] { "baking/occlusion" })]
@@ -269,3 +274,5 @@ namespace Unity.Pipeline.Editor.Commands.Baking
         public long UmbraDataSizeBytes { get; set; }
     }
 }
+
+#pragma warning restore CS0618

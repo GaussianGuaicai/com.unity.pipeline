@@ -102,5 +102,25 @@ namespace Unity.Pipeline.Models
         /// </summary>
         [JsonProperty("id")]
         public string Id { get; set; }
+
+        /// <summary>
+        /// User source file the diagnostic maps to through a <c>#line</c> directive, or null when
+        /// the compiled source carries no mapping (eval snippets, generated scaffolding).
+        /// </summary>
+        [JsonProperty("file", NullValueHandling = NullValueHandling.Ignore)]
+        public string File { get; set; }
+
+        /// <summary>
+        /// 1-based line in <see cref="File"/>; null when <see cref="File"/> is null.
+        /// </summary>
+        [JsonProperty("fileLine", NullValueHandling = NullValueHandling.Ignore)]
+        public int? FileLine { get; set; }
+
+        /// <summary>
+        /// Trimmed text of the compiled source line the diagnostic points at. For code reload that
+        /// is the generated override source, which is what actually failed to compile.
+        /// </summary>
+        [JsonProperty("source", NullValueHandling = NullValueHandling.Ignore)]
+        public string Source { get; set; }
     }
 }

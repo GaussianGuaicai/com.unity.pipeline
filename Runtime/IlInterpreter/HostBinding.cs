@@ -6,6 +6,9 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
+// The package bundles System.Runtime.CompilerServices.Unsafe renamed with a "UnityPipeline." prefix (Runtime/Plugins/CodeAnalysis);
+// the dotnet test projects reference the same DLLs (IlInterpreter/BundledRoslyn.props).
+using Unsafe = UnityPipeline.System.Runtime.CompilerServices.Unsafe;
 
 namespace IlInterpreter.Interpreter
 {
@@ -179,6 +182,8 @@ internal sealed unsafe class HostBinding
         // Both delegates are always set at registration; `= null!` marks that invariant.
         public Func<object?, object?>   Get = null!;
         public Action<object?, object?> Set = null!;
+        // "Type.field", for runtime error messages (null-target reads/writes).
+        public string? Name;
         // When the declaring type is a flat-layout struct (registered via AllowTypeStruct),
         // these record the field's byte offset and primitive SType (I4/R4/O) so the IR lowerer
         // can emit direct ldfld_vt_* / stfld_vt_* ops bypassing the boxed Get/Set delegates.
@@ -374,7 +379,7 @@ internal sealed unsafe class HostBinding
             set = (obj, val) => fi.SetValue(obj, val);
         }
         return new FieldEntry
-        { Get = get, Set = set, FieldSt = st, FieldTypeName = ft.Name };
+        { Get = get, Set = set, FieldSt = st, FieldTypeName = ft.Name, Name = $"{fi.DeclaringType?.Name}.{fi.Name}" };
     }
 
     // Register a minimal set of BCL methods that Roslyn emits calls to.
@@ -617,6 +622,8 @@ internal sealed unsafe class HostBinding
         // analyzer but threw "not registered" at runtime. Returns char -> I4; a bad index throws the
         // real IndexOutOfRangeException (fault parity). (found by fuzzing char/string indexing.)
         Allow("String", "get_Chars", (recv, a) => ((string)recv!)[(int)a[0]!], 1);
+        // `new string(char[])` — building a string from a char buffer (e.g. NUL-padded name fields).
+        AllowConstructor("String", (_, a) => new string((char[])a[0]!), 1);
 
         // Primitives — ToString (Roslyn emits Int32.ToString(), not Object.ToString())
         Allow("Int32",   "ToString", (recv, _) => recv?.ToString() ?? "", 0);
@@ -726,44 +733,56 @@ internal sealed unsafe class HostBinding
             }
         }
 
-        // Math — double-true now that R8 slots exist: the call site widens through conv.r8
-        // and the result rides an R8 slot (bit-exact parity with compiled C#).
-        // Methods with int and float overloads runtime-switch on first-arg type. Each arm casts
-        // to (object) to suppress C# switch-expression type unification (which would otherwise
-        // widen int→float across arms and box every result as float).
+        // Math: the call site widens through conv.r8 and the result rides an R8 slot, so these
+        // are bit-exact with compiled C#. Overloaded members switch on the runtime type of the
+        // first argument. Each switch arm casts to (object) so C# does not unify the arm types
+        // (which would widen int→float and box every result as float). The `double` case must
+        // precede the `_` fallback, which converts to float and would lose range and precision.
         AllowStatic("Math", "Abs", (_, a) => a[0] switch
         {
-            int   i => (object)Math.Abs(i),
-            long  l => (object)Math.Abs(l),
-            float f => (object)Math.Abs(f),
-            _       => (object)(float)Math.Abs(Convert.ToSingle(a[0])),
+            int    i => (object)Math.Abs(i),
+            long   l => (object)Math.Abs(l),
+            float  f => (object)Math.Abs(f),
+            double d => (object)Math.Abs(d),
+            _        => (object)(float)Math.Abs(Convert.ToSingle(a[0])),
         }, 1);
         AllowStatic("Math", "Min", (_, a) => (a[0], a[1]) switch
         {
-            (int   x, int   y) => (object)Math.Min(x, y),
-            (long  x, long  y) => (object)Math.Min(x, y),
-            (float x, float y) => (object)Math.Min(x, y),
-            _                  => (object)(float)Math.Min(Convert.ToSingle(a[0]), Convert.ToSingle(a[1])),
+            (int    x, int    y) => (object)Math.Min(x, y),
+            (long   x, long   y) => (object)Math.Min(x, y),
+            (uint   x, uint   y) => (object)Math.Min(x, y),   // unsigned arms: the call site re-boxes by the declared type
+            (ulong  x, ulong  y) => (object)Math.Min(x, y),
+            (float  x, float  y) => (object)Math.Min(x, y),
+            (double x, double y) => (object)Math.Min(x, y),
+            _                    => (object)(float)Math.Min(Convert.ToSingle(a[0]), Convert.ToSingle(a[1])),
         }, 2);
         AllowStatic("Math", "Max", (_, a) => (a[0], a[1]) switch
         {
-            (int   x, int   y) => (object)Math.Max(x, y),
-            (long  x, long  y) => (object)Math.Max(x, y),
-            (float x, float y) => (object)Math.Max(x, y),
-            _                  => (object)(float)Math.Max(Convert.ToSingle(a[0]), Convert.ToSingle(a[1])),
+            (int    x, int    y) => (object)Math.Max(x, y),
+            (long   x, long   y) => (object)Math.Max(x, y),
+            (uint   x, uint   y) => (object)Math.Max(x, y),   // unsigned arms: the call site re-boxes by the declared type
+            (ulong  x, ulong  y) => (object)Math.Max(x, y),
+            (float  x, float  y) => (object)Math.Max(x, y),
+            (double x, double y) => (object)Math.Max(x, y),
+            _                    => (object)(float)Math.Max(Convert.ToSingle(a[0]), Convert.ToSingle(a[1])),
         }, 2);
         AllowStatic("Math", "Clamp", (_, a) => (a[0], a[1], a[2]) switch
         {
-            (int   x, int   lo, int   hi) => (object)Math.Clamp(x, lo, hi),
-            (float x, float lo, float hi) => (object)Math.Clamp(x, lo, hi),
-            _                             => (object)(float)Math.Clamp(Convert.ToSingle(a[0]), Convert.ToSingle(a[1]), Convert.ToSingle(a[2])),
+            (int    x, int    lo, int    hi) => (object)Math.Clamp(x, lo, hi),
+            (long   x, long   lo, long   hi) => (object)Math.Clamp(x, lo, hi),
+            (uint   x, uint   lo, uint   hi) => (object)Math.Clamp(x, lo, hi),
+            (ulong  x, ulong  lo, ulong  hi) => (object)Math.Clamp(x, lo, hi),
+            (float  x, float  lo, float  hi) => (object)Math.Clamp(x, lo, hi),
+            (double x, double lo, double hi) => (object)Math.Clamp(x, lo, hi),
+            _                                => (object)(float)Math.Clamp(Convert.ToSingle(a[0]), Convert.ToSingle(a[1]), Convert.ToSingle(a[2])),
         }, 3);
         AllowStatic("Math", "Sign", (_, a) => a[0] switch
         {
-            int   i => (object)Math.Sign(i),
-            long  l => (object)Math.Sign(l),
-            float f => (object)Math.Sign(f),
-            _       => (object)Math.Sign(Convert.ToSingle(a[0])),
+            int    i => (object)Math.Sign(i),
+            long   l => (object)Math.Sign(l),
+            float  f => (object)Math.Sign(f),
+            double d => (object)Math.Sign(d),
+            _        => (object)Math.Sign(Convert.ToSingle(a[0])),
         }, 1);
         AllowStatic("Math", "Sqrt",     (_, a) => Math.Sqrt(AsR8(a[0])), 1);
         AllowStatic("Math", "Pow",      (_, a) => Math.Pow(AsR8(a[0]), AsR8(a[1])), 2);
@@ -803,6 +822,11 @@ internal sealed unsafe class HostBinding
         AllowStatic("MathF", "Truncate", (_, a) => MathF.Truncate(Convert.ToSingle(a[0])), 1);
         AllowStatic("MathF", "Exp",      (_, a) => MathF.Exp(Convert.ToSingle(a[0])), 1);
         AllowStatic("MathF", "Log",      (_, a) => MathF.Log(Convert.ToSingle(a[0])), 1);
+
+        // BitConverter bit-reinterprets — the safe int<->float bit cast, staple of binary file parsing
+        // (reading floats out of a byte buffer). Pure/deterministic, no allocation.
+        AllowStatic("BitConverter", "Int32BitsToSingle", (_, a) => BitConverter.Int32BitsToSingle(Convert.ToInt32(a[0])), 1);
+        AllowStatic("BitConverter", "SingleToInt32Bits", (_, a) => BitConverter.SingleToInt32Bits(Convert.ToSingle(a[0])), 1);
 
         // Numeric formatting/parsing — the HUD staples. Formatted ToString on the I4/R4 slot
         // families needs the receiver's real type; the slot has erased char/bool identity but a
@@ -1113,14 +1137,14 @@ internal sealed unsafe class HostBinding
 
     /// <summary>
     /// Register the NON-PUBLIC members (fields, properties, methods — instance AND static) of
-    /// <paramref name="type"/> and its user-defined base types, so an interpreter-run [HotReload] body —
+    /// <paramref name="type"/> and its user-defined base types, so an interpreter-run [CodeReload] body —
     /// compiled with access checks disabled (BinderFlags.IgnoreAccessibility) — can read/write private
     /// state (including private statics like the `s_Instance = this;` singleton pattern) and call private
     /// helpers on its target type. Public members are already covered by <see cref="AllowType(Type)"/>.
     ///
     /// The base-chain walk stops at the first UnityEngine / System / Unity.* type, so we never register
-    /// (nor, via the dev link.xml, force-preserve) the private internals of MonoBehaviour, Component or the
-    /// BCL — only the user's own component hierarchy. Non-public members go through reflection Get/Set/Invoke,
+    /// the private internals of MonoBehaviour, Component or the BCL — only the user's own component
+    /// hierarchy. Non-public members go through reflection Get/Set/Invoke,
     /// which is AOT-safe on IL2CPP as long as the members survive stripping.
     /// </summary>
     public HostBinding AllowNonPublicInstanceMembers(Type type)
@@ -2825,8 +2849,8 @@ internal sealed unsafe class HostBinding
                 }
 
                 // () → S where S is a registered struct (e.g. IWorld.GetPosition() → V3).
-                // A Func<T,S> closed over a value-type S is the usual IL2CPP/AOT risk;
-                // link.xml registration of the script's host types covers it.
+                // A Func<T,S> closed over a value-type S is the usual IL2CPP/AOT risk; the
+                // instantiation exists in the build because the host type registers it statically.
                 if (ps.Length == 0 && rt.IsValueType && _structLayoutsByType.TryGetValue(rt, out var retLay))
                 {
                     var helper = typeof(HostBinding).GetMethod(nameof(BindInstReturnsStruct),

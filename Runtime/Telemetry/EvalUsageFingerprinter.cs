@@ -3,9 +3,9 @@ using System.Linq;
 using System.Text;
 
 #if UNITY_EDITOR || (UNITY_STANDALONE && DEBUG)
-using Microsoft.CodeAnalysis;
-using Microsoft.CodeAnalysis.CSharp;
-using Microsoft.CodeAnalysis.CSharp.Syntax;
+using UnityPipeline.Microsoft.CodeAnalysis;
+using UnityPipeline.Microsoft.CodeAnalysis.CSharp;
+using UnityPipeline.Microsoft.CodeAnalysis.CSharp.Syntax;
 #endif
 
 namespace Unity.Pipeline.Telemetry

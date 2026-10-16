@@ -7,6 +7,7 @@ using System.Reflection;
 using System.Text;
 using System.Threading;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using Unity.Pipeline.Commands;
 using UnityEditor;
 using UnityEngine;
@@ -104,13 +105,13 @@ namespace Unity.Pipeline.Editor.Commands.ProjectAudit
         }
 
         [CliCommand("audit_status", "Get the status of the last audit: idle | scanning | completed | failed | interrupted | unavailable.", MainThreadRequired = false, Tags = new[] { "observability/audit" })]
-        public static string AuditStatus()
+        public static JToken AuditStatus()
         {
             if (!TryResolve(out _, out var error))
-                return JsonConvert.SerializeObject(new AuditStatus { Status = "unavailable", Message = error });
+                return JObject.FromObject(new AuditStatus { Status = "unavailable", Message = error });
 
             if (!File.Exists(StatusFile))
-                return "{\"status\":\"idle\"}";
+                return StatusFileReader.Idle;
 
             // WriteStatus truncates then rewrites, and its writer is usually another thread (the pump,
             // or Project Auditor's background thread) while this read serves an HTTP worker. A read
@@ -127,7 +128,7 @@ namespace Unity.Pipeline.Editor.Commands.ProjectAudit
                     // WriteStatus writes serialized JSON with nothing after it, so a closing '}' means
                     // this read caught a whole object rather than a half-written one.
                     if (json.Length > 1 && json[json.Length - 1] == '}')
-                        return json;
+                        return StatusFileReader.Parse(json);
                 }
                 catch (IOException)
                 {
@@ -135,7 +136,7 @@ namespace Unity.Pipeline.Editor.Commands.ProjectAudit
                 }
             }
 
-            return s_LastStatusJson ?? File.ReadAllText(StatusFile);
+            return StatusFileReader.Parse(s_LastStatusJson ?? File.ReadAllText(StatusFile));
         }
 
         /// <summary>

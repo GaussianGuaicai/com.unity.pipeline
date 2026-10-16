@@ -64,6 +64,7 @@ namespace Unity.Pipeline
         /// while read-only endpoints (/api/status, /api/progress, …) answer immediately.
         /// </summary>
         private readonly SemaphoreSlim m_ExecGate = new SemaphoreSlim(1, 1);
+
         private HttpListener m_HttpListener;
         private readonly Dispatcher m_Dispatcher = new Dispatcher();
 
@@ -165,13 +166,6 @@ namespace Unity.Pipeline
         protected virtual bool WritesDescriptor => true;
 
         /// <summary>
-        /// Whether this server advertises commands marked [CliCommand(RuntimeOnly = true)] in
-        /// its /api/commands listing. Runtime servers list them; Editor servers hide them so a
-        /// client connected to an Editor only sees the Editor command surface.
-        /// </summary>
-        protected virtual bool IncludeRuntimeOnlyCommands => true;
-
-        /// <summary>
         /// Whether requests from a sandboxed browser frame (Origin: null) are accepted. Off by default;
         /// an ordinary web page is refused either way, and a sandboxed one still needs the bearer token,
         /// which lives in a file no browser can read.
@@ -187,6 +181,12 @@ namespace Unity.Pipeline
 
         /// <summary>The only Origin a sandboxed frame reports; a real page sends its own origin.</summary>
         private const string SandboxedOrigin = "null";
+
+        /// <summary>
+        /// The one host this server binds and answers to. Single-sourced because it is both the
+        /// listener prefix (which decides the socket address) and the only accepted Host header.
+        /// </summary>
+        private const string LoopbackHost = "127.0.0.1";
 
         /// <summary>Write the shared instance descriptor file so clients can discover this server.</summary>
         protected abstract void CreateInstanceDescriptor();
@@ -329,19 +329,32 @@ namespace Unity.Pipeline
         }
 
         /// <summary>
-        /// Bind a wildcard-host prefix so the listener accepts any Host header ("127.0.0.1",
-        /// "localhost", "::1") no matter how a client — or its DNS resolver — resolves the name.
-        /// This is required because Mono's HttpListener binds a hostname prefix to a single resolved
-        /// address family and then matches the request's Host <em>literally</em> per prefix: an
-        /// explicit "http://127.0.0.1/" prefix rejects "Host: localhost" (and vice-versa) with a
-        /// 400. A wildcard sidesteps that. The wildcard binds all interfaces at the socket level, so
-        /// access is confined to the local machine by the loopback check in
-        /// <see cref="ProcessRequest"/> (plus bearer-token auth).
+        /// Bind the IPv4 loopback literal, and only that. The prefix host is what picks the socket
+        /// address: Unity's Mono ships HttpListener as managed code over a plain socket, where "+"
+        /// and "*" both resolve to IPAddress.Any — a bind on every interface, with no URL ACL
+        /// behind it — and a hostname is resolved through DNS, falling back to IPAddress.Any when
+        /// resolution fails. An IP literal is the only spelling that cannot widen.
+        ///
+        /// The cost is that clients address the server as 127.0.0.1 and nothing else: a request
+        /// spelling the host any other way is refused. Mono's listener did that itself, by matching
+        /// Host literally against the prefix; CoreCLR's listener on Windows does not, which is why
+        /// <see cref="IsHostAllowed"/> now makes the check explicitly rather than relying on it.
+        ///
+        /// IPv4 only: Mono mis-parses a bracketed "[::1]" host, so the IPv6 loopback cannot be
+        /// served whichever prefix is registered.
         /// </summary>
         private static void AddLoopbackPrefixes(HttpListener listener, int port)
         {
-            listener.Prefixes.Add($"http://+:{port}/");
+            listener.Prefixes.Add(BaseUrlFor(port));
         }
+
+        /// <summary>
+        /// The base URL of a server on <paramref name="port"/>, and the one source the listener
+        /// prefix is registered from. Anything in this package that addresses a server goes through
+        /// here, because <see cref="IsHostAllowed"/> accepts only this host: a caller that spelled
+        /// it its own way would be answered 400 the moment the two drifted apart.
+        /// </summary>
+        internal static string BaseUrlFor(int port) => $"http://{LoopbackHost}:{port}/";
 
         /// <summary>
         /// Stop the HTTP server and clean up resources.
@@ -361,7 +374,22 @@ namespace Unity.Pipeline
                 if (WritesDescriptor)
                     DeleteInstanceDescriptor();
 
-                m_HttpListener?.Stop();
+                // Shut the dispatcher down BEFORE Close() below, not after: a MainThreadRequired
+                // command still parked in Dispatcher.Invoke's polling loop has no pump left to wait
+                // for once Stop() (running on the main thread) starts tearing things down, so it
+                // would otherwise just sit there until Close() disposes its context out from under
+                // it. Shutdown() resolves each queued item with OperationCanceledException
+                // immediately, so Invoke() unblocks right away and HandleExecRequest gets a chance
+                // to write a real "shutting down" response — best-effort, since it still races
+                // Close() below, but no worse than before and it starts that race far sooner.
+                m_Dispatcher.Shutdown();
+
+                // Close() alone also stops the listener (same pattern as WatchdogTick's re-open
+                // below). A separate preceding Stop() call left a window where the listener was
+                // "stopped" but not yet disposed: HandleRequests' accept loop, running on another
+                // thread, could call GetContextAsync() in that gap and hit Mono's
+                // InvalidOperationException("Please, call Start...") instead of the
+                // ObjectDisposedException/HttpListenerException it already handles as shutdown.
                 m_HttpListener?.Close();
 
                 ServerStopped();
@@ -373,7 +401,6 @@ namespace Unity.Pipeline
             finally
             {
                 m_HttpListener = null;
-                m_Dispatcher.Shutdown();
             }
             // Note: Keep port value for diagnostic purposes
         }
@@ -491,12 +518,37 @@ namespace Unity.Pipeline
         /// <summary>
         /// Run ProcessRequest without the accept loop awaiting it; a per-request failure is
         /// logged and must never tear down the listener loop.
+        ///
+        /// The loopback check sits here rather than in the overridable <see cref="ProcessRequest"/>
+        /// so a subclass cannot drop it. The socket is already bound to the loopback address (see
+        /// <see cref="AddLoopbackPrefixes"/>), so this is a second line of defence: it covers a
+        /// widened prefix and a hop that re-sources a connection as loopback.
         /// </summary>
         private async Task ProcessRequestDetached(HttpListenerContext context)
         {
             try
             {
+                var remoteAddress = context.Request.RemoteEndPoint?.Address;
+                if (remoteAddress == null || !IPAddress.IsLoopback(remoteAddress))
+                {
+                    await SendStatusResponse(
+                        context.Response, 403, "Forbidden", "Only loopback connections are allowed");
+                    return;
+                }
+
                 await ProcessRequest(context);
+            }
+            catch (Exception ex) when (!m_IsRunning && (ex is ObjectDisposedException || ex is HttpListenerException))
+            {
+                // Stop() sets m_IsRunning = false BEFORE closing the listener, so this combination
+                // (disposed/listener exception + already stopping) means Close() tore down this
+                // context while a detached task (this one) was still mid-processing — an expected
+                // shutdown race, not a bug. Log at info level rather than swallowing outright: still
+                // discoverable if it starts happening far more than a stop-time race would explain,
+                // but won't fail whichever test happens to be running when this task resumes.
+                // Guarding on m_IsRunning keeps a genuine ObjectDisposedException/HttpListenerException
+                // from a command handler mid-execution (not a shutdown) loud, as Debug.LogError below.
+                Debug.Log($"Pipeline: request handling ended by server shutdown: {ex.GetType().Name}: {ex.Message}");
             }
             catch (Exception ex)
             {
@@ -516,14 +568,17 @@ namespace Unity.Pipeline
 
             try
             {
-                // Confine access to the local machine. The listener binds a wildcard host (see
-                // AddLoopbackPrefixes) so it accepts any Host header, which also means it accepts
-                // connections on non-loopback interfaces — reject anything that isn't loopback
-                // before doing any other work. Bearer-token auth is still enforced below.
-                var remoteAddress = request.RemoteEndPoint?.Address;
-                if (remoteAddress == null || !IPAddress.IsLoopback(remoteAddress))
+                // Refuse anything not addressed to this server's own endpoint, before any other
+                // handling. This is deliberately not redundant with the Origin gate below: in a DNS
+                // rebinding attack the attacker's page has had its own domain re-pointed at
+                // 127.0.0.1, so the browser believes that domain IS this server and sends the
+                // request as same-origin — with no Origin header for the gate to catch. What it
+                // cannot suppress is Host, which still names the attacker's domain. Pinning Host to
+                // the single endpoint the listener is registered for is the check that sees it.
+                if (!IsHostAllowed(request))
                 {
-                    await SendStatusResponse(response, 403, "Forbidden", "Only loopback connections are allowed");
+                    await SendStatusResponse(response, 400, "Bad Request",
+                        $"Unexpected Host header; this server is addressed as {LoopbackHost}:{m_Port}");
                     return;
                 }
 
@@ -645,6 +700,53 @@ namespace Unity.Pipeline
         /// <summary>
         /// Validate the request's bearer token against this server's token.
         /// </summary>
+        /// <summary>
+        /// Whether the request's Host header names this server's own endpoint — <c>127.0.0.1</c> on
+        /// the port it listens on — and nothing else.
+        ///
+        /// Until Unity 7 this was enforced for us, by accident: Unity's Mono ships HttpListener as
+        /// managed code that matches a request's Host <em>literally</em> against each registered
+        /// prefix, and the only prefix registered is the IPv4 loopback literal, so the listener
+        /// answered 400 to anything else before our code ever saw it. Under CoreCLR that no longer
+        /// holds everywhere: on Windows, "Host: localhost" reached this handler and was served (the
+        /// 7000.0 win10 job got a 200). The check is therefore ours to make, which is better
+        /// regardless: a wrong Host is refused on every runtime, and the rule is stated in one place
+        /// rather than inherited from an implementation detail.
+        ///
+        /// It is not the only layer. The managed listener CoreCLR uses on macOS and Linux still turns
+        /// away a Host that matches no prefix before this runs, with a 404 rather than this 400. So
+        /// the code a refused client sees varies by platform, but the refusal does not.
+        ///
+        /// Strict on purpose. Everything in this package addresses a server through
+        /// <see cref="BaseUrlFor"/>, so the one spelling that has to work is the one it produces;
+        /// admitting "localhost" as well would widen the surface for no caller's benefit.
+        /// </summary>
+        private bool IsHostAllowed(HttpListenerRequest request)
+        {
+            // Read the raw header rather than UserHostName, which some implementations synthesize
+            // from the local endpoint when the header is absent — that would turn a missing Host
+            // into a passing one.
+            var host = request.Headers["Host"];
+
+            // HTTP/1.1 requires Host. Nothing this package ships omits it.
+            if (string.IsNullOrEmpty(host))
+                return false;
+
+            // Last colon, not the first: only the IPv4 literal is ever bound, so there is no
+            // bracketed IPv6 form to parse, but splitting from the right is correct either way.
+            var separator = host.LastIndexOf(':');
+            var name = separator >= 0 ? host.Substring(0, separator) : host;
+            if (name != LoopbackHost)
+                return false;
+
+            // A Host with no port means the scheme's default. Spelled out rather than waved through
+            // so it cannot match a server listening on some other port.
+            if (separator < 0)
+                return m_Port == 80;
+
+            return int.TryParse(host.Substring(separator + 1), out var port) && port == m_Port;
+        }
+
         private bool IsAuthorized(HttpListenerRequest request)
         {
             var header = request.Headers["Authorization"];
@@ -856,7 +958,10 @@ namespace Unity.Pipeline
         ///  - detail: 'full' (default) includes parameters and the generated JSON schema;
         ///    'compact' returns a lightweight index (name, description, tags, package) so a
         ///    client can cheaply browse, then fetch full detail only for the commands it
-        ///    intends to invoke.
+        ///    intends to invoke; 'tags' returns a 'tags' array of {tag, count} INSTEAD of
+        ///    'commands' — the entry point to browsing, so a client needs no catalog of its
+        ///    own. Each count covers the tag's whole subtree, so it is exactly what
+        ///    'tag=<that tag>' returns.
         ///  - query: case-insensitive substring match on name, description, or any tag.
         ///  - tag: scope to a tag subtree via segment-aware prefix match ('assets' matches
         ///    'assets' and 'assets/import' but not 'assetsx').
@@ -877,15 +982,18 @@ namespace Unity.Pipeline
                 var queryString = request.QueryString;
 
                 var detail = queryString["detail"] ?? "full";
-                bool fullDetail;
+                bool fullDetail = false;
+                var tagIndex = false;
                 if (string.Equals(detail, "full", StringComparison.OrdinalIgnoreCase))
                     fullDetail = true;
                 else if (string.Equals(detail, "compact", StringComparison.OrdinalIgnoreCase))
                     fullDetail = false;
+                else if (string.Equals(detail, "tags", StringComparison.OrdinalIgnoreCase))
+                    tagIndex = true;
                 else
                 {
                     await SendStatusResponse(response, 400, "Invalid Request",
-                        $"Unknown detail value '{detail}'. Accepted values: compact, full");
+                        $"Unknown detail value '{detail}'. Accepted values: compact, full, tags");
                     return;
                 }
 
@@ -899,12 +1007,32 @@ namespace Unity.Pipeline
                     return;
                 }
 
+                // Grouping a tag index is meaningless — its rows ARE the tags — so refuse the
+                // combination rather than silently ignoring one of the two.
+                if (tagIndex && (groupByPackage || groupByTag))
+                {
+                    await SendStatusResponse(response, 400, "Invalid Request",
+                        $"detail=tags cannot be combined with group_by='{groupBy}'. The tag index is "
+                        + "already one row per tag; use group_by with detail=compact or detail=full.");
+                    return;
+                }
+
                 var sort = queryString["sort"] ?? "name";
                 var sortByPackage = string.Equals(sort, "package", StringComparison.OrdinalIgnoreCase);
                 if (!sortByPackage && !string.Equals(sort, "name", StringComparison.OrdinalIgnoreCase))
                 {
                     await SendStatusResponse(response, 400, "Invalid Request",
                         $"Unknown sort value '{sort}'. Accepted values: name, package");
+                    return;
+                }
+
+                // A tag belongs to no single package, so there is nothing for a package sort to
+                // order a tag index by — refuse rather than silently falling back to name order.
+                if (tagIndex && sortByPackage)
+                {
+                    await SendStatusResponse(response, 400, "Invalid Request",
+                        "detail=tags cannot be combined with sort=package. A tag is not owned by a "
+                        + "package; use sort=name, or sort=package with detail=compact or detail=full.");
                     return;
                 }
 
@@ -942,8 +1070,15 @@ namespace Unity.Pipeline
                 var tag = queryString["tag"];
 
                 var filtered = CommandRegistry.DiscoverCommands()
-                    .Where(c => IncludeRuntimeOnlyCommands || !c.RuntimeOnly)
                     .Where(c => MatchesQuery(c, query) && MatchesTagSubtree(c, tag));
+                // The tag index is a different projection of the same filtered set: one row per
+                // distinct tag, so pagination and sorting apply to TAGS rather than to commands.
+                if (tagIndex)
+                {
+                    await SendTagIndexResponse(response, filtered.ToList(), descending, offset, limit);
+                    return;
+                }
+
                 var matching = SortCommands(filtered, sortByPackage, descending).ToList();
 
                 // Paginate the flat, sorted list before any grouping so pages are deterministic.
@@ -966,23 +1101,9 @@ namespace Unity.Pipeline
                 responseData["total"] = matching.Count;
                 responseData["offset"] = offset;
                 responseData["limit"] = limit;
-                responseData["server"] = new
-                {
-                    version = "0.0.1", // TODO: Get from package.json
-                    port = m_Port,
-                    startTime = StartedAt
-                };
+                responseData["server"] = BuildServerBlock();
 
-                var json = JsonConvert.SerializeObject(responseData, Formatting.Indented);
-
-                response.StatusCode = 200;
-                response.ContentType = "application/json";
-
-                var buffer = Encoding.UTF8.GetBytes(json);
-                response.ContentLength64 = buffer.Length;
-
-                await response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
-                response.OutputStream.Close();
+                await SendJsonPayload(response, responseData);
             }
             catch (Exception ex)
             {
@@ -1000,6 +1121,85 @@ namespace Unity.Pipeline
                 await response.OutputStream.WriteAsync(errorBuffer, 0, errorBuffer.Length);
                 response.OutputStream.Close();
             }
+        }
+
+        /// <summary>
+        /// The responding server's identity, carried by every /api/commands response.
+        /// </summary>
+        private object BuildServerBlock()
+        {
+            return new
+            {
+                version = "0.0.1", // TODO: Get from package.json
+                port = m_Port,
+                startTime = StartedAt
+            };
+        }
+
+        /// <summary>
+        /// Serialize a 200 response body and write it out.
+        /// </summary>
+        private static async Task SendJsonPayload(HttpListenerResponse response, object payload)
+        {
+            var json = JsonConvert.SerializeObject(payload, Formatting.Indented);
+
+            response.StatusCode = 200;
+            response.ContentType = "application/json";
+
+            var buffer = Encoding.UTF8.GetBytes(json);
+            response.ContentLength64 = buffer.Length;
+
+            await response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
+            response.OutputStream.Close();
+        }
+
+        /// <summary>
+        /// Answer detail=tags: one row per distinct tag carried by <paramref name="commands"/>,
+        /// each with the number of commands in that tag's subtree — so a row's count is exactly
+        /// what a follow-up 'tag=&lt;that tag&gt;' request returns.
+        /// </summary>
+        private async Task SendTagIndexResponse(HttpListenerResponse response,
+            List<CommandInfo> commands, bool descending, int offset, int? limit)
+        {
+            // Ordinal ordering: tags are validated lowercase '/'-separated paths, so this is both
+            // deterministic and the order a client can reproduce without knowing a culture.
+            var distinct = new SortedSet<string>(StringComparer.Ordinal);
+            foreach (var command in commands)
+            {
+                foreach (var tag in command.Tags)
+                {
+                    if (!string.IsNullOrEmpty(tag))
+                        distinct.Add(tag);
+                }
+            }
+
+            IEnumerable<string> ordered = distinct;
+            if (descending)
+                ordered = ordered.Reverse();
+            var allTags = ordered.ToList();
+
+            IEnumerable<string> window = allTags.Skip(offset);
+            if (limit.HasValue)
+                window = window.Take(limit.Value);
+            var page = window.ToList();
+
+            var responseData = new Dictionary<string, object>
+            {
+                ["tags"] = page
+                    .Select(tag => new
+                    {
+                        tag,
+                        count = commands.Count(c => MatchesTagSubtree(c, tag))
+                    })
+                    .ToList(),
+                ["count"] = page.Count,
+                ["total"] = allTags.Count,
+                ["offset"] = offset,
+                ["limit"] = limit,
+                ["server"] = BuildServerBlock()
+            };
+
+            await SendJsonPayload(response, responseData);
         }
 
         /// <summary>
@@ -1044,7 +1244,6 @@ namespace Unity.Pipeline
                 tags = command.Tags,
                 package = command.Package,
                 mainThreadRequired = command.MainThreadRequired,
-                runtimeOnly = command.RuntimeOnly,
                 parameters = command.Parameters.Select(p => new
                 {
                     name = p.Name,
@@ -1193,10 +1392,7 @@ namespace Unity.Pipeline
         /// </summary>
         private static bool MatchesTagSubtree(CommandInfo command, string tag)
         {
-            if (string.IsNullOrEmpty(tag))
-                return true;
-            return command.Tags.Any(t => t.Equals(tag, StringComparison.OrdinalIgnoreCase)
-                || t.StartsWith(tag + "/", StringComparison.OrdinalIgnoreCase));
+            return command.HasTagInSubtree(tag);
         }
 
         /// <summary>
@@ -1330,17 +1526,7 @@ namespace Unity.Pipeline
                     m_ExecGate.Release();
                 }
 
-                string jsonResponse;
-                if (result is string statusString)
-                {
-                    // test_status command returns JSON string directly
-                    jsonResponse = statusString;
-                }
-                else
-                {
-                    // Fallback - serialize whatever was returned
-                    jsonResponse = JsonConvert.SerializeObject(result ?? new { status = "no_tests", message = "No test run in progress" });
-                }
+                var jsonResponse = JsonConvert.SerializeObject(result);
 
                 response.StatusCode = 200;
                 response.ContentType = "application/json";
@@ -2179,7 +2365,7 @@ namespace Unity.Pipeline
         /// <summary>
         /// Whether a command reported success. A command fails in two ways: by throwing, which the
         /// caller has already accounted for, or by RETURNING a response that carries its own
-        /// failure — eval, hot reload, run_script and test runs all do the latter, so nothing
+        /// failure — eval, code reload, run_script and test runs all do the latter, so nothing
         /// throws and the outer envelope says success while the inner result says otherwise.
         /// </summary>
         private static bool IsSuccessfulResult(object result)
@@ -2629,7 +2815,9 @@ namespace Unity.Pipeline
             m_CurrentServer = this;
             try
             {
-                return command.Method.Invoke(null, parameters);
+                // Target is null for every attribute-declared command (they are static) and carries
+                // the receiver for a dynamically registered instance-method handler.
+                return command.Method.Invoke(command.Target, parameters);
             }
             catch (System.Reflection.TargetInvocationException tie) when (tie.InnerException != null)
             {

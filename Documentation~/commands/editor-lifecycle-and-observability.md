@@ -75,23 +75,6 @@ Keep the editor ticking while unfocused by forcing EditorApplication.SignalTick 
 
 Use `persist=false` for a change you only want in effect until the next unrelated recompile — e.g. a short profiling run at `interval_ms=0` (pegs a CPU core) or a one-off test/CI script — so it can't outlive its purpose and silently burn CPU for the rest of the session. Leave `persist` at its default `true` for a setting you want to remain in effect across recompiles, such as the normal always-on 16ms tick.
 
-### `get_console_logs`
-Read recently captured Editor console logs (structured).
-
-| Parameter | Required | Default | Description |
-|-----------|----------|---------|-------------|
-| `severity` | no | `all` | Filter: all | log | warning | error. 'all' = every entry; 'log' = Log only; 'warning' = Warning only; 'error' = Error/Exception/Assert only. |
-| `limit` | no | `100` | Max entries to return (most-recent first), capped at 1000. |
-
-**Returns:** `object`
-
-### `clear_console`
-Clear the captured log buffer and the Unity Editor console.
-
-No parameters.
-
-**Returns:** `object`
-
 ### `get_performance_stats`
 Read render, memory, and frame-timing stats (structured, read-only).
 
@@ -168,7 +151,7 @@ Every `eval`/`eval_file` invocation appends one JSON object (one line, JSONL) to
 
 ### Settings
 
-Configured on the `EditorPipelineManager` settings asset (`Window/Pipeline/Settings...`). Edits apply live from the inspector, and the stored values are re-applied on every server start:
+Configured in **Project Settings > Pipeline > Editor**. Edits apply live, and the stored values are re-applied on every server start:
 
 - **Eval Telemetry Enabled** (default on) — master switch. When off, nothing is recorded (and, as always, nothing is transmitted).
 - **Store Eval Source** (default off) — the explicit opt-in to also persist the raw eval `source` in each record, for local debugging only.

@@ -5,19 +5,24 @@ using System.Linq;
 using System.Reflection;
 using System.Text;
 using System.Threading.Tasks;
-using Microsoft.CodeAnalysis;
-using Microsoft.CodeAnalysis.CSharp;
-using Microsoft.CodeAnalysis.Emit;
-using Microsoft.CodeAnalysis.Text;
+// Roslyn — the bundled UnityPipeline.Microsoft.CodeAnalysis* plugins — ships only to the Editor and
+// desktop players (Runtime/Plugins/CodeAnalysis/*.dll.meta); mobile/console players get the
+// Roslyn-free stubs below.
+#if UNITY_EDITOR || UNITY_STANDALONE
+using UnityPipeline.Microsoft.CodeAnalysis;
+using UnityPipeline.Microsoft.CodeAnalysis.CSharp;
+using UnityPipeline.Microsoft.CodeAnalysis.Emit;
+using UnityPipeline.Microsoft.CodeAnalysis.Text;
+#endif
 using Unity.Pipeline.Models;
 using UnityEngine;
 
 namespace Unity.Pipeline.Compilation
 {
     /// <summary>
-    /// Shared Roslyn compilation service for both code evaluation and hot reload systems.
+    /// Shared Roslyn compilation service for both code evaluation and code reload systems.
     /// Eliminates code duplication by providing common compilation infrastructure.
-    /// Thread-safe and can be called from any thread.
+    /// Compile on the main thread; CompileAsync is the off-thread entry point (see Compile).
     /// </summary>
     static class RoslynCompilationService
     {
@@ -25,11 +30,21 @@ namespace Unity.Pipeline.Compilation
 
         /// <summary>
         /// Compile source code to assembly with customizable options.
-        /// Thread-safe compilation that can run on any thread.
+        ///
+        /// Call on the main thread. Reference discovery (<see cref="GetMetadataReferences"/>) asks
+        /// Unity for each loaded assembly's path, and under CoreCLR (Unity 7) that lookup is
+        /// main-thread-only for any assembly loaded from bytes — which includes every assembly a
+        /// previous compile loaded. Off the main thread the compile then fails with ROSLYN001
+        /// "Internal_GetAssemblyLocation can only be called from the main thread". To compile off
+        /// the main thread, use <see cref="CompileAsync"/>, which resolves references first.
         /// </summary>
         /// <param name="request">The source and compilation options.</param>
         /// <returns>The compilation result.</returns>
-        public static CompilationResult Compile(CompilationRequest request)
+        public static CompilationResult Compile(CompilationRequest request) => Compile(request, null);
+
+        /// <param name="request">The source and compilation options.</param>
+        /// <param name="references">Pre-resolved references, or null to resolve them here.</param>
+        static CompilationResult Compile(CompilationRequest request, List<MetadataReference> references)
         {
             try
             {
@@ -47,7 +62,7 @@ namespace Unity.Pipeline.Compilation
                     : CSharpSyntaxTree.ParseText(request.SourceCode, parseOptions);
 
                 // Get metadata references with optional additional prefixes
-                var references = GetMetadataReferences(request.AdditionalAssemblyPrefixes);
+                references = references ?? GetMetadataReferences(request.AdditionalAssemblyPrefixes);
 
                 // Create compilation. Disable optimizations when emitting debug info so the JIT
                 // keeps full sequence points (otherwise breakpoints can't bind).
@@ -61,7 +76,7 @@ namespace Unity.Pipeline.Compilation
                 // only (see the property doc): the interpreter executes the result by reflection,
                 // which reaches non-public members. Unity's Mono JIT-enforces accessibility on
                 // Assembly.Load'd IL and ignores IgnoresAccessChecksTo too (verified on Mono 6.13) —
-                // see HotReloadInPlaceTests.ReloadFileInPlace_PrivateFieldAccess_FailsValidationUpFront.
+                // see CodeReloadInPlaceTests.ReloadFileInPlace_PrivateFieldAccess_FailsValidationUpFront.
                 if (request.AllowNonPublicMemberAccess)
                     options = WithIgnoreAccessibility(options.WithMetadataImportOptions(MetadataImportOptions.All));
 
@@ -154,23 +169,25 @@ namespace Unity.Pipeline.Compilation
             }
             catch (Exception ex)
             {
-                return new CompilationResult
-                {
-                    Success = false,
-                    Diagnostics = new List<DiagnosticInfo>
-                    {
-                        new DiagnosticInfo
-                        {
-                            Severity = "error",
-                            Message = $"Compilation exception: {ex.Message}",
-                            Line = 0,
-                            Column = 0,
-                            Id = "ROSLYN001"
-                        }
-                    }
-                };
+                return ExceptionResult(ex);
             }
         }
+
+        static CompilationResult ExceptionResult(Exception ex) => new CompilationResult
+        {
+            Success = false,
+            Diagnostics = new List<DiagnosticInfo>
+            {
+                new DiagnosticInfo
+                {
+                    Severity = "error",
+                    Message = $"Compilation exception: {ex.Message}",
+                    Line = 0,
+                    Column = 0,
+                    Id = "ROSLYN001"
+                }
+            }
+        };
 
         /// <summary>
         /// Async wrapper for compilation that runs on background thread.
@@ -180,7 +197,21 @@ namespace Unity.Pipeline.Compilation
         /// <returns>The compilation result.</returns>
         public static Task<CompilationResult> CompileAsync(CompilationRequest request)
         {
-            return Task.Run(() => Compile(request));
+            // References are resolved here, on the calling thread, and only the Roslyn work moves to
+            // the pool: resolving them asks Unity for assembly paths, which is main-thread-only under
+            // CoreCLR for byte-loaded assemblies (see Compile). Call this from the main thread.
+            List<MetadataReference> references;
+            try
+            {
+                references = GetMetadataReferences(request.AdditionalAssemblyPrefixes);
+            }
+            catch (Exception ex)
+            {
+                // Same contract as Compile: a failure is a result, not a throw.
+                return Task.FromResult(ExceptionResult(ex));
+            }
+
+            return Task.Run(() => Compile(request, references));
         }
 
         // MetadataReference cache keyed by assembly path. Reusing the same instances, both within one
@@ -208,7 +239,7 @@ namespace Unity.Pipeline.Compilation
                 try
                 {
                     var binderFlags = typeof(CSharpCompilationOptions).Assembly
-                        .GetType("Microsoft.CodeAnalysis.CSharp.BinderFlags");
+                        .GetType(typeof(CSharpCompilationOptions).Namespace + ".BinderFlags");
                     if (binderFlags != null)
                     {
                         s_IgnoreAccessibilityFlag = Enum.Parse(binderFlags, "IgnoreAccessibility");
@@ -218,7 +249,7 @@ namespace Unity.Pipeline.Compilation
                 }
                 catch (Exception ex)
                 {
-                    Debug.LogWarning($"Pipeline: could not resolve IgnoreAccessibility binder flag; hot-reload " +
+                    Debug.LogWarning($"Pipeline: could not resolve IgnoreAccessibility binder flag; code-reload " +
                         $"overrides touching non-public members may fail to compile. {ex.Message}");
                 }
             }
@@ -269,7 +300,7 @@ namespace Unity.Pipeline.Compilation
                     "Unity.Pipeline"
                 };
 
-                // Add any additional prefixes (e.g., for hot reload: "Microsoft.CodeAnalysis")
+                // Add any additional prefixes (e.g., for code reload: "UnityPipeline.Microsoft.CodeAnalysis")
                 if (additionalPrefixes != null)
                 {
                     allowedPrefixes.AddRange(additionalPrefixes);
@@ -309,14 +340,29 @@ namespace Unity.Pipeline.Compilation
                 var line = Math.Max(0, location.StartLinePosition.Line - lineOffset);
                 var column = location.StartLinePosition.Character;
 
-                result.Add(new DiagnosticInfo
+                var info = new DiagnosticInfo
                 {
                     Severity = diagnostic.Severity.ToString().ToLower(),
                     Message = diagnostic.GetMessage(),
                     Line = line,
                     Column = column,
                     Id = diagnostic.Id
-                });
+                };
+
+                // #line directives (code reload maps rewritten bodies back to the user's file) give
+                // the user a location they can open; the raw line text shows what was compiled.
+                var mapped = diagnostic.Location.GetMappedLineSpan();
+                if (mapped.HasMappedPath)
+                {
+                    info.File = mapped.Path;
+                    info.FileLine = mapped.StartLinePosition.Line + 1;
+                }
+                var text = diagnostic.Location.SourceTree?.GetText();
+                var rawLine = location.StartLinePosition.Line;
+                if (text != null && rawLine >= 0 && rawLine < text.Lines.Count)
+                    info.Source = text.Lines[rawLine].ToString().Trim();
+
+                result.Add(info);
             }
 
             return result;
@@ -358,6 +404,9 @@ namespace Unity.Pipeline.Compilation
             return Task.FromResult(Compile(request));
         }
 
+#if UNITY_STANDALONE
+        // Release desktop player: Roslyn is present (the parse sites in InPlaceReloadProcessor and
+        // SourceCodeTransformer still compile) but compilation is stubbed out, so hand them no references.
         /// <summary>
         /// Runtime compilation not supported on this platform.
         /// </summary>
@@ -368,6 +417,7 @@ namespace Unity.Pipeline.Compilation
             return new List<MetadataReference>();
         }
 #endif
+#endif
 
         // Preprocessor symbols the surrounding project was compiled with. Reload/eval sources must
         // parse under the same defines as the assemblies they patch, or every #if UNITY_EDITOR /
@@ -376,7 +426,7 @@ namespace Unity.Pipeline.Compilation
         // that care (the editor-side push path) pass explicit symbols.
         //
         // Kept outside the desktop-dev #if region: the parse sites that consume this
-        // (OverrideFileValidator, InPlaceReloadProcessor, SourceCodeTransformer) also compile on
+        // (InPlaceReloadProcessor, SourceCodeTransformer) also compile on
         // release standalone, where the region above is compiled out.
         static string[] s_LastProjectDefines = Array.Empty<string>();
 
@@ -398,11 +448,14 @@ namespace Unity.Pipeline.Compilation
         /// </summary>
         internal static void SnapshotProjectDefines() => ProjectDefines();
 
+#if UNITY_EDITOR || UNITY_STANDALONE
         /// <summary>Parse options carrying <paramref name="preprocessorSymbols"/>, or the project's
         /// define set (see <see cref="ProjectDefines"/>) when null. Every parse of user source in the
-        /// reload/eval pipeline should use this so #if regions match the running assemblies.</summary>
+        /// reload/eval pipeline should use this so #if regions match the running assemblies.
+        /// Desktop only: the parse sites that call it compile out with Roslyn elsewhere.</summary>
         internal static CSharpParseOptions ProjectParseOptions(string[] preprocessorSymbols = null)
             => CSharpParseOptions.Default.WithPreprocessorSymbols(preprocessorSymbols ?? ProjectDefines());
+#endif
     }
 
     /// <summary>
@@ -422,7 +475,7 @@ namespace Unity.Pipeline.Compilation
 
         /// <summary>
         /// Additional assembly prefixes to include in metadata references.
-        /// Useful for hot reload scenarios that need "Microsoft.CodeAnalysis" etc.
+        /// Useful for code reload scenarios that need "UnityPipeline.Microsoft.CodeAnalysis" etc.
         /// </summary>
         public string[] AdditionalAssemblyPrefixes { get; set; }
 
@@ -476,7 +529,7 @@ namespace Unity.Pipeline.Compilation
 
         /// <summary>
         /// When true, referenced assemblies' non-public members are imported and access checks against them
-        /// are relaxed (<see cref="MetadataImportOptions.All"/>). Interpreter-backend compiles only: the
+        /// are relaxed (<c>MetadataImportOptions.All</c>). Interpreter-backend compiles only: the
         /// interpreter executes the emitted IL via reflection, which reaches non-public members. Never set
         /// this for IL that will be <c>Assembly.Load</c>'d — Mono JIT-enforces accessibility on loaded IL,
         /// so the access would compile and then throw at first dispatch. Off by default.

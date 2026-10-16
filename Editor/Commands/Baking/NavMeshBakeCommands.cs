@@ -101,11 +101,9 @@ namespace Unity.Pipeline.Editor.Commands.Baking
         }
 
         [CliCommand("navmesh_bake_status", "Get the status of the last NavMesh bake: idle | baking | completed.", MainThreadRequired = false, Tags = new[] { "baking/navmesh" })]
-        public static string NavMeshBakeStatus()
+        public static JToken NavMeshBakeStatus()
         {
-            if (File.Exists(StatusFile))
-                return File.ReadAllText(StatusFile);
-            return "{\"status\":\"idle\"}";
+            return StatusFileReader.ReadOrIdle(StatusFile);
         }
 
         [CliCommand("cancel_navmesh_bake", "Cancel an in-progress NavMesh bake (NavMeshBuilder.Cancel()).", Tags = new[] { "baking/navmesh" })]

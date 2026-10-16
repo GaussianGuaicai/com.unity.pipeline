@@ -39,7 +39,15 @@ namespace Unity.Pipeline
 
             var config = RuntimePipelineConfig.Load();
             if (config == null || !config.enableInBuilds)
+            {
+#if UNITY_EDITOR
+                // The runtime server is a player-build feature, but in-editor code reload still
+                // needs the [CodeReload] targets registered for this Play session — the driver
+                // would do it in Awake; with no driver, do it here so a save can bind.
+                RuntimePipelineDriver.RegisterDiscoveredCodeReloadMethods();
+#endif
                 return null;
+            }
 
             var buildInfo = RuntimePipelineBuildInfo.Load();
             IReadOnlyList<string> roots = buildInfo != null

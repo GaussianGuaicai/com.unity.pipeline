@@ -228,9 +228,23 @@ namespace Unity.Pipeline.Models
             }
         }
 
-        private static string GetDescriptorFilePath()
+        /// <summary>
+        /// Test-only override of the detected platform, so the Android branch below is reachable
+        /// without a real device. Null (the default) uses the real <see cref="Application.platform"/>.
+        /// </summary>
+        internal static RuntimePlatform? OverridePlatform;
+
+        internal static string GetDescriptorFilePath()
         {
-            var workingDir = new FileInfo($"{Application.dataPath}/..").FullName;
+            var platform = OverridePlatform ?? Application.platform;
+
+            // On Android, Application.dataPath points inside the read-only, system-owned APK
+            // install directory (e.g. ".../base.apk") — the app cannot write there. persistentDataPath
+            // is the one location Unity guarantees is writable on Android (UUM-151968).
+            var workingDir = platform == RuntimePlatform.Android
+                ? Application.persistentDataPath
+                : new FileInfo($"{Application.dataPath}/..").FullName;
+
             return Path.Combine(workingDir, RuntimeDescriptorFileName);
         }
     }

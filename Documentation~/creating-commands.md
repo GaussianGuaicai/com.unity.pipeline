@@ -25,12 +25,24 @@ public static <ReturnType> Handler(...);
 | `name` | Unique command name used by the client (`unity command <name>`). |
 | `description` | Human-readable text shown in help and the `/api/commands` listing. |
 | `MainThreadRequired` | Whether the handler must run on Unity's main thread. **Default `true`.** |
-| `RuntimeOnly` | Whether the command is hidden from an Editor server's command listing. **Default `false`.** |
+| `RuntimeOnly` | Shorthand for the `runtime` tag: setting it adds that tag. **Default `false`.** |
 | `Tags` | Optional hierarchical tags for grouping/browsing commands. Path-style: a `/` separates tag from subtag (e.g. `"assets"`, `"assets/import"`). **Default: empty.** |
 
-Every discovered command also carries the **package** it originates from (derived from the declaring assembly, e.g. `Unity.Pipeline.Editor`). Tags and package appear in both the compact and full `/api/commands` listings — `detail=full` (the default) includes the parameters and generated JSON schema, while `detail=compact` returns just the lightweight index (`name`, `description`, `tags`, `package`). Tags also drive the endpoint's `tag` filter and its `group_by=tag` tree (see [Connectivity](connectivity.md)).
+Every discovered command also carries the **package** it originates from (derived from the declaring assembly, e.g. `Unity.Pipeline.Editor`). Tags and package appear in both the compact and full `/api/commands` listings — `detail=full` (the default) includes the parameters and generated JSON schema, while `detail=compact` returns just the lightweight index (`name`, `description`, `tags`, `package`). `detail=tags` returns the tag index alone, which is how a client offers discovery without holding a catalog of its own. Tags also drive the endpoint's `tag` filter and its `group_by=tag` tree (see [Connectivity](connectivity.md)).
 
-The method **must be `static`**, but its accessibility does not matter: `public`, `internal`, and `private` static methods can all be registered. `CommandRegistry` invokes handlers through reflection, so a `private` handler runs exactly like a `public` one. Only a non-static (instance) method fails to register — `CommandRegistry` skips it and logs a warning.
+The method **must be `static`**, but its accessibility does not matter: `public`, `internal`, and `private` static methods can all be registered. `CommandRegistry` invokes handlers through reflection, so a `private` handler runs exactly like a `public` one. Only a non-static (instance) method fails to register — `CommandRegistry` skips it and logs a warning. To expose an instance method as a command, register it dynamically instead (see [Registering a command dynamically](#registering-a-command-dynamically)).
+
+### Which assembly to reference
+
+`[CliCommand]` and `[CliArg]` live in `Unity.Pipeline.Attributes`, which carries no define
+constraints. An assembly definition declaring commands needs only that reference — not
+`Unity.Pipeline` — so it compiles in every build, including a non-development Player where the
+pipeline assemblies are absent and the attributes are simply inert. Scripts that are not in an
+assembly definition need no reference at all.
+
+Referencing `Unity.Pipeline` is still required for the rest of the command API — response models,
+`IStructuredCommandInput`, and `CommandRegistry` — and that assembly only compiles under
+`UNITY_EDITOR || DEVELOPMENT_BUILD || ENABLE_RUNTIME_PIPELINE`.
 
 ### Tag taxonomy
 
@@ -49,15 +61,16 @@ Every shipped command carries at least one tag (enforced by `CommandRegistration
 | `gameobjects` | Scene GameObject manipulation | `components` |
 | `materials` | Materials | `shaders` |
 | `navigation` | Selection and search | — |
-| `observability` | Logs and diagnostics | `console`, `performance` |
+| `observability` | Logs and diagnostics | `audit`, `console`, `eval_usage`, `performance` |
 | `packages` | UPM package management | — |
 | `prefabs` | Prefab workflows | — |
-| `runtime` | Player-only application control | `application`, `input` |
+| `runtime` | Commands that target a running Player | `application`, `input` |
 | `scenes` | Scene lifecycle and hierarchy | — |
-| `scripts` | C# source workflows | `compile`, `eval`, `hotreload` |
-| `settings` | Project settings | `audio`, `graphics`, `input`, `physics`, `player`, `quality`, `tags_layers`, `time` |
+| `scripts` | C# source workflows | `compile`, `eval`, `codereload` |
+| `settings` | Project settings | `audio`, `graphics`, `input`, `physics`, `player`, `quality`, `runtime_pipeline`, `tags_layers`, `time` |
 | `tests` | Test runner | — |
 | `ui` | UI element workflows | — |
+| `wait` | Server-side condition waiting | — |
 
 A command may carry multiple tags when it genuinely belongs to two families (e.g. `add_scene_to_build` is tagged `scenes` and `build/settings`).
 
@@ -257,8 +270,13 @@ When in doubt, leave it `true`.
 
 ## `RuntimeOnly`
 
-- **Default: `false`** — the command is advertised in an Editor server's `/api/commands` listing.
-- **Set `true`** to hide a command from the Editor command listing. It remains **executable**; it is simply not advertised when a client is connected to an Editor (Runtime/Player servers still list it). Use this for commands that only make sense against a running Player.
+`RuntimeOnly = true` adds the `runtime` tag to the command. That tag is what the rest of the pipeline reads, so declaring `Tags = new[] { "runtime" }` (or a subtag like `runtime/input`) does exactly the same thing — the flag is the shorthand, kept so existing command declarations keep working.
+
+- **Default: `false`.**
+- A command already tagged in the `runtime` subtree gains nothing from also setting the flag; the tag is not duplicated.
+- `CommandInfo.RuntimeOnly` reads back off the tags, so it is true for anything in that subtree however it was declared.
+
+The tag does **not** hide a command. Every command is listed on every server, and `runtime` is how a client tells which ones target a running Player. It does, however, keep a command out of a `batch` on an Editor server (see [Safety and mutations](safety-and-mutations.md)), since those commands cannot do anything useful there.
 
 ## Discovery
 
@@ -268,6 +286,59 @@ Commands are discovered by `CommandRegistry`, which scans for `[CliCommand]`-tag
 - In a **Player**, the registry falls back to reflection over loaded assemblies.
 
 Results are cached until the next domain reload. **A newly added command becomes available after the next recompile** — no registration call is needed; just declare it and recompile.
+
+## Registering a command dynamically
+
+`[CliCommand]` covers commands you know about at compile time. When the set of commands depends on runtime state — a tool that exposes one command per loaded document, a plugin host, a test that needs a throwaway command — register them directly instead:
+
+```csharp
+CommandRegistry.RegisterCommand(
+    "my_dynamic_command",
+    "What this command does",
+    new Func<string, int, object>(MyHandler),
+    mainThreadRequired: true,
+    runtimeOnly: false,
+    tags: new[] { "mytool" });
+```
+
+`runtimeOnly` behaves exactly as the attribute property does: it adds the `runtime` tag.
+
+The result is an ordinary command: it appears in `/api/commands`, carries the same metadata, and executes through `/api/exec` exactly like an attribute-declared one.
+
+**Parameters still come from `[CliArg]`.** The registry reads the handler's own parameters, so a handler method annotates them exactly as an attribute-declared command does:
+
+```csharp
+private static object MyHandler(
+    [CliArg("text", "Some input", Required = true)] string text,
+    [CliArg("count", "How many times")] int count = 1)
+{
+    return new { echoed = text, count };
+}
+```
+
+A lambda cannot carry `[CliArg]` on its parameters, so registering one yields default metadata (the C# parameter name, required only when there is no default value). Register a named method when you want full metadata.
+
+**Instance methods are allowed.** Unlike the attribute path, the handler is a delegate, so it may be bound to an instance — the command then runs against that instance:
+
+```csharp
+var session = new MySession(documentId);
+CommandRegistry.RegisterCommand("read_document", "Read the open document",
+    new Func<string>(session.Read), tags: new[] { "mytool" });
+```
+
+**Removing a command:**
+
+```csharp
+bool removed = CommandRegistry.UnregisterCommand("my_dynamic_command");
+```
+
+`UnregisterCommand` returns `false` when nothing was registered under that name. Attribute-declared commands are part of the code and are never removable, so passing one of their names also returns `false`.
+
+**Lifetime and collisions.** Registrations live until they are unregistered or the domain reloads — statics reset on reload, so re-register from wherever your code initializes (e.g. `[InitializeOnLoadMethod]`).
+
+A registration made **while in Play Mode** is also dropped when Play Mode exits, so a script registering from `Awake` or `OnEnable` starts each Play session with a clean registry. This matters when Enter Play Mode has domain reload disabled: without it, the second entry would throw (the name would still be taken by the first entry) and a surviving registration would hold a delegate bound to the previous session's destroyed object. A registration made in **Edit Mode** survives a Play session — an `[InitializeOnLoadMethod]` runs once per domain, so nothing would restore it.
+
+All registrations survive a discovery-mechanism swap. Registering a name that is already taken, by an attribute-declared command or an earlier dynamic one, throws `InvalidOperationException` rather than shadowing it; unregister first if you mean to replace it.
 
 ## Minimal custom command template
 

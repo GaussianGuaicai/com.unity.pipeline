@@ -96,6 +96,7 @@ The following are rejected with a structured `not_batchable` error:
 - **Out of scope:** `build`, `switch_build_target`, `package_*`, `editor_play`/`editor_stop`/`editor_pause`, `recompile`
 - **Arbitrary code:** `eval`, `eval_file`, `run_script`, and nested `batch`
 - **Modal-dialog hazard:** `menu` (menu items can open modal dialogs that wedge an unattended batch)
+- **Cannot make progress:** synchronous `wait_for` — the batch holds the main thread for its whole turn, so the editor state a condition watches cannot change; the wait would just burn its timeout inside the batch. Run an async `wait_for` before/after the batch instead (`wait_status`/`wait_cancel` are quick reads and stay batchable)
 - **Undo-stack wipe:** `open_scene`, `create_scene`
 - **Async commands** (`run_tests`, `list_tests`, and any command returning `Task`): they are completed by `EditorApplication.update` callbacks, which cannot fire while the batch holds the main thread — dispatching one would freeze the Editor permanently
 - **Runtime-only commands** (e.g. `set_timescale`): they belong to the Player server surface and cannot execute on the editor server

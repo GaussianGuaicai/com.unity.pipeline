@@ -7,6 +7,33 @@ namespace IlInterpreter.Interpreter
     partial class ScriptInterpreter
     {
     /// <summary>
+    /// The value behind a delegate whose TYPE names a SCRIPT-defined type — e.g. <c>Action&lt;Node&gt;</c>
+    /// where <c>Node</c> is a script class. Such a delegate type has NO runtime <see cref="Type"/>
+    /// (only its type argument is a <see cref="ScriptTypeDescriptor"/>), so it can't be represented as a
+    /// real CLR <see cref="Delegate"/> the way <see cref="ScriptDelegateAdapter"/> does — a CLR
+    /// <c>Invoke(Node)</c> can't carry a <see cref="ScriptObject"/>. Instead this is an INTERNAL reference
+    /// value living in O slots like any object; <c>invoke_script_delegate</c> re-enters the VM on
+    /// <see cref="Target"/> (with <see cref="Receiver"/> prepended for instance targets) through the same
+    /// <see cref="InvokeDelegateTarget"/> plumbing the adapter uses.
+    ///
+    /// Single-target only: no multicast (<c>+=</c>), no delegate equality, no BeginInvoke. Lifetime is the
+    /// same generation contract as <see cref="ScriptDelegateAdapter"/> — invalid after a re-<c>Load</c>.
+    /// </summary>
+    internal sealed class ScriptDelegate
+    {
+        public readonly ParsedMethod Target;
+        public readonly object?      Receiver;   // null for static targets; prepended as arg 0 otherwise
+        public readonly object       Generation; // the ParsedAssembly the target was lowered with
+
+        public ScriptDelegate(ParsedMethod target, object? receiver, object generation)
+        {
+            Target     = target;
+            Receiver   = receiver;
+            Generation = generation;
+        }
+    }
+
+    /// <summary>
     /// The object behind a delegate whose target is an INTERPRETED method (a method group over a
     /// script method, or a lambda's display-class method). The host holds an ordinary CLR delegate
     /// of the exact requested type — <c>System.Action</c>, <c>EventCallback&lt;T&gt;</c>, a custom

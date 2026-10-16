@@ -30,7 +30,7 @@ namespace Unity.Pipeline.Editor.Commands.Scripts
     /// It composes the two halves the pipeline already had — <c>eval_file</c> (code from disk) and
     /// <c>reload_file</c> (single-file in-memory Roslyn compile) — into one first-class command:
     ///   - <c>ephemeral</c> (default): compile to an in-memory assembly, run the entry point, discard.
-    ///   - <c>hotpatch</c>: delegate to <c>reload_file</c>'s in-place <c>[HotReload]</c> semantics.
+    ///   - <c>hotpatch</c>: delegate to <c>reload_file</c>'s in-place <c>[CodeReload]</c> semantics.
     ///
     /// This is still arbitrary code execution — only the carrier changes (a reviewable file on disk
     /// instead of a protocol string). It is grouped under the same <c>scripts/eval</c> tag as
@@ -49,7 +49,7 @@ namespace Unity.Pipeline.Editor.Commands.Scripts
             [CliArg("file", "Path to a .cs file to compile. Relative paths resolve against the PROJECT ROOT (the parent of Assets/), not the process working directory. May live OUTSIDE Assets/ (e.g. AgentScripts/) so writing it never triggers an asset import or domain reload.", Required = true)] string file,
             [CliArg("entry", "Entry point as Namespace.Type.Method (or Type.Method, or a bare Method name). Default: the single public static method if unambiguous, else a method named Main. Static methods only in v1. Ephemeral mode only (rejected with mode=hotpatch, which never invokes an entry point).")] string entry = null,
             [CliArg("args", "JSON array of arguments passed to the entry point, coerced to its parameter types: primitives, enum names, string[], and a string/object handle (ObjectRef) for UnityEngine.Object parameters. Ephemeral mode only (rejected with mode=hotpatch).")] JArray args = null,
-            [CliArg("mode", "ephemeral (default): compile to an in-memory assembly, run the entry, discard. hotpatch: apply [HotReload] method replacements to already-loaded types (reload_file semantics).")] string mode = "ephemeral",
+            [CliArg("mode", "ephemeral (default): compile to an in-memory assembly, run the entry, discard. hotpatch: apply [CodeReload] method replacements to already-loaded types (reload_file semantics).")] string mode = "ephemeral",
             [CliArg("references", "Extra assembly name prefixes to reference beyond the auto-resolved set. In the Editor all loaded assemblies are already referenced, so this is effectively a no-op there. Ephemeral mode only; not applied by hotpatch (which delegates to reload_file's own compile).")] string[] references = null,
             [CliArg("defines", "Extra scripting define symbols APPENDED to the project's active editor defines (UNITY_EDITOR etc. are already set) for the compilation's #if directives. Ephemeral mode only; not applied by hotpatch.")] string[] defines = null,
             [CliArg("pdb", "Emit a portable PDB mapped to the source file so breakpoints bind and exception stack traces map to file:line. Compiles unoptimized.")] bool pdb = false,
@@ -77,7 +77,7 @@ namespace Unity.Pipeline.Editor.Commands.Scripts
                         return await RunEphemeral(file, entry, args, references, defines, pdb, dryRun, timeoutMs, total);
                     case "hotpatch":
                     {
-                        // hotpatch delegates wholesale to reload_file's [HotReload] semantics:
+                        // hotpatch delegates wholesale to reload_file's [CodeReload] semantics:
                         // nothing is invoked, so entry/args are meaningless, and there is no
                         // compile-only path — a "dry run" would still apply live method
                         // replacements. Reject rather than silently ignore or, worse, apply.
@@ -96,7 +96,7 @@ namespace Unity.Pipeline.Editor.Commands.Scripts
                         {
                             return RunScriptResponse.Fail("Bad Request",
                                 $"{string.Join(" and ", unsupported)} {(unsupported.Count == 1 ? "is" : "are")} not supported with mode=hotpatch: " +
-                                "it applies [HotReload] method replacements in place and never invokes an entry point. " +
+                                "it applies [CodeReload] method replacements in place and never invokes an entry point. " +
                                 "Use mode=ephemeral to run an entry point.",
                                 total.ElapsedMilliseconds);
                         }
@@ -286,13 +286,13 @@ namespace Unity.Pipeline.Editor.Commands.Scripts
         }
 
         /// <summary>
-        /// hotpatch mode: apply in-place <c>[HotReload]</c> method replacements to already-loaded
+        /// hotpatch mode: apply in-place <c>[CodeReload]</c> method replacements to already-loaded
         /// types, delegating to the existing <c>reload_file</c> command so its behavior/tests are
         /// preserved. The result is re-shaped into a <see cref="RunScriptResponse"/>.
         /// </summary>
         private static RunScriptResponse RunHotpatch(string file, bool pdb, int timeoutMs, Stopwatch total)
         {
-            var hr = HotReloadCommands.ReloadFile(file, timeoutMs, null, pdb);
+            var hr = CodeReloadCommands.ReloadFile(file, timeoutMs, null, pdb);
 
             // reload_file reports a single duration for the whole reload (compile + apply); surface
             // it as executeMs rather than mislabeling it compile time. compileMs stays 0 here.
@@ -314,7 +314,7 @@ namespace Unity.Pipeline.Editor.Commands.Scripts
             var diagnostics = (hr.Diagnostics ?? new List<string>())
                 .Select(d => new DiagnosticInfo { Severity = "error", Message = d })
                 .ToList();
-            return RunScriptResponse.Fail(hr.Error ?? "Hot Reload Failed", hr.ErrorDetails, total.ElapsedMilliseconds,
+            return RunScriptResponse.Fail(hr.Error ?? "Code Reload Failed", hr.ErrorDetails, total.ElapsedMilliseconds,
                 diagnostics, 0, reloadMs, hr.AssemblyName);
         }
 
