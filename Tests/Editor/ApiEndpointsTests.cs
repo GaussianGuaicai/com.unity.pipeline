@@ -5,6 +5,7 @@ using Unity.Pipeline.Commands;
 using Unity.Pipeline.Editor;
 using Unity.Pipeline.Models;
 using Newtonsoft.Json.Linq;
+using UnityEngine;
 using UnityEngine.TestTools;
 using System.Text.RegularExpressions;
 
@@ -610,11 +611,11 @@ namespace Unity.Pipeline.Tests.Editor
             // Arrange
             var invalidRequest = new CommandExecutionRequest("nonexistent_command");
 
+            LogAssert.Expect(LogType.Error, new Regex("^ExecuteCommandByName: No command named"));
+
             // Act - Execute invalid command via /api/exec endpoint using unified Pipeline client
             var response = await m_PipelineClient.PostJsonAsync("/api/exec", invalidRequest);
             var responseContent = response.RawResponse;
-
-            LogAssert.Expect(new Regex("^ExecuteCommandByName: No command named"));
 
             // Assert - Should return error
             Assert.IsFalse(response.IsSuccess, "Should return error for invalid command");
@@ -634,11 +635,11 @@ namespace Unity.Pipeline.Tests.Editor
             var invalidRequest = new CommandExecutionRequest("log_editor");
             // Intentionally not setting the 'message' parameter to test validation
 
+            LogAssert.Expect(LogType.Error, "ExecuteCommandByName: Parameter validation failed: Required parameter 'message' is missing or empty");
+
             // Act - Execute command with missing parameter via /api/exec endpoint using unified Pipeline client
             var response = await m_PipelineClient.PostJsonAsync("/api/exec", invalidRequest);
             var responseContent = response.RawResponse;
-
-            LogAssert.Expect("ExecuteCommandByName: Parameter validation failed: Required parameter 'message' is missing or empty");
 
             // Assert - Should return validation error
             Assert.IsFalse(response.IsSuccess, "Should return error for missing required parameter");
@@ -678,10 +679,10 @@ namespace Unity.Pipeline.Tests.Editor
             var request = new CommandExecutionRequest("get_console_logs");
             request.Parameters["limit"] = "not-a-number";
 
+            LogAssert.Expect(LogType.Error, new Regex("^ExecuteCommandByName: Parameter conversion failed: Parameter 'limit'"));
+
             // Act
             var response = await m_PipelineClient.PostJsonAsync("/api/exec", request);
-
-            LogAssert.Expect(new Regex("^ExecuteCommandByName: Parameter conversion failed: Parameter 'limit'"));
 
             // Assert - pin the HTTP contract, not just "some failure": without the status and
             // category, a regression to the command-execution handler would still pass.
@@ -754,9 +755,9 @@ namespace Unity.Pipeline.Tests.Editor
             request.Parameters["name"] = "CLI978_should_not_be_created";
             request.Parameters["parent"] = true;
 
-            var response = await m_PipelineClient.PostJsonAsync("/api/exec", request);
+            LogAssert.Expect(LogType.Error, new Regex("^ExecuteCommandByName: Parameter conversion failed: Parameter 'parent'"));
 
-            LogAssert.Expect(new Regex("^ExecuteCommandByName: Parameter conversion failed: Parameter 'parent'"));
+            var response = await m_PipelineClient.PostJsonAsync("/api/exec", request);
 
             Assert.IsFalse(response.IsSuccess, "A declined token should not succeed");
             Assert.AreEqual(400, response.StatusCode,
@@ -796,11 +797,11 @@ namespace Unity.Pipeline.Tests.Editor
             request.Parameters["target"] = "/CLI978_no_such_object";
             request.Parameters["parent"] = "";
 
-            var response = await m_PipelineClient.PostJsonAsync("/api/exec", request);
-
             // The command runs and fails at target resolution — which is itself the proof that
             // `parent` bound. That failure logs an error, so it has to be declared.
-            LogAssert.Expect(new Regex("Could not resolve 'target'"));
+            LogAssert.Expect(LogType.Error, new Regex("Could not resolve 'target'"));
+
+            var response = await m_PipelineClient.PostJsonAsync("/api/exec", request);
 
             // The error CATEGORY is not the discriminator here: set_parent's own resolve failure
             // also throws ArgumentException, so it lands in "Parameter Validation Failed" too. What
@@ -1064,8 +1065,8 @@ namespace Unity.Pipeline.Tests.Editor
         public async Task ApiExec_UnknownCommandViaArgv_MatchesTheStructuredEnvelope()
         {
             // Both calls log the same registry error; expect one per call.
-            LogAssert.Expect(new Regex("^ExecuteCommandByName: No command named"));
-            LogAssert.Expect(new Regex("^ExecuteCommandByName: No command named"));
+            LogAssert.Expect(LogType.Error, new Regex("^ExecuteCommandByName: No command named"));
+            LogAssert.Expect(LogType.Error, new Regex("^ExecuteCommandByName: No command named"));
 
             var viaArgv = await m_PipelineClient.PostJsonAsync("/api/exec",
                 new { argv = new[] { "no_such_command_xyz" } });
@@ -1172,7 +1173,7 @@ namespace Unity.Pipeline.Tests.Editor
         {
             // The preflight must reproduce ValidateCommandParameters' wording exactly, or the two
             // request forms would diagnose the same mistake differently.
-            LogAssert.Expect("ExecuteCommandByName: Parameter validation failed: Required parameter 'message' is missing or empty");
+            LogAssert.Expect(LogType.Error, "ExecuteCommandByName: Parameter validation failed: Required parameter 'message' is missing or empty");
 
             var viaArgv = await m_PipelineClient.PostJsonAsync("/api/exec",
                 new { argv = new[] { "log_editor" } });

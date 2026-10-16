@@ -13,6 +13,14 @@ using Unity.Scripting.LifecycleManagement;
 
 namespace Unity.Pipeline.Editor
 {
+#if !UNITY_2023_2_OR_NEWER
+    internal interface IAnalytic
+    {
+        interface IData { }
+        bool TryGatherData(out IData data, out Exception error);
+    }
+#endif
+
     /// <summary>
     /// Reports pipeline usage to Unity's editor analytics: one session-start event on the first
     /// command a client executes, one event per command executed after that, and one session-stop
@@ -74,7 +82,24 @@ namespace Unity.Pipeline.Editor
         /// <summary>
         /// The send call, indirected so tests can capture events instead of shipping them.
         /// </summary>
-        internal static Action<IAnalytic> s_Send = analytic => EditorAnalytics.SendAnalytic(analytic);
+        internal static Action<IAnalytic> s_Send = SendAnalytic;
+
+        private static void SendAnalytic(IAnalytic analytic)
+        {
+    #if UNITY_2023_2_OR_NEWER
+            EditorAnalytics.SendAnalytic(analytic);
+#else
+            if (!EditorAnalytics.enabled || !analytic.TryGatherData(out var data, out _))
+                return;
+
+            var eventName = analytic is SessionStartedAnalytic ? SessionStartedEventName
+                : analytic is CommandExecutedAnalytic ? CommandExecutedEventName
+                : SessionStoppedEventName;
+            var limit = analytic is CommandExecutedAnalytic ? CommandEventsPerHour : SessionEventsPerHour;
+            if (EditorAnalytics.RegisterEventWithLimit(eventName, limit, MaxElements, VendorKey) == AnalyticsResult.Ok)
+                EditorAnalytics.SendEventWithLimit(eventName, data);
+#endif
+        }
 
         /// <summary>
         /// The session latch as stored in SessionState: whether the start event has been sent this
@@ -316,8 +341,10 @@ namespace Unity.Pipeline.Editor
             public long sessionDuration;
         }
 
+    #if UNITY_2023_2_OR_NEWER
         [AnalyticInfo(eventName: SessionStartedEventName, vendorKey: VendorKey,
             maxEventsPerHour: SessionEventsPerHour, maxNumberOfElements: MaxElements)]
+    #endif
         internal class SessionStartedAnalytic : IAnalytic
         {
             private readonly SessionStartedData m_Data;
@@ -332,8 +359,10 @@ namespace Unity.Pipeline.Editor
             }
         }
 
+    #if UNITY_2023_2_OR_NEWER
         [AnalyticInfo(eventName: CommandExecutedEventName, vendorKey: VendorKey,
             maxEventsPerHour: CommandEventsPerHour, maxNumberOfElements: MaxElements)]
+    #endif
         internal class CommandExecutedAnalytic : IAnalytic
         {
             private readonly CommandExecutedData m_Data;
@@ -348,8 +377,10 @@ namespace Unity.Pipeline.Editor
             }
         }
 
+    #if UNITY_2023_2_OR_NEWER
         [AnalyticInfo(eventName: SessionStoppedEventName, vendorKey: VendorKey,
             maxEventsPerHour: SessionEventsPerHour, maxNumberOfElements: MaxElements)]
+    #endif
         internal class SessionStoppedAnalytic : IAnalytic
         {
             private readonly SessionStoppedData m_Data;

@@ -21,3 +21,7 @@ Run a compile-only compatibility check with Unity 2022.3:
 ```
 
 Use Unity Test Framework for focused command tests before running the full editor suite. Keep editor tests isolated from the live server by using `PipelineTestServer`.
+
+The package requires Test Framework 1.3.9 or newer for its `async Task` tests.
+Keep Runtime tests available in PlayMode and Players, with explicit NUnit and
+Newtonsoft references; do not make the assembly Editor-only to hide reference errors.

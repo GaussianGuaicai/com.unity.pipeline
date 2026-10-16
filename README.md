@@ -1,8 +1,14 @@
 # Unity Pipeline Package
 
-[![Unity Version](https://img.shields.io/badge/Unity-6.0%2B-blue.svg)](https://unity3d.com/unity/whats-new/2023.3.0)
+[![Unity Version](https://img.shields.io/badge/Unity-2022.3%2B-blue.svg)](https://unity.com/releases/editor/whats-new/2022.3.0)
 
 Transform Unity Editor into a programmable automation element for CI/CD pipelines and development workflows. The package exposes a running Unity Editor (or development Player) over a local HTTP API so external tools, scripts, or agents can execute commands remotely.
+
+## Compatibility focus
+
+This repository adapts upstream Unity Pipeline for Unity 2022.3 LTS and newer, with compatibility validated in Unity 2022.3.62f1. Version-specific API fallbacks preserve the upstream command contracts, including Editor analytics on older Editors. The Input System remains optional; input simulation returns a structured unavailable result when it is not installed or enabled.
+
+The package requires Unity Test Framework 1.3.9 or newer for its async tests. To run the package tests, add `com.unity.pipeline` to the project's `testables` list in `Packages/manifest.json`.
 
 ## Install the Unity CLI
 

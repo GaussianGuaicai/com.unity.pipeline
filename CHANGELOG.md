@@ -5,6 +5,16 @@ All notable changes to this package will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- [AUTHAPI-49] Support Editor analytics on Unity 2022.3.
+- [AUTHAPI-68] Use cross-version log assertions in endpoint tests.
+
+### Changed
+- Require Test Framework 1.3.9 for async tests.
+- Preserve PlayMode tests with explicit NUnit and JSON dependencies.
+
 ## [0.6.0-exp.1] - 2026-08-31
 
 ### Fixed

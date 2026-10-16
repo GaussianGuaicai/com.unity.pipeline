@@ -387,7 +387,7 @@ namespace Unity.Pipeline.Tests.Editor
                     "With no command there is nothing for analytics to say, so it is not queued at all");
             }
 
-            LogAssert.Expect(new Regex("^ExecuteCommandByName: No command named"));
+            LogAssert.Expect(LogType.Error, new Regex("^ExecuteCommandByName: No command named"));
         }
 
         [Test]
