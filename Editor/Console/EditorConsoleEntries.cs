@@ -38,6 +38,7 @@ namespace Unity.Pipeline.Editor.Console
         static readonly MethodInfo k_SetFilteringText;
         static readonly MethodInfo k_GetConsoleFlags;
         static readonly MethodInfo k_SetConsoleFlags;
+        static readonly MethodInfo k_GetCountsByType;
         static readonly Type k_LogEntryType;
         static readonly FieldInfo k_MessageField;
         static readonly FieldInfo k_ModeField;
@@ -70,6 +71,7 @@ namespace Unity.Pipeline.Editor.Console
             k_GetEntryInternal = logEntries.GetMethod("GetEntryInternal", statics);
             k_GetFilteringText = logEntries.GetMethod("GetFilteringText", statics);
             k_SetFilteringText = logEntries.GetMethod("SetFilteringText", statics);
+            k_GetCountsByType = logEntries.GetMethod("GetCountsByType", statics);
 
             var consoleFlags = logEntries.GetProperty("consoleFlags", statics);
             k_GetConsoleFlags = consoleFlags?.GetGetMethod(true);
@@ -177,6 +179,27 @@ namespace Unity.Pipeline.Editor.Console
                     TryRestore(k_SetFilteringText, filter);
                 if (flagsMutated)
                     TryRestore(k_SetConsoleFlags, flags);
+            }
+        }
+
+        internal static bool TryGetCounts(out int errors, out int warnings, out int logs)
+        {
+            errors = warnings = logs = 0;
+            if (k_GetCountsByType == null)
+                return false;
+
+            try
+            {
+                var counts = new object[] { 0, 0, 0 };
+                k_GetCountsByType.Invoke(null, counts);
+                errors = (int)counts[0];
+                warnings = (int)counts[1];
+                logs = (int)counts[2];
+                return true;
+            }
+            catch
+            {
+                return false;
             }
         }
 

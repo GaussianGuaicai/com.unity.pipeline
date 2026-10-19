@@ -1,3 +1,4 @@
+#if UNITY_2023_2_OR_NEWER
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -366,3 +367,14 @@ namespace Unity.Pipeline.Editor
         }
     }
 }
+#else
+namespace Unity.Pipeline.Editor
+{
+    internal static class PipelineAnalytics
+    {
+        internal static void RecordCommandExecuted(in CommandExecutionInfo info) { }
+
+        internal static void SendSessionStoppedIfStarted() { }
+    }
+}
+#endif
