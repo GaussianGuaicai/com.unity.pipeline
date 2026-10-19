@@ -32,7 +32,7 @@ started handling work — not when the Editor launched or the server bound its p
 | `batchmode` | The Editor was launched with `-batchmode`. |
 | `automated` | The Editor was launched with `-automated`. |
 | `browserAllowed` | The server accepts sandboxed browser clients (the limited-CORS path). Off unless enabled in the Pipeline settings. |
-| `dynamicPortAssignation` | The port was auto-assigned from the server's range rather than pinned in the settings asset. |
+| `dynamicPortAssignation` | The port was auto-assigned from the server's range rather than pinned in the editor settings. |
 | `hotReloadWatcherEnabled` | The `.cs` change watcher is running. |
 
 A session spans a Unity **process**. The latch lives in `SessionState`, which survives domain
@@ -135,4 +135,4 @@ lost in the frame the Editor quits or reloads its domain.
 
 - [Creating commands](creating-commands.md) — where a command's name and tags come from.
 - [Connectivity](connectivity.md) — the port and CORS settings the session event reports.
-- [Hot reload](hot-reload.md) — the watcher whose state the session event reports.
+- [Code reload](code-reload.md) — the watcher whose state the session event reports.

@@ -183,6 +183,10 @@ enum Op : uint
     // into LoweredMethod.LayoutByTokIdx.
     newarr_vt,
     ldlen,          // [op, dst, arr_src]
+    arr_bounds_check, // [op, arr_src, idx_src] — throw IndexOutOfRange if (uint)idx >= len; no dst.
+                      // Emitted eagerly at ldelema: .NET bounds-checks AT ldelema, but the
+                      // interpreter's element-address phantom defers to the consumer, so an
+                      // unconsumed address (unused ref local, release codegen) skipped the check.
     ldelem_i4,      // [op, dst, arr, idx]
     ldelem_r4,
     ldelem_o,
@@ -201,6 +205,9 @@ enum Op : uint
     // dst = 0xFFFFFFFF for void calls (ret discarded)
     // recv = 0xFFFFFFFF for static calls
     call_script,    // callee is a script-defined method; tok_idx in recv slot (reuse)
+    call_script_virt, // same shape as call_script; re-resolves the callee from the RECEIVER's
+                      // runtime ScriptTypeDescriptor (virtual dispatch — callvirt on a virtual
+                      // script method; plain `call`/base.M() stays call_script)
     call_host,      // callee is a host entry
     // call_host with byref args. After arg0..argN comes a writeback table:
     //   wbCount, [argIdx, frameSlot, kind] × wbCount
@@ -217,7 +224,14 @@ enum Op : uint
                     // via ParsedAssembly.TokenTypes) so ToString/Format render the member name
     new_delegate,   // [op, dst, tok_idx, recv]  delegate creation (ldftn/ldvirtftn + newobj);
                     // tok_idx indexes LoweredMethod.DelegateSiteByTokIdx (pre-resolved target +
-                    // delegate type); recv is the receiver's O slot (holds null for statics)
+                    // delegate type); recv is the receiver's O slot (holds null for statics).
+                    // A delegate TYPE naming a SCRIPT type (Action<Node>) has no runtime
+                    // System.Type: the executor (DelegateSite.DelegateType == null) builds an
+                    // internal ScriptDelegate instead of a CLR Delegate.
+    invoke_script_delegate, // [op, dst, tok_idx, recv, argc, arg0, ...]  invoke a ScriptDelegate
+                    // held in O slot recv; dst = 0xFFFFFFFF for a void delegate. Re-enters the VM
+                    // on the target (captured receiver prepended) through InvokeDelegateTarget,
+                    // like the CLR ScriptDelegateAdapter.
 
     // --- Misc ---
     box,            // [op, dst, src]  — read slot as object into refFrame
@@ -353,7 +367,7 @@ enum Op : uint
     // IL `endfinally` lowers to br_cont, which pops the next continuation and jumps to it —
     // chaining inner finally → outer finally → leave target. Exceptions thrown inside a try
     // still propagate without running the finally (the whole dispatch falls back to the
-    // original compiled body via HotReloadRegistry.TryInvokeHotReload).
+    // original compiled body via CodeReloadRegistry.TryInvokeCodeReload).
     push_cont,      // [op, target_ip]  — push an IR continuation address
     br_cont,        // [op]             — pop a continuation address and jump to it
 

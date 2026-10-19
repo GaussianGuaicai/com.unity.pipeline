@@ -99,11 +99,9 @@ namespace Unity.Pipeline.Editor.Commands.Baking
         }
 
         [CliCommand("lighting_bake_status", "Get the status of the last lighting bake: idle | baking | completed.", MainThreadRequired = false, Tags = new[] { "baking/lighting" })]
-        public static string LightingBakeStatus()
+        public static JToken LightingBakeStatus()
         {
-            if (File.Exists(StatusFile))
-                return File.ReadAllText(StatusFile);
-            return "{\"status\":\"idle\"}";
+            return StatusFileReader.ReadOrIdle(StatusFile);
         }
 
         [CliCommand("cancel_lighting_bake", "Cancel an in-progress lighting bake (Lightmapping.Cancel()).", Tags = new[] { "baking/lighting" })]
@@ -358,7 +356,11 @@ namespace Unity.Pipeline.Editor.Commands.Baking
                 Available = true,
                 Lightmapper = ls.lightmapper.ToString(),
                 BakedGI = ls.bakedGI,
+                // LightingSettings.realtimeGI is obsolete from 6000.7 (Enlighten realtime GI removal, no
+                // replacement API yet) but still functions; suppress only the deprecation warning here.
+#pragma warning disable 618
                 RealtimeGI = ls.realtimeGI,
+#pragma warning restore 618
                 DirectSampleCount = ls.directSampleCount,
                 IndirectSampleCount = ls.indirectSampleCount,
                 EnvironmentSampleCount = ls.environmentSampleCount,
@@ -392,7 +394,9 @@ namespace Unity.Pipeline.Editor.Commands.Baking
                     if (!dryRun) ls.bakedGI = value.Value<bool>();
                     return true;
                 case "realtimeGI":
+#pragma warning disable 618
                     if (!dryRun) ls.realtimeGI = value.Value<bool>();
+#pragma warning restore 618
                     return true;
                 case "directSampleCount":
                     if (!dryRun) ls.directSampleCount = value.Value<int>();

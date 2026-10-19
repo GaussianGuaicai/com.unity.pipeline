@@ -71,6 +71,14 @@ namespace Unity.Pipeline.Editor.Commands.Build
         static BuildTarget s_PendingTarget;
         static string s_PendingOutput;
         static BuildOptions s_PendingOptions;
+
+        /// <summary>
+        /// BuildOptions of the scripted build currently inside BuildPipeline.BuildPlayer, or null
+        /// when no `build` command is running. Build processors read it because a scripted build
+        /// with BuildOptions.Development is a development build even when the Build Settings
+        /// toggle (EditorUserBuildSettings.development) is off.
+        /// </summary>
+        internal static BuildOptions? ActiveScriptedBuildOptions { get; private set; }
         static string[] s_PendingScenes;
         static string s_PendingProfile;
         static string s_PendingBuildId;
@@ -219,41 +227,32 @@ namespace Unity.Pipeline.Editor.Commands.Build
             "BuildReport (files, packedAssets, buildSteps, errors, warnings) once completed. Retained until the next build.",
             MainThreadRequired = false,
             Tags = new[] { "build" })]
-        public static string BuildStatus()
+        public static JToken BuildStatus()
         {
-            if (!File.Exists(StatusFile))
-                return "{\"status\":\"idle\"}";
+            var status = StatusFileReader.ReadOrIdle(StatusFile);
 
-            var text = File.ReadAllText(StatusFile);
-
-            // While building, recompute elapsedMs at read time so polling shows live progress.
-            try
+            // While building, recompute elapsedMs at read time so polling shows live progress. A file
+            // that is not a JSON object cannot carry a status, so it passes through untouched.
+            var doc = status as JObject;
+            if (doc != null && (string)doc["status"] == "building")
             {
-                var doc = JObject.Parse(text);
-                if ((string)doc["status"] == "building")
+                long elapsed = 0;
+                var startedStr = (string)doc["buildStartedAt"];
+                if (!string.IsNullOrEmpty(startedStr) &&
+                    DateTime.TryParse(startedStr, null, System.Globalization.DateTimeStyles.RoundtripKind, out var started))
                 {
-                    long elapsed = 0;
-                    var startedStr = (string)doc["buildStartedAt"];
-                    if (!string.IsNullOrEmpty(startedStr) &&
-                        DateTime.TryParse(startedStr, null, System.Globalization.DateTimeStyles.RoundtripKind, out var started))
-                    {
-                        elapsed = (long)Math.Max(0, (DateTime.UtcNow - started.ToUniversalTime()).TotalMilliseconds);
-                    }
-
-                    return JsonConvert.SerializeObject(new
-                    {
-                        status = "building",
-                        buildId = (string)doc["buildId"],
-                        elapsedMs = elapsed
-                    });
+                    elapsed = (long)Math.Max(0, (DateTime.UtcNow - started.ToUniversalTime()).TotalMilliseconds);
                 }
-            }
-            catch
-            {
-                // Malformed file — fall through and return it verbatim.
+
+                return new JObject
+                {
+                    ["status"] = "building",
+                    ["buildId"] = (string)doc["buildId"],
+                    ["elapsedMs"] = elapsed
+                };
             }
 
-            return text;
+            return status;
         }
 
         /// <summary>
@@ -331,7 +330,10 @@ namespace Unity.Pipeline.Editor.Commands.Build
                 options = options
             };
 
-            var report = BuildPipeline.BuildPlayer(buildOptions);
+            ActiveScriptedBuildOptions = options;
+            BuildReport report;
+            try { report = BuildPipeline.BuildPlayer(buildOptions); }
+            finally { ActiveScriptedBuildOptions = null; }
             WriteStatusJson(Project(buildId, report));
         }
 

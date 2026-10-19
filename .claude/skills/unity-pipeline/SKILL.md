@@ -1,6 +1,6 @@
 ---
 name: unity-pipeline
-description: Drive a running Unity Editor or development Player from the command line via the unity-pipeline package — install the package, keep the editor ticking while unfocused, run the edit→recompile→run_tests loop, evaluate C#, and hot-reload files at runtime. Use when an agent needs to control a live Unity instance, automate Unity tests, recompile scripts headlessly, or apply runtime hot reloads. Assumes the `unity` CLI is on PATH.
+description: Drive a running Unity Editor or development Player from the command line via the unity-pipeline package — install the package, keep the editor ticking while unfocused, run the edit→recompile→run_tests loop, evaluate C#, and code-reload files at runtime. Use when an agent needs to control a live Unity instance, automate Unity tests, recompile scripts headlessly, or apply runtime reloads. Assumes the `unity` CLI is on PATH.
 ---
 
 # Unity Pipeline (agent control)
@@ -60,7 +60,7 @@ is the distinction this loop depends on:
 
 Do not retry an exit 2 unchanged, and do not rewrite a command line on an exit 6.
 
-## 3. Runtime hot reload
+## 3. Runtime code reload
 
 Change gameplay code in a **running** game with no domain reload. The game must be live:
 enter Editor Play Mode (`unity command editor_play`) or run a dev Player. A
@@ -68,11 +68,11 @@ The runtime Pipeline driver (enabled via Project Settings > Pipeline > Runtime) 
 registration). Mono only — Editor Play Mode and Mono desktop dev builds, not IL2CPP. The token
 is auto-injected for local requests.
 
-### Prefer: in-place — `reload_file`
+### `reload_file`
 
 Edit the method body directly; no separate file, no boilerplate.
 
-1. Tag the method `[HotReload]` on the MonoBehaviour.
+1. Tag the method `[CodeReload]` on the MonoBehaviour.
 2. Edit its body on disk.
 3. Apply (re-run to iterate):
    ```bash
@@ -87,22 +87,9 @@ Edit the method body directly; no separate file, no boilerplate.
 Constraints: `void` instance methods only; **public** members only; debugging requires `--pdb`
 (the default emits no symbols).
 
-### Alternative: with helper — `reload_file_override`
-
-Keep the original method; put the tweak in a **separate** override file.
-
-1. Tag the method `[HotReloadWithOverrides]` and route it via
-   `HotReloadHelper.ExecuteWithHotReload(this, "Update", OriginalUpdate)` (original body in `OriginalUpdate`).
-2. In a **separate file that does not redeclare the target type**, add a `public static`
-   method tagged `[HotReloadOverrideMethod("BossController.Update")]` taking the instance first.
-3. Apply: `unity command reload_file_override --filename Assets/HotReload/BossOverrides.cs`
-
-Constraints: **public** members only; you cannot break into the override.
-
-`unity command hotreload_status` shows active overrides. `reload_file_override*` options: `--timeout <ms>`
+`unity command codereload_status` shows active overrides. `reload_file` options: `--timeout <ms>`
 (default 30000), `--assemblyDir <dir>` (persist DLLs instead of in-memory);
-`cleanup_hotreload --assemblyDir <dir>` clears old DLLs. Both commands validate the file up front
-and return a clear error on misconfiguration (no override found, target type redeclared, bad signature).
+`cleanup_codereload --assemblyDir <dir>` clears old DLLs.
 
 ## 4. Bulk construction: `run_script` (the builder pattern)
 
@@ -132,7 +119,7 @@ Rules of thumb:
   The wait is bounded by `timeout_ms`; on expiry the task keeps running detached.
 - Runtime exceptions come back with `file:line` mapped to your source (a source-mapped PDB is
   always emitted for executing runs; they compile unoptimized).
-- `--mode hotpatch` instead applies `[HotReload]` in-place method replacements (delegates to
+- `--mode hotpatch` instead applies `[CodeReload]` in-place method replacements (delegates to
   `reload_file`); `entry`/`args`/`dry_run` are rejected there and `references`/`defines` don't apply.
 
 ## 5. Quick C# eval (Runtime)
@@ -176,7 +163,7 @@ CSV columns: `Category, Severity, Areas, Description, RelativePath, Line, Descri
   thread until dismissed. If a command runs long, check `unity command editor_status` (answers
   instantly even when blocked); `status: "blocked_by_dialog"` means stop retrying and tell the
   human what's blocking (its `dialog.title`/`message`/`buttons`) — it can't be clicked over CLI.
-- **Hot reload needs the game running.** `reload_file_override` / `reload_file` apply to a live
+- **Code reload needs the game running.** `reload_file` applies to a live
   game — enter Editor Play Mode (`unity command editor_play`) first, or run a dev Player.
 - **Player-only commands need a dev Player.** `log`, `set_timescale`, `runtime_status`, etc. hit
   the Runtime server, which does not run in the Editor.

@@ -4,7 +4,7 @@ using System.IO;
 using System.Linq;
 using Unity.Pipeline.Commands;
 using Unity.Pipeline.Compilation;
-using Unity.Pipeline.HotReload;
+using Unity.Pipeline.CodeReload;
 using UnityEditor;
 using UnityEditor.Networking.PlayerConnection;
 using UnityEngine;
@@ -13,14 +13,14 @@ using UnityEngine.Networking.PlayerConnection;
 namespace Unity.Pipeline.Editor.Commands
 {
     /// <summary>
-    /// Compile a source file's [HotReload] override(s) in the editor and push the IL to a connected
+    /// Compile a source file's [CodeReload] override(s) in the editor and push the IL to a connected
     /// player over PlayerConnection — the Profiler/Console channel (tunnels over USB, no open port or
     /// token). The player applies it through the IlInterpreter interpreter (IL2CPP-safe: no Assembly.Load,
     /// no Roslyn on device).
     ///
     /// <c>filename</c> may be a single .cs file or a folder: a folder is walked recursively and every
-    /// .cs that opts into hot reload is compiled and pushed once. For a continuous watch, use the Hot
-    /// Reload Interpreter Watch section of the Pipeline Settings inspector (<see cref="EditorHotReloadWatcher"/>).
+    /// .cs that opts into code reload is compiled and pushed once. For a continuous watch, use the Hot
+    /// Reload Interpreter Watch section of the Pipeline settings page, Project Settings > Pipeline > Editor (<see cref="EditorCodeReloadWatcher"/>).
     ///
     /// Requires a Development Build connected to the editor (Build Settings → Autoconnect Profiler,
     /// or attach via the Profiler/Console) with the runtime Pipeline enabled. The player's
@@ -45,10 +45,10 @@ namespace Unity.Pipeline.Editor.Commands
         }
 
         [CliCommand("reload_file_player_interpreter",
-            "Compile a file's (or folder's) [HotReload] method(s) and push the IL to a connected player (IL2CPP-safe) over PlayerConnection. Folders are walked recursively and pushed once.",
-            MainThreadRequired = true, Tags = new[] { "scripts/hotreload" })]
+            "Compile a file's (or folder's) [CodeReload] method(s) and push the IL to a connected player (IL2CPP-safe) over PlayerConnection. Folders are walked recursively and pushed once.",
+            MainThreadRequired = true, Tags = new[] { "scripts/codereload" })]
         public static object PushReload(
-            [CliArg("filename", "Source .cs file or a folder containing [HotReload] methods (e.g. Assets/pong.cs or Assets/Scripts)", Required = true)] string filename,
+            [CliArg("filename", "Source .cs file or a folder containing [CodeReload] methods (e.g. Assets/pong.cs or Assets/Scripts)", Required = true)] string filename,
             [CliArg("player", "Target connected player id; -1 = broadcast to all connected players")] int player = -1)
         {
             if (string.IsNullOrWhiteSpace(filename))
@@ -64,15 +64,15 @@ namespace Unity.Pipeline.Editor.Commands
             return new { success = ok, message = summary, diagnostics };
         }
 
-        /// <summary>Compile and push every hot-reloadable .cs under a folder once. Files that don't opt into
-        /// hot reload are skipped (not errors).</summary>
+        /// <summary>Compile and push every reloadable .cs under a folder once. Files that don't opt into
+        /// code reload are skipped (not errors).</summary>
         private static object PushFolderOnce(string folder, int player)
         {
             List<string> files;
             try
             {
                 files = Directory.EnumerateFiles(folder, "*.cs", SearchOption.AllDirectories)
-                    .Where(FileMentionsHotReload)
+                    .Where(FileMentionsCodeReload)
                     .ToList();
             }
             catch (Exception ex)
@@ -81,7 +81,7 @@ namespace Unity.Pipeline.Editor.Commands
             }
 
             if (files.Count == 0)
-                return new { success = false, error = $"No .cs files mentioning [HotReload] found under {folder}" };
+                return new { success = false, error = $"No .cs files mentioning [CodeReload] found under {folder}" };
 
             var pushed = new List<string>();
             var failed = new List<object>();
@@ -104,7 +104,7 @@ namespace Unity.Pipeline.Editor.Commands
         }
 
         /// <summary>Watcher-save push: like <see cref="PushReload"/> for a single file, but diffed
-        /// against the watch-start <see cref="HotReloadBaseline"/> — methods still matching it are
+        /// against the watch-start <see cref="CodeReloadBaseline"/> — methods still matching it are
         /// left running compiled on the device, and a fully up-to-date file skips the compile and
         /// send entirely. The explicit CLI command stays unfiltered as the escape hatch when the
         /// connected player was NOT built from the watched sources (the baseline can't see a
@@ -114,8 +114,8 @@ namespace Unity.Pipeline.Editor.Commands
             DoCompileAndSend(fullPath, player, out _, out _, useBaseline: true);
         }
 
-        /// <summary>Re-push the watched file's/folder's hot-reload overrides to one player, compiled
-        /// from current source. Called by <see cref="EditorHotReloadWatcher"/> when a player
+        /// <summary>Re-push the watched file's/folder's code-reload overrides to one player, compiled
+        /// from current source. Called by <see cref="EditorCodeReloadWatcher"/> when a player
         /// (re)connects while a Player-target watch is active: a restarted player boots the original
         /// AOT code, so everything pushed during its previous run is gone until re-pushed.</summary>
         internal static void RepushAll(string fullPath, bool isFolder, int player)
@@ -130,7 +130,7 @@ namespace Unity.Pipeline.Editor.Commands
             try
             {
                 files = Directory.EnumerateFiles(fullPath, "*.cs", SearchOption.AllDirectories)
-                    .Where(FileMentionsHotReload)
+                    .Where(FileMentionsCodeReload)
                     .ToList();
             }
             catch (Exception ex)
@@ -143,7 +143,7 @@ namespace Unity.Pipeline.Editor.Commands
             foreach (var f in files)
                 if (DoCompileAndSend(f, player, out _, out _, useBaseline: true))
                     pushed++;
-            Debug.Log($"[PushReload] Re-pushed {pushed}/{files.Count} hot-reloadable file(s) to player {player}.");
+            Debug.Log($"[PushReload] Re-pushed {pushed}/{files.Count} reloadable file(s) to player {player}.");
         }
 
         /// <summary>Preprocessor symbols the target player's copy of this file was compiled with:
@@ -171,7 +171,7 @@ namespace Unity.Pipeline.Editor.Commands
         }
 
         /// <summary>Compile the file's overrides and send them to the target player(s). Never throws.
-        /// Failures are logged to the editor console as well as returned: the hot-reload watcher
+        /// Failures are logged to the editor console as well as returned: the code-reload watcher
         /// (Player target) discards the return value, so the console is the only surface where a
         /// failing watch-mode push is visible at all.</summary>
         private static bool DoCompileAndSend(string fullPath, int player, out string summary, out List<string> diagnostics,
@@ -195,14 +195,14 @@ namespace Unity.Pipeline.Editor.Commands
                 // sending nothing would leave the device overlay stuck on "compiling…".
                 if (useBaseline && FileIsUpToDate(fullPath, playerDefines, mustReload))
                 {
-                    summary = "up to date — every [HotReload] method matches the watch-start baseline; nothing pushed";
+                    summary = "up to date — every [CodeReload] method matches the watch-start baseline; nothing pushed";
                     Debug.Log($"[PushReload] {Path.GetFileName(fullPath)}: {summary}");
                     return true;
                 }
 
                 // Compilation happens here in the editor — announce it so the player's status overlay
                 // can show "compiling…" during the gap before the payload (or failure notice) arrives.
-                TrySendNotice(PipelineHotReloadConnect.ReloadPendingMsg, Path.GetFileName(fullPath), player);
+                TrySendNotice(PipelineCodeReloadConnect.ReloadPendingMsg, Path.GetFileName(fullPath), player);
 
                 var compiled = InPlaceReloadProcessor.CompileOverrideForPush(fullPath, playerDefines,
                     useBaseline ? mustReload : null, useBaseline);
@@ -212,7 +212,7 @@ namespace Unity.Pipeline.Editor.Commands
                 // still get here. Nothing to push either way.
                 if (compiled.AllUpToDate)
                 {
-                    summary = "up to date — every [HotReload] method matches the watch-start baseline; nothing pushed";
+                    summary = "up to date — every [CodeReload] method matches the watch-start baseline; nothing pushed";
                     Debug.Log($"[PushReload] {Path.GetFileName(fullPath)}: {summary}");
                     return true;
                 }
@@ -223,7 +223,7 @@ namespace Unity.Pipeline.Editor.Commands
                         ? ":\n- " + string.Join("\n- ", diagnostics)
                         : "";
                     Debug.LogError($"[PushReload] {Path.GetFileName(fullPath)}: {summary}{details}");
-                    TrySendNotice(PipelineHotReloadConnect.ReloadFailedMsg,
+                    TrySendNotice(PipelineCodeReloadConnect.ReloadFailedMsg,
                         $"{Path.GetFileName(fullPath)}: {summary} (details in the editor console)", player);
                     return false;
                 }
@@ -232,7 +232,7 @@ namespace Unity.Pipeline.Editor.Commands
                 // back in THIS response — the player's async ack carries only a warning count (the
                 // member list goes to the device log). Never blocks the push: an unbound member is a
                 // stub that throws only if executed.
-                var unbound = InterpreterHotReloadExecutor.ValidateBindingSurface(
+                var unbound = InterpreterCodeReloadExecutor.ValidateBindingSurface(
                     compiled.IlBytes, compiled.TypeName, compiled.MethodNames, out var validationNote);
                 if (unbound.Count > 0)
                 {
@@ -257,7 +257,7 @@ namespace Unity.Pipeline.Editor.Commands
                     return false;
                 }
 
-                var payload = PipelineHotReloadConnect.Encode(compiled.TypeName, compiled.MethodNames, compiled.IlBytes);
+                var payload = PipelineCodeReloadConnect.Encode(compiled.TypeName, compiled.MethodNames, compiled.IlBytes);
                 var desc = $"{compiled.TypeName} ({Path.GetFileName(fullPath)})";
 
                 // Every player gets its own signed envelope (session nonces differ), so "broadcast"
@@ -302,7 +302,7 @@ namespace Unity.Pipeline.Editor.Commands
             {
                 summary = $"push error: {ex.Message}";
                 Debug.LogError($"[PushReload] {Path.GetFileName(fullPath)}: {summary}");
-                TrySendNotice(PipelineHotReloadConnect.ReloadFailedMsg,
+                TrySendNotice(PipelineCodeReloadConnect.ReloadFailedMsg,
                     $"{Path.GetFileName(fullPath)}: {summary}", player);
                 return false;
             }
@@ -314,7 +314,7 @@ namespace Unity.Pipeline.Editor.Commands
         {
             try
             {
-                var payload = PipelineHotReloadConnect.EncodeText(text);
+                var payload = PipelineCodeReloadConnect.EncodeText(text);
                 if (player >= 0)
                     EditorConnection.instance.Send(msg, payload, player);
                 else
@@ -327,7 +327,7 @@ namespace Unity.Pipeline.Editor.Commands
         {
             EditorConnection.instance.Initialize();
             if (s_Registered) return;
-            EditorConnection.instance.Register(PipelineHotReloadConnect.ResultMsg, OnResult);
+            EditorConnection.instance.Register(PipelineCodeReloadConnect.ResultMsg, OnResult);
             s_Registered = true;
         }
 
@@ -340,7 +340,7 @@ namespace Unity.Pipeline.Editor.Commands
                 s_AckPumpHooked = false;
             }
             if (!s_Registered) return;
-            try { EditorConnection.instance.Unregister(PipelineHotReloadConnect.ResultMsg, OnResult); }
+            try { EditorConnection.instance.Unregister(PipelineCodeReloadConnect.ResultMsg, OnResult); }
             catch { /* connection may already be gone during teardown */ }
             s_Registered = false;
         }
@@ -351,11 +351,11 @@ namespace Unity.Pipeline.Editor.Commands
         {
             if (s_PendingAcks.Count > 0)
                 s_PendingAcks.RemoveAt(0);
-            if (PipelineHotReloadConnect.TryDecodeResult(args.data, out var ok, out var message))
+            if (PipelineCodeReloadConnect.TryDecodeResult(args.data, out var ok, out var message))
             {
                 // A pre-signing player build cannot parse a signed envelope and acks it as malformed
                 // — name the actual fix instead of leaving a mystery.
-                var hint = !ok && message != null && message.Contains("malformed hot-reload push")
+                var hint = !ok && message != null && message.Contains("malformed code-reload push")
                     ? " (if this player build predates push signing, rebuild it with the current com.unity.pipeline package)"
                     : "";
                 Debug.Log($"[PushReload] Player ack: {(ok ? "OK" : "FAILED")} — {message}{hint}");
@@ -432,14 +432,14 @@ namespace Unity.Pipeline.Editor.Commands
             return null;
         }
 
-        /// <summary>Every [HotReload] method in the file still matches the watch-start baseline
+        /// <summary>Every [CodeReload] method in the file still matches the watch-start baseline
         /// (player defines) and none of them was ever pushed. Read failure = not up to date.</summary>
         private static bool FileIsUpToDate(string fullPath, string[] playerDefines, HashSet<string> mustReload)
         {
             try
             {
                 var source = File.ReadAllText(fullPath);
-                return HotReloadBaseline.IsFileUpToDate(fullPath, source, playerDefines, mustReload);
+                return CodeReloadBaseline.IsFileUpToDate(fullPath, source, playerDefines, mustReload);
             }
             catch
             {
@@ -495,11 +495,11 @@ namespace Unity.Pipeline.Editor.Commands
             SessionState.SetString(SkPushedMethods, string.Join("\n", lines));
         }
 
-        // Cheap opt-in filter shared with EditorHotReloadWatcher: a file that never mentions
-        // "HotReload" cannot carry the attribute, so folder scans skip it without compiling.
-        internal static bool FileMentionsHotReload(string path)
+        // Cheap opt-in filter shared with EditorCodeReloadWatcher: a file that never mentions
+        // "CodeReload" cannot carry the attribute, so folder scans skip it without compiling.
+        internal static bool FileMentionsCodeReload(string path)
         {
-            try { return File.ReadAllText(path).Contains("HotReload"); }
+            try { return File.ReadAllText(path).Contains("CodeReload"); }
             catch { return false; }
         }
 

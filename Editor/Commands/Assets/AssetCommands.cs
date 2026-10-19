@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using Unity.Pipeline.Commands;
@@ -7,9 +8,7 @@ using Unity.Pipeline.Models;
 using UnityEditor;
 using UnityEngine;
 using Object = UnityEngine.Object;
-#if UNITY_6000_0_OR_NEWER
-using PhysicsMaterial = UnityEngine.PhysicsMaterial;
-#else
+#if !UNITY_6000_0_OR_NEWER
 using PhysicsMaterial = UnityEngine.PhysicMaterial;
 #endif
 
@@ -396,6 +395,16 @@ namespace Unity.Pipeline.Editor.Commands.Assets
                     return byFullName;
             }
 
+            return FindTypeByShortName(LoadedTypes(), typeName);
+        }
+
+        /// <summary>
+        /// Every type in every loaded, non-dynamic assembly. An assembly whose type list is only
+        /// partly loadable yields the types that did load (<see cref="ReflectionTypeLoadException"/>
+        /// hands those back alongside nulls for the rest).
+        /// </summary>
+        static IEnumerable<Type> LoadedTypes()
+        {
             foreach (var assembly in PipelineUtils.GetLoadedAssemblies())
             {
                 if (assembly.IsDynamic)
@@ -411,14 +420,52 @@ namespace Unity.Pipeline.Editor.Commands.Assets
                     types = ex.Types;
                 }
 
-                foreach (var candidate in types)
-                {
-                    if (candidate != null && candidate.Name == typeName)
-                        return candidate;
-                }
+                foreach (var type in types)
+                    yield return type;
+            }
+        }
+
+        /// <summary>
+        /// The candidate whose short name is <paramref name="typeName"/>, preferring one that derives
+        /// from <see cref="Object"/>; the first non-Object match only when no Object-derived one
+        /// exists; null when nothing matches.
+        ///
+        /// The preference is what keeps a collision deterministic. A short name is not unique: Unity 7
+        /// ships UnityEditor.LightBaking.Material next to UnityEngine.Material, so a plain "first match
+        /// wins" scan answers "Material" differently depending on whether UnityEngine.CoreModule or
+        /// UnityEditor.CoreModule is enumerated first — which varies by project. Preferring the
+        /// Object-derived type makes that answer UnityEngine.Material whatever the order.
+        ///
+        /// It is a preference and not a filter because the two callers do not require the same thing.
+        /// create_asset needs an Object-derived type and rejects anything else itself, with a clearer
+        /// error than "could not resolve". find_assets matches each asset's main type with
+        /// IsAssignableFrom, so an interface is a legitimate filter there — find_assets(type:
+        /// "IAssetMarker") returns every asset implementing it — and dropping non-Object types
+        /// outright would make such a filter unresolvable by its short name.
+        ///
+        /// Fully-qualified names are resolved before this is reached and bypass it entirely.
+        ///
+        /// Order still decides between two Object-derived types sharing a short name, or between two
+        /// non-Object ones when no Object-derived one exists. That ambiguity is real but has no better
+        /// answer here; a fully-qualified name settles it.
+        /// </summary>
+        internal static Type FindTypeByShortName(IEnumerable<Type> candidates, string typeName)
+        {
+            Type fallback = null;
+            foreach (var candidate in candidates)
+            {
+                // Null entries come from ReflectionTypeLoadException.Types, one per type that failed
+                // to load.
+                if (candidate == null || candidate.Name != typeName)
+                    continue;
+
+                if (typeof(Object).IsAssignableFrom(candidate))
+                    return candidate;
+
+                fallback ??= candidate;
             }
 
-            return null;
+            return fallback;
         }
 
         /// <summary>
@@ -561,27 +608,10 @@ namespace Unity.Pipeline.Editor.Commands.Assets
                     return byFullName;
             }
 
-            // Fall back to a short-name match across all loaded types.
-            foreach (var assembly in PipelineUtils.GetLoadedAssemblies())
-            {
-                Type[] types;
-                try
-                {
-                    types = assembly.GetTypes();
-                }
-                catch (ReflectionTypeLoadException ex)
-                {
-                    types = ex.Types;
-                }
-
-                foreach (var candidate in types)
-                {
-                    if (candidate != null && candidate.Name == typeName)
-                        return candidate;
-                }
-            }
-
-            return null;
+            // Fall back to a short-name match across all loaded types, preferring
+            // UnityEngine.Object-derived types — see FindTypeByShortName for why that preference makes
+            // this deterministic rather than assembly-order dependent.
+            return FindTypeByShortName(LoadedTypes(), typeName);
         }
     }
 }

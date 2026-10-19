@@ -1,12 +1,12 @@
 using System;
 using System.IO;
-using Unity.Pipeline.HotReload;
+using Unity.Pipeline.CodeReload;
 using UnityEngine;
 
 namespace Unity.Pipeline.Editor
 {
     /// <summary>
-    /// The per-project hot-reload push-signing keypair: <c>Library/Pipeline/signing.key</c>.
+    /// The per-project code-reload push-signing keypair: <c>Library/Pipeline/signing.key</c>.
     ///
     /// Created lazily at build time (see <c>PipelineRuntimeBuildProcessor</c>) and loaded at push
     /// time (see <c>PushSigner</c>). Living under <c>Library/</c> makes committing it structurally

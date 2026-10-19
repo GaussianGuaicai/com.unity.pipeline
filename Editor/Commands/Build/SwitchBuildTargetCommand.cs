@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using Unity.Pipeline.Commands;
 using UnityEditor;
 using UnityEngine;
@@ -107,11 +108,9 @@ namespace Unity.Pipeline.Editor.Commands.Build
             "Status of the last target switch: idle | switching | completed (with success + activeBuildTarget).",
             MainThreadRequired = false,
             Tags = new[] { "build/targets" })]
-        public static string SwitchBuildTargetStatus()
+        public static JToken SwitchBuildTargetStatus()
         {
-            if (File.Exists(StatusFile))
-                return File.ReadAllText(StatusFile);
-            return "{\"status\":\"idle\"}";
+            return StatusFileReader.ReadOrIdle(StatusFile);
         }
 
         /// <summary>Main-thread pump: performs the queued switch. Blocks the main thread until it returns.</summary>

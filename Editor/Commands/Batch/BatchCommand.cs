@@ -98,7 +98,17 @@ namespace Unity.Pipeline.Editor.Commands.Batch
         {
             "build", "switch_build_target",
             "editor_play", "editor_stop", "editor_pause",
-            "recompile", "eval", "eval_file", "run_script", "menu", "batch"
+            "recompile", "eval", "eval_file", "run_script", "menu", "batch",
+            // A synchronous wait inside a batch cannot make progress: the batch holds the main
+            // thread for its whole turn, so the editor state the condition watches cannot change —
+            // the wait just burns its full timeout inside the batch. Use an async wait_for before
+            // or after the batch instead. (wait_status/wait_cancel are quick reads and stay
+            // batchable.)
+            "wait_for",
+            // Requests a script reload by default (force_domain_reload), on the same grounds as
+            // recompile: the domain reload tears down the batch mid-run. Listed explicitly because
+            // it carries no Player-surface tag, so the runtime-tag guard does not cover it.
+            "cleanup_codereload"
         };
 
         /// <summary>Excluded command families matched by name prefix (e.g. all <c>package_*</c>).</summary>
@@ -465,10 +475,10 @@ namespace Unity.Pipeline.Editor.Commands.Batch
             if (!byName.TryGetValue(name, out var command))
                 throw new ArgumentException($"No command named '{name}' is available (unknown command).");
 
-            if (command.RuntimeOnly)
+            if (command.HasTagInSubtree(CommandInfo.RuntimeTag))
                 throw new ArgumentException(
-                    $"Command '{name}' is not batchable (not_batchable): runtime-only command (Player server " +
-                    "surface); it cannot execute on this Editor server.");
+                    $"Command '{name}' is not batchable (not_batchable): it belongs to the Player command " +
+                    $"surface (tagged '{CommandInfo.RuntimeTag}'); it cannot execute on this Editor server.");
 
             if (typeof(Task).IsAssignableFrom(command.Method.ReturnType))
                 throw new ArgumentException(

@@ -2,6 +2,8 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
+// Use the Unsafe bundled with the package (renamed with a "UnityPipeline." prefix), not the BCL or editor copy.
+using Unsafe = UnityPipeline.System.Runtime.CompilerServices.Unsafe;
 
 #if !NET5_0_OR_GREATER
 // SkipLocalsInit polyfill for the Unity (Mono/netstandard) build — the compiler keys on the
@@ -301,12 +303,21 @@ sealed partial class ScriptInterpreter
             int i => i, bool b => b ? 1 : 0,
             char c => c, byte by => by, sbyte sb => sb, short sh => sh, ushort us => us,
             uint u => unchecked((int)u),
+            // A boxed WIDE value reaches an I4 read when a generic host/delegate call returns
+            // long/double into an O slot and `(int)` converts it (found by fuzzing: a
+            // Func<long,long> result truncated to 0 because these arms were missing).
+            long l => unchecked((int)l), ulong ul => unchecked((int)ul),
+            float fl => (int)fl, double dl => (int)dl,
             Enum => unchecked((int)Convert.ToInt64(a)),
             _ => 0,
         };
 
-        static float CoerceBoxedR4(object? a) =>
-            a is float f ? f : a is int i ? i : a is double d ? (float)d : CoerceBoxedI4(a);
+        static float CoerceBoxedR4(object? a) => a switch
+        {
+            float f => f, int i => i, double d => (float)d,
+            long l => l, ulong ul => ul, // boxed wide → float (see CoerceBoxedI4)
+            _ => CoerceBoxedI4(a),
+        };
 
         // Boxed value → I8, covering everything the interpreter maps to a 64-bit slot plus the
         // narrower families (a host return or delegate arg can arrive boxed as any of them).
@@ -492,7 +503,11 @@ sealed partial class ScriptInterpreter
                         {
                             int dst = (int)irP[ip + 1], src = (int)irP[ip + 2];
                             var v = refStack[bp + src];
-                            refStack[bp + dst] = v is ScriptObject so ? so.Clone() : v;
+                            // Clone ONLY script-STRUCT values (value semantics). Class instances,
+                            // strings, and arrays are reference types — pass them through so a dup
+                            // of an O value can use clone_sc uniformly and still preserve reference
+                            // identity for non-structs.
+                            refStack[bp + dst] = v is ScriptObject so && so.Type.IsScriptStructValue ? so.Clone() : v;
                             ip += 3; break;
                         }
 
@@ -983,7 +998,13 @@ sealed partial class ScriptInterpreter
                             int dst=(int)irP[ip+1]; int o=(int)irP[ip+2]; int tokIdx=(int)irP[ip+3];
                             int tok=lm.Tokens[tokIdx]; var obj=refStack[bp+o];
                             object? val;
-                            if (asm.HostFields.TryGetValue(tok, out var hf)) val=hf.Get(obj);
+                            if (asm.HostFields.TryGetValue(tok, out var hf))
+                            {
+                                // Instance field on a null target: reflection would say "Non-static
+                                // field requires a target" with no script location. Say what and where.
+                                if (obj == null) { int il=(uint)(ip-lm.IrStart)<(uint)lm.IrToIlOffset.Length?lm.IrToIlOffset[ip-lm.IrStart]:0; throw new ScriptRuntimeException($"NullReferenceException: reading field {hf.Name ?? "?"} on a null object{At(method, il)}"); }
+                                val=hf.Get(obj);
+                            }
                             else { int il=(uint)(ip-lm.IrStart)<(uint)lm.IrToIlOffset.Length?lm.IrToIlOffset[ip-lm.IrStart]:0; throw new ScriptRuntimeException($"Unknown field token 0x{tok:X8}{At(method, il)}"); }
                             if (irop==Op.ldfld_i4) *(int*)(numF+dst*4)=CoerceBoxedI4(val);
                             else if (irop==Op.ldfld_r4) *(float*)(numF+dst*4)=CoerceBoxedR4(val);
@@ -995,7 +1016,11 @@ sealed partial class ScriptInterpreter
                             int o=(int)irP[ip+1]; int tokIdx=(int)irP[ip+2]; int s=(int)irP[ip+3];
                             int tok=lm.Tokens[tokIdx]; var obj=refStack[bp+o];
                             object? val=RdObj(numF,refStack,slotT,s,bp);
-                            if (asm.HostFields.TryGetValue(tok, out var hf)) hf.Set(obj, val);
+                            if (asm.HostFields.TryGetValue(tok, out var hf))
+                            {
+                                if (obj == null) { int il=(uint)(ip-lm.IrStart)<(uint)lm.IrToIlOffset.Length?lm.IrToIlOffset[ip-lm.IrStart]:0; throw new ScriptRuntimeException($"NullReferenceException: writing field {hf.Name ?? "?"} on a null object{At(method, il)}"); }
+                                hf.Set(obj, val);
+                            }
                             else { int il=(uint)(ip-lm.IrStart)<(uint)lm.IrToIlOffset.Length?lm.IrToIlOffset[ip-lm.IrStart]:0; throw new ScriptRuntimeException($"Unknown field token 0x{tok:X8}{At(method, il)}"); }
                             ip+=4; break;
                         }
@@ -1183,6 +1208,18 @@ sealed partial class ScriptInterpreter
                             *(int*)(numF+dst*4) = aObj is ScriptVtArray svaL ? svaL.Length : ((System.Array)aObj!).Length;
                             ip+=3; break;
                         }
+                        case Op.arr_bounds_check:
+                        {
+                            int s=(int)irP[ip+1]; int idxSlot=(int)irP[ip+2];
+                            var aObj=refStack[bp+s];
+                            int len = aObj is ScriptVtArray sva ? sva.Length : (aObj as System.Array)?.Length ?? 0;
+                            int idx = RdI4(numF,refStack,slotT,idxSlot,bp);
+                            if (aObj == null)
+                            { int il2=(uint)(ip-lm.IrStart)<(uint)lm.IrToIlOffset.Length?lm.IrToIlOffset[ip-lm.IrStart]:0; throw new ScriptRuntimeException($"NullReferenceException: element address of a null array{At(method, il2)}"); }
+                            if ((uint)idx >= (uint)len)
+                            { int il2=(uint)(ip-lm.IrStart)<(uint)lm.IrToIlOffset.Length?lm.IrToIlOffset[ip-lm.IrStart]:0; throw new ScriptRuntimeException($"array index out of bounds{At(method, il2)}"); }
+                            ip+=3; break;
+                        }
                         case Op.ldelem_o: case Op.ldelem_i4: case Op.ldelem_r4: case Op.ldelem_struct:
                         {
                             int dst=(int)irP[ip+1]; int arrSlot=(int)irP[ip+2]; int idxSlot=(int)irP[ip+3];
@@ -1340,9 +1377,28 @@ sealed partial class ScriptInterpreter
 
                         // --- Script-to-script call (iterative: push caller frame, jump into callee) ---
                         case Op.call_script:
+                        case Op.call_script_virt:
                         {
                             int dstSlot=(int)irP[ip+1]; int tokIdx=(int)irP[ip+2]; int argc=(int)irP[ip+3];
                             var callee=lm.CalleeByTokIdx![tokIdx]!;
+                            if (irop == Op.call_script_virt)
+                            {
+                                // Virtual dispatch: re-resolve from the RECEIVER's runtime type
+                                // (arg 0 — an O-slot ScriptObject; script virtuals live on classes).
+                                var recvObj = RdObj(numF, refStack, slotT, (int)irP[ip+4], bp);
+                                // callvirt on a NULL receiver throws NRE before dispatch — the
+                                // whole point of callvirt over call. Without this the null fell
+                                // through to the static base method and ran it with a null `this`
+                                // (found by fuzzing: `((C0)null).VTag()` returned the base value).
+                                if (recvObj == null)
+                                { int il=(uint)(ip-lm.IrStart)<(uint)lm.IrToIlOffset.Length?lm.IrToIlOffset[ip-lm.IrStart]:0; throw new ScriptRuntimeException($"NullReferenceException: virtual call '{callee.Name}' on a null receiver{At(method, il)}"); }
+                                // Falls back to the static callee when no override is found — for
+                                // an interface STUB there is nothing to fall back to (guard below).
+                                if (recvObj is ScriptObject rvo && ResolveScriptVirtual(rvo.Type, callee) is { } ovr)
+                                    callee = ovr;
+                            }
+                            if (callee.Lowered == null)
+                            { int il=(uint)(ip-lm.IrStart)<(uint)lm.IrToIlOffset.Length?lm.IrToIlOffset[ip-lm.IrStart]:0; throw new ScriptRuntimeException($"no runnable implementation of '{callee.Name}' for this receiver{At(method, il)}"); }
                             var clm=callee.Lowered;
                             int calleeBp=bp+lm.FrameSize;
                             if (!FrameFits(calleeBp, clm) || _framesTop >= MaxCallDepth)
@@ -1385,13 +1441,47 @@ sealed partial class ScriptInterpreter
                             _base=calleeBp+clm.FrameSize;
                             break;
                         }
+                        // --- Delegate creation ---
+                        // A delegate whose TYPE names a script type (e.g. Action<Node>) has no runtime
+                        // System.Type (DelegateSite.DelegateType==null): build an internal ScriptDelegate
+                        // {target, receiver} (fired by invoke_script_delegate) rather than a CLR delegate,
+                        // since a CLR Invoke(Node) can't carry a ScriptObject. Everything else is a CLR
+                        // delegate over the pre-resolved site (see ScriptDelegate / ScriptDelegateAdapter).
                         case Op.new_delegate:
                         {
                             int dstSlot=(int)irP[ip+1]; int tokIdx=(int)irP[ip+2]; int recvSlot=(int)irP[ip+3];
                             var site=lm.DelegateSiteByTokIdx![tokIdx]!;
-                            object? recv=refStack[bp+recvSlot];
-                            refStack[bp+dstSlot]=_owner.GetOrCreateDelegate(site, recv);
+                            object? recv=refStack[bp+recvSlot]; // null for a static method group
+                            refStack[bp+dstSlot] = site.DelegateType == null
+                                ? _owner.CreateScriptDelegate(site, recv)
+                                : _owner.GetOrCreateDelegate(site, recv);
                             ip+=4; break;
+                        }
+
+                        // --- Invoke a script-typed delegate: re-enter the VM on its target ---
+                        // The receiver slot holds a ScriptDelegate; prepend its captured receiver (for a
+                        // lambda's display class or an instance target) and re-enter via the same
+                        // InvokeDelegateTarget plumbing the CLR adapter uses. Args are boxed by slot type
+                        // (like call_host's slow path); the boxed result is unboxed into dst.
+                        case Op.invoke_script_delegate:
+                        {
+                            int dstSlot=(int)irP[ip+1]; int recvSlot=(int)irP[ip+3]; int argc=(int)irP[ip+4];
+                            var sd=refStack[bp+recvSlot] as ScriptDelegate;
+                            if (sd==null)
+                            { int il=(uint)(ip-lm.IrStart)<(uint)lm.IrToIlOffset.Length?lm.IrToIlOffset[ip-lm.IrStart]:0; throw new ScriptRuntimeException($"NullReferenceException: invoked a null delegate{At(method, il)}"); }
+                            bool hasRecv = sd.Receiver != null;
+                            int off = hasRecv ? 1 : 0;
+                            var dargs = new object?[argc + off]; // fresh (adapter allocates too); consumed at Run entry
+                            if (hasRecv) dargs[0] = sd.Receiver;
+                            for (int k=0;k<argc;k++)
+                                dargs[off+k] = RdArg(numF, refStack, slotT, (int)irP[ip+5+k], bp, lm.StructLayouts);
+                            object? ret = _owner.InvokeDelegateTarget(sd.Target, dargs, sd.Generation);
+                            if (dstSlot != -1)
+                            {
+                                if (slotT[dstSlot]==SType.Vt) UnboxVt(numF, dstSlot, lm.StructLayouts![dstSlot]!, ret);
+                                else WrObj(numF, refStack, slotT, dstSlot, ret, bp);
+                            }
+                            ip += 5 + argc; break;
                         }
 
                         case Op.newobj_script:
@@ -1492,8 +1582,13 @@ sealed partial class ScriptInterpreter
                             int dst=(int)irP[ip+1]; int tokIdx=(int)irP[ip+2];
                             if (refStack[bp+dst]==null)
                             {
-                                asm.TypeDefToType.TryGetValue(lm.Tokens[tokIdx], out var d2);
-                                refStack[bp+dst]=ScriptObject.Create(d2!);
+                                int etok=lm.Tokens[tokIdx];
+                                if (asm.TypeDefToType.TryGetValue(etok, out var d2))
+                                    refStack[bp+dst]=ScriptObject.Create(d2);
+                                else
+                                    // Boxed host struct local with no initobj (definite assignment by
+                                    // field stores): the type token's synthetic 0-arg ctor makes the box.
+                                    refStack[bp+dst]=asm.HostCtors[etok].Binding.Invoke(null, Array.Empty<object?>());
                             }
                             ip+=3; break;
                         }
@@ -1501,13 +1596,13 @@ sealed partial class ScriptInterpreter
                         {
                             int dst=(int)irP[ip+1]; int s=(int)irP[ip+2]; int tokIdx=(int)irP[ip+3];
                             int tok=lm.Tokens[tokIdx]; var val=refStack[bp+s];
-                            // Script TypeDef target (`(C0)(object)o`): exact-descriptor check —
-                            // script classes have no inheritance, so identity IS the type test.
-                            // Without this, castclass to a script type silently passed anything
-                            // (found by fuzzing alongside the isinst case below).
+                            // Script TypeDef target (`(C0)(object)o`): descriptor identity OR a
+                            // script BASE of the value's type (derived→base and base-typed
+                            // downcasts both walk the BaseDesc chain — script classes gained
+                            // inheritance; the old exact-identity check rejected `(C1)c` on a C2).
                             if (val != null && irop==Op.castclass && asm.TypeDefToType.TryGetValue(tok, out var scd))
                             {
-                                if (!(val is ScriptObject vso && vso.Type == scd))
+                                if (!(val is ScriptObject vso && IsScriptSubtypeOf(vso.Type, scd)))
                                 { int il=(uint)(ip-lm.IrStart)<(uint)lm.IrToIlOffset.Length?lm.IrToIlOffset[ip-lm.IrStart]:0; throw new ScriptRuntimeException($"InvalidCastException{At(method, il)}: cannot cast to script type {scd.Name}"); }
                             }
                             else if (val != null && asm.TokenTypes.TryGetValue(tok, out var tt))
@@ -1524,6 +1619,13 @@ sealed partial class ScriptInterpreter
                                     { int il=(uint)(ip-lm.IrStart)<(uint)lm.IrToIlOffset.Length?lm.IrToIlOffset[ip-lm.IrStart]:0; throw new ScriptRuntimeException($"InvalidCastException{At(method, il)}: cannot unbox {val.GetType().Name} to {tt.Name}"); }
                                 }
                             }
+                            // unbox.any of NULL into a non-nullable value type throws NRE (.NET).
+                            // A non-O dst (I4/I8/R4/R8/Vt) is exactly a non-nullable value target —
+                            // a Nullable<T> or reference target lowers to an O dst and accepts null.
+                            // Without this, WrObj wrote 0 and the throw was silently swallowed
+                            // (found by fuzzing: `(long)(object)((long?)null)`).
+                            if (irop == Op.unbox_any && val == null && slotT[dst] != SType.O)
+                            { int il=(uint)(ip-lm.IrStart)<(uint)lm.IrToIlOffset.Length?lm.IrToIlOffset[ip-lm.IrStart]:0; throw new ScriptRuntimeException($"NullReferenceException: unboxing a null reference to a value type{At(method, il)}"); }
                             // Route through WrObj: an I4/R4 dst (unbox.any of a primitive) gets the
                             // unboxed value in the numeric frame; an O dst keeps the reference.
                             WrObj(numF, refStack, slotT, dst, val, bp); ip+=4; break;
@@ -1533,10 +1635,11 @@ sealed partial class ScriptInterpreter
                             int dst=(int)irP[ip+1]; int s=(int)irP[ip+2]; int tokIdx=(int)irP[ip+3];
                             int tok=lm.Tokens[tokIdx]; var val=refStack[bp+s];
                             if (val==null) refStack[bp+dst]=null;
-                            // Script TypeDef target (`o is C0`): exact-descriptor identity — covers
-                            // script classes AND boxed script structs (found by fuzzing: threw
-                            // "unallowed type" for `(object)o is C0`).
-                            else if (asm.TypeDefToType.TryGetValue(tok, out var sisd)) refStack[bp+dst]=val is ScriptObject vso2 && vso2.Type == sisd ? val : null;
+                            // Script TypeDef target (`o is C0`): descriptor identity or a script
+                            // BASE of the value's type — covers script classes (incl. inheritance)
+                            // AND boxed script structs (found by fuzzing: threw "unallowed type"
+                            // for `(object)o is C0`; exact identity later broke `c is C1` on a C2).
+                            else if (asm.TypeDefToType.TryGetValue(tok, out var sisd)) refStack[bp+dst]=val is ScriptObject vso2 && IsScriptSubtypeOf(vso2.Type, sisd) ? val : null;
                             else if (asm.TokenTypes.TryGetValue(tok, out var tt)) refStack[bp+dst]=tt.IsInstanceOfType(val)?val:null;
                             else { int il=(uint)(ip-lm.IrStart)<(uint)lm.IrToIlOffset.Length?lm.IrToIlOffset[ip-lm.IrStart]:0; throw new ScriptRuntimeException($"isinst for unallowed type{At(method, il)}"); }
                             ip+=4; break;
@@ -1668,6 +1771,10 @@ sealed partial class ScriptInterpreter
                                 // reloaded body. Raw ScriptObject is useless to the host anyway.
                                 if (av is ScriptObject aso && asm.EnumeratorTypes.TryGetValue(aso.Type, out var aem))
                                     av = new ScriptEnumerator(_owner, aso, aem);
+                                // uint/ulong parameters: the slot boxed as int/long; give the shim the
+                                // declared unsigned type so `Math.Max(uint.MaxValue, 0u)` sees 4294967295, not -1.
+                                if (hostEntry.UnsignedParams is { } up && k < up.Length && up[k] != 0)
+                                    av = up[k] == 4 ? (object)unchecked((uint)CoerceBoxedI4(av)) : unchecked((ulong)CoerceBoxedI8(av));
                                 hArgs[k] = av;
                             }
                             object? ret;
@@ -1880,6 +1987,27 @@ sealed partial class ScriptInterpreter
             if (t[s] == SType.Vt && layouts?[s] is { } lay)
                 return BoxVt(numF, s, lay);
             return RdObj(numF, r, t, s, bp);
+        }
+
+        // True when `t` IS `target` or derives from it through the script base-class chain.
+        static bool IsScriptSubtypeOf(ScriptTypeDescriptor? t, ScriptTypeDescriptor target)
+        {
+            for (var d = t; d != null; d = d.BaseDesc)
+                if (ReferenceEquals(d, target)) return true;
+            return false;
+        }
+
+        // Walk the receiver type's descriptor chain for an override of `baseM` (matched by
+        // name + signature, standard override rules: most-derived wins). Null = no override — the
+        // static callee is already correct. Values in VirtualsBySig are ParsedMethods (stored as
+        // object: ScriptObject.cs doesn't reference the interpreter's nested types).
+        internal static ParsedMethod? ResolveScriptVirtual(ScriptTypeDescriptor? desc, ParsedMethod baseM)
+        {
+            string key = baseM.VirtKey;
+            for (var d = desc; d != null; d = d.BaseDesc)
+                if (d.VirtualsBySig != null && d.VirtualsBySig.TryGetValue(key, out var m))
+                    return (ParsedMethod)m;
+            return null;
         }
 
         static object? RdObj(byte* numF, object?[] r, SType[] t, int s, int bp)

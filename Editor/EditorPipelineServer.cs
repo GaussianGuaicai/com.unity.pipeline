@@ -271,10 +271,6 @@ namespace Unity.Pipeline.Editor
             PipelineAnalytics.RecordCommandExecuted(info);
         }
 
-        // Runtime-only commands (eval, reload_file_override, …) are part of the Player surface; don't
-        // advertise them when a client is connected to the Editor.
-        /// <summary>False: Editor clients don't see runtime-only commands (they belong to the Player surface).</summary>
-        protected override bool IncludeRuntimeOnlyCommands => false;
         /// <summary>Write the shared instance descriptor file so clients can discover this server.</summary>
         protected override void CreateInstanceDescriptor()
         {

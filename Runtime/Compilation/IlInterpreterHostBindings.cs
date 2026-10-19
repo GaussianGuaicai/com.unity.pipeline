@@ -7,7 +7,7 @@ namespace Unity.Pipeline.Compilation
 {
     /// <summary>
     /// Shared IlInterpreter <see cref="IlInterpreter.Interpreter.HostBinding"/> surface used by the
-    /// interpreter-backed hot-reload path. Mirrors IlInterpreter's
+    /// interpreter-backed code-reload path. Mirrors IlInterpreter's
     /// <c>UnityHostBinding.Prototyping()</c> minus the Input System block, Audio, and physics —
     /// anything outside UnityEngine's core module binds on demand via <see cref="ResolveAutoBindType"/>,
     /// so the package forces no engine-module dependency. Reference types use <c>AllowType&lt;T&gt;()</c>
@@ -16,15 +16,14 @@ namespace Unity.Pipeline.Compilation
     /// </summary>
     static class IlInterpreterHostBindings
     {
-// Used by the interpreter-backed hot-reload sink; available in dev players (incl. IL2CPP).
-#if UNITY_EDITOR || DEVELOPMENT_BUILD
+// Used by the interpreter-backed code-reload sink; available in dev players (incl. IL2CPP).
+#if UNITY_EDITOR || ENABLE_PROFILER || ENABLE_RUNTIME_PIPELINE
         /// <summary>
         /// Single source of truth for the interpreter's host surface: BCL + the standard UnityEngine
-        /// types + <c>Debug</c>. Every consumer — eval binding, hot-reload binding, and the build-time
-        /// <c>link.xml</c> preservation set — is a projection of this one builder, so they cannot
-        /// drift. Callers overlay only what is site-specific: eval overlays capturing <c>Debug.Log</c>
-        /// variants; hot reload overlays <c>AllowType(targetType)</c>; link.xml reads
-        /// <see cref="IlInterpreter.Interpreter.HostBinding.RegisteredTypes"/> off the result.
+        /// types + <c>Debug</c>. Every consumer — the eval binding and the code-reload binding — is a
+        /// projection of this one builder, so they cannot drift. Callers overlay only what is
+        /// site-specific: eval overlays capturing <c>Debug.Log</c> variants; code reload overlays
+        /// <c>AllowType(targetType)</c>.
         /// </summary>
         public static IlInterpreter.Interpreter.HostBinding CreateStandard()
         {
@@ -37,7 +36,7 @@ namespace Unity.Pipeline.Compilation
             // Demand-time auto-bind: the interpreter resolves every TypeRef a loaded script carries
             // through this policy, so engine/game types outside the curated surface bind on first use
             // instead of throwing "not registered". The curated list above stays the fast-path core
-            // (typed delegates, flat structs) and the link.xml baseline — a floor, not a ceiling.
+            // (typed delegates, flat structs) — a floor, not a ceiling.
             // Types the policy declines (see ResolveAutoBindType) are not bindable — the
             // project-extension seam that could promote them was deferred to a future release.
             binding.AutoBindResolver = ResolveAutoBindType;
@@ -48,8 +47,9 @@ namespace Unity.Pipeline.Compilation
         /// Auto-bind policy for <see cref="CreateStandard"/>: resolve a CLR full name from the loaded
         /// assemblies, skipping (a) the BCL — the hand-rolled <c>AllowBcl</c> shims collapse doubles
         /// into the script's float number space and must stay authoritative — and (b) this package's
-        /// own assemblies. On IL2CPP dev players this self-limits to types the stripper kept (see the
-        /// dev-build link.xml widening in <c>HotReloadLinkXmlGenerator</c>).
+        /// own assemblies. On IL2CPP dev players this self-limits to the types and members the
+        /// stripper kept — i.e. what the built game itself references, plus anything the project
+        /// preserves through its own <c>link.xml</c>.
         /// </summary>
         static Type ResolveAutoBindType(string fullName)
         {

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using Unity.Pipeline.Commands;
 using UnityEditor;
 using UnityEditor.PackageManager;
@@ -370,11 +371,9 @@ namespace Unity.Pipeline.Editor.Commands.PackageManager
             "failed, with the added package, manifest, and any error.",
             MainThreadRequired = false,
             Tags = new[] { "packages" })]
-        public static string GetPackageStatus()
+        public static JToken GetPackageStatus()
         {
-            if (File.Exists(StatusFile))
-                return File.ReadAllText(StatusFile);
-            return "{\"status\":\"idle\"}";
+            return StatusFileReader.ReadOrIdle(StatusFile);
         }
 
         // ---- Mutation execution ----------------------------------------------------------------
