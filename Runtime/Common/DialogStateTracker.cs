@@ -27,9 +27,6 @@ namespace Unity.Pipeline
             OpenedAtUtc = openedAtUtc;
             DismissedAtUtc = dismissedAtUtc;
         }
-
-        public DialogInfo WithDismissed(DateTime dismissedAtUtc) =>
-            new DialogInfo(Id, Source, Title, Message, Buttons, Level, OpenedAtUtc, dismissedAtUtc);
     }
 
     /// <summary>
@@ -41,11 +38,8 @@ namespace Unity.Pipeline
     /// </summary>
     internal sealed class DialogStateTracker
     {
-        const int MaxRecentEvents = 50;
-
         readonly object m_Gate = new object();
         readonly Dictionary<int, DialogInfo> m_Open = new Dictionary<int, DialogInfo>();
-        readonly LinkedList<DialogInfo> m_Recent = new LinkedList<DialogInfo>();
 
         internal bool IsDialogOpen
         {
@@ -75,28 +69,9 @@ namespace Unity.Pipeline
         {
             lock (m_Gate)
             {
-                if (!m_Open.TryGetValue(id, out var info))
-                    return;
-
                 m_Open.Remove(id);
-                m_Recent.AddLast(info.WithDismissed(dismissedAtUtc));
-                while (m_Recent.Count > MaxRecentEvents)
-                    m_Recent.RemoveFirst();
             }
         }
 
-        /// <summary>
-        /// Dialogs opened at or after <paramref name="utc"/> — still-open ones and recently
-        /// dismissed ones. Used to attach dialogsDuringExecution to a command's exec response.
-        /// </summary>
-        internal List<DialogInfo> EventsSince(DateTime utc)
-        {
-            lock (m_Gate)
-            {
-                var result = m_Open.Values.Where(e => e.OpenedAtUtc >= utc).ToList();
-                result.AddRange(m_Recent.Where(e => e.OpenedAtUtc >= utc));
-                return result;
-            }
-        }
     }
 }

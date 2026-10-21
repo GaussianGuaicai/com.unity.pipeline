@@ -7,7 +7,7 @@ namespace Unity.Pipeline.Compilation
 {
     /// <summary>
     /// Shared IlInterpreter <see cref="IlInterpreter.Interpreter.HostBinding"/> surface used by the
-    /// interpreter-backed code-reload path. Mirrors IlInterpreter's
+    /// interpreter-backed method-reload path. Mirrors IlInterpreter's
     /// <c>UnityHostBinding.Prototyping()</c> minus the Input System block, Audio, and physics —
     /// anything outside UnityEngine's core module binds on demand via <see cref="ResolveAutoBindType"/>,
     /// so the package forces no engine-module dependency. Reference types use <c>AllowType&lt;T&gt;()</c>
@@ -16,13 +16,13 @@ namespace Unity.Pipeline.Compilation
     /// </summary>
     static class IlInterpreterHostBindings
     {
-// Used by the interpreter-backed code-reload sink; available in dev players (incl. IL2CPP).
+// Used by the interpreter-backed method-reload sink; available in dev players (incl. IL2CPP).
 #if UNITY_EDITOR || ENABLE_PROFILER || ENABLE_RUNTIME_PIPELINE
         /// <summary>
         /// Single source of truth for the interpreter's host surface: BCL + the standard UnityEngine
-        /// types + <c>Debug</c>. Every consumer — the eval binding and the code-reload binding — is a
+        /// types + <c>Debug</c>. Every consumer — the eval binding and the method-reload binding — is a
         /// projection of this one builder, so they cannot drift. Callers overlay only what is
-        /// site-specific: eval overlays capturing <c>Debug.Log</c> variants; code reload overlays
+        /// site-specific: eval overlays capturing <c>Debug.Log</c> variants; method reload overlays
         /// <c>AllowType(targetType)</c>.
         /// </summary>
         public static IlInterpreter.Interpreter.HostBinding CreateStandard()

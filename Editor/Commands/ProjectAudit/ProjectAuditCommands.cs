@@ -45,6 +45,7 @@ namespace Unity.Pipeline.Editor.Commands.ProjectAudit
 #endif
     static class ProjectAuditCommands
     {
+        const string Group = "diagnostics";
         const string StatusFile = "Temp/pipeline_audit_status.json";
         const string CsvDirectory = "Temp/pipeline-audit";
         const string RulesPackageName = "com.unity.project-auditor-rules";
@@ -71,8 +72,8 @@ namespace Unity.Pipeline.Editor.Commands.ProjectAudit
             EditorApplication.update += OnUpdate;
         }
 
-        [CliCommand("audit", "Run a Project Auditor static-analysis scan. Returns immediately; poll audit_status until status is 'completed', then read the CSV.", MainThreadRequired = false, Tags = new[] { "observability/audit" })]
-        public static object Audit(
+        [CliGroupCommand(Group, "Run a Project Auditor static-analysis scan. Returns immediately; poll " + CommandNames.DiagnosticsAuditStatus + " until status is 'completed', then read the CSV.", MainThreadRequired = false, Tags = new[] { "observability/audit" })]
+        public static object RunAudit(
             [CliArg("categories", "Comma-separated issue categories to scan (e.g. Code,ProjectSetting,Texture). Default: all categories.")] string categories = "",
             [CliArg("output", "CSV output path (absolute or relative to the project root). Defaults to Temp/pipeline-audit/<scanId>.csv.")] string output = "")
         {
@@ -88,7 +89,7 @@ namespace Unity.Pipeline.Editor.Commands.ProjectAudit
             lock (s_Lock)
             {
                 if (s_Pending || s_Scanning)
-                    return new { status = "busy", message = "An audit is already queued or running. Poll audit_status." };
+                    return new { status = "busy", message = "An audit is already queued or running. Poll " + CommandNames.DiagnosticsAuditStatus + "." };
 
                 s_ScanId = Guid.NewGuid().ToString("N").Substring(0, 8);
                 s_CsvPath = ResolveCsvPath(output, s_ScanId);
@@ -104,7 +105,7 @@ namespace Unity.Pipeline.Editor.Commands.ProjectAudit
             return new { status = "scanning", scanId = s_ScanId, csvPath = s_CsvPath };
         }
 
-        [CliCommand("audit_status", "Get the status of the last audit: idle | scanning | completed | failed | interrupted | unavailable.", MainThreadRequired = false, Tags = new[] { "observability/audit" })]
+        [CliGroupCommand(Group, "Get the status of the last audit: idle | scanning | completed | failed | interrupted | unavailable.", MainThreadRequired = false, Tags = new[] { "observability/audit" })]
         public static JToken AuditStatus()
         {
             if (!TryResolve(out _, out var error))
@@ -158,7 +159,7 @@ namespace Unity.Pipeline.Editor.Commands.ProjectAudit
 
             try
             {
-                if (!RunAudit(categories))
+                if (!StartAudit(categories))
                 {
                     // RunAudit wrote the terminal status and OnDone will not run: release the guard here.
                     lock (s_Lock) { s_Scanning = false; }
@@ -177,7 +178,7 @@ namespace Unity.Pipeline.Editor.Commands.ProjectAudit
         /// Starts the scan. Returns false when no scan was started, in which case the terminal status
         /// has already been written and no completion callback will fire.
         /// </summary>
-        static bool RunAudit(object categories)
+        static bool StartAudit(object categories)
         {
             if (!TryResolve(out var pa, out var error))
                 throw new InvalidOperationException(error);

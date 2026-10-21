@@ -39,6 +39,7 @@ namespace Unity.Pipeline.Editor.Commands
 #endif
     static class RecompileCommand
     {
+        const string Group = "script";
         const string StatusFile = "Temp/pipeline_recompile_status.json";
 
         // How stale a ground-truth sample may be and still describe the present. Sampling runs on
@@ -49,7 +50,7 @@ namespace Unity.Pipeline.Editor.Commands
 
         // Focus action, indirected so tests can observe whether focus was performed without
         // actually stealing the OS foreground window.
-        internal static Action s_FocusAction = () => FocusEditorCommand.FocusEditor();
+        internal static Action s_FocusAction = () => FocusEditorCommand.Focus();
 
         // Indirected for the same reason: a test cannot make Unity's native compile-failure flag
         // true, but it can point this at a stub.
@@ -81,7 +82,7 @@ namespace Unity.Pipeline.Editor.Commands
             CompilationPipeline.compilationFinished += OnCompilationFinished;
         }
 
-        [CliCommand("recompile", "Force a script recompile (works while unfocused/minimized). Poll recompile_status for completion.", MainThreadRequired = true, Tags = new[] { "scripts/compile" })]
+        [CliGroupCommand(Group, "Force a script recompile (works while unfocused/minimized). Poll " + CommandNames.ScriptRecompileStatus + " for completion.", MainThreadRequired = true, Tags = new[] { "scripts/compile" })]
         public static object Recompile(
             [CliArg("focus", "If true, bring the Editor to the foreground before compiling. Off by default.")] bool focus = false)
         {
@@ -100,7 +101,7 @@ namespace Unity.Pipeline.Editor.Commands
             if (EditorApplication.isCompiling)
             {
                 // compilationStarted has written "compiling"; a domain reload will follow on success.
-                return new { status = "compiling", message = "Recompilation started. Poll recompile_status until completed." };
+                return new { status = "compiling", message = "Recompilation started. Poll " + CommandNames.ScriptRecompileStatus + " until completed." };
             }
 
             // Nothing was imported and nothing compiled. That is only "up to date" if the code
@@ -114,14 +115,14 @@ namespace Unity.Pipeline.Editor.Commands
                 else
                     WriteStatus("completed", true, Array.Empty<string>());
 
-                return new { status = "failed", message = "Scripts still have compile errors; nothing was recompiled. Read them with the console command." };
+                return new { status = "failed", message = "Scripts still have compile errors; nothing was recompiled. Read them with the " + CommandNames.ConsoleGet + " command." };
             }
 
             WriteStatus("up_to_date", false, null);
             return new { status = "up_to_date", message = "No scripts needed recompilation." };
         }
 
-        [CliCommand("recompile_status", "Get the status of the last recompile: idle | triggered | compiling | completed | up_to_date.", MainThreadRequired = false, Tags = new[] { "scripts/compile" })]
+        [CliGroupCommand(Group, "Get the status of the last recompile: idle | triggered | compiling | completed | up_to_date.", MainThreadRequired = false, Tags = new[] { "scripts/compile" })]
         public static RecompileStatusPayload RecompileStatus()
         {
             var status = ReadStatusOrIdle();

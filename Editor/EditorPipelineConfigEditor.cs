@@ -47,7 +47,7 @@ namespace Unity.Pipeline.Editor
         private void ThrottledStatusRepaint()
         {
             var config = target as EditorPipelineConfig;
-            if (config == null || !(config.IsServerRunning || EditorCodeReloadWatcher.IsWatching))
+            if (config == null || !(config.IsServerRunning || EditorMethodReloadWatcher.IsWatching))
                 return;
 
             double now = EditorApplication.timeSinceStartup;
@@ -103,7 +103,7 @@ namespace Unity.Pipeline.Editor
                     config.RestartServer();
             }
 
-            DrawCodeReloadWatchSection();
+            DrawMethodReloadWatchSection();
             // Live status is kept current by ThrottledStatusRepaint — never Repaint() from here.
         }
 
@@ -184,10 +184,22 @@ namespace Unity.Pipeline.Editor
             while (property.NextVisible(enterChildren))
             {
                 enterChildren = false;
-                if (property.propertyPath == "m_Script")
+                if (property.propertyPath == "m_Script" || property.propertyPath == "m_RunInBackgroundInPlayMode")
                     continue;
                 EditorGUILayout.PropertyField(property, true);
             }
+
+            // Drawn explicitly, with its own GUIContent, rather than left to the loop above: the
+            // field's name would nicify to "Run In Background In Play Mode", but the reviewed
+            // setting name is "Ensure editor runs in background in PlayMode" — [InspectorName] only
+            // retitles enum values, not fields (same reason m_CodeReloadRepushOnConnect below is
+            // hidden and drawn with its own GUIContent instead of the generic loop above).
+            EditorGUILayout.PropertyField(
+                serializedObject.FindProperty("m_RunInBackgroundInPlayMode"),
+                new GUIContent("Ensure editor runs in background in PlayMode",
+                    "Forces the project's Run In Background Player Setting on while the Editor is " +
+                    "in Play mode, and restores it once back in Edit mode. A build always uses the " +
+                    "project's own value — this setting never changes what ships."));
 
             // WithoutUndo on purpose: only the settings page's in-memory instance reaches here, and
             // Unity files an undo record for a non-persistent object under the active scene.
@@ -195,24 +207,24 @@ namespace Unity.Pipeline.Editor
         }
 
         /// <summary>
-        /// Watch the project's Assets folder and re-apply affected [CodeReload] methods on every save,
-        /// driving <see cref="EditorCodeReloadWatcher"/>. Neither scope, target, nor backend is a
+        /// Watch the project's Assets folder and re-apply affected [MethodReload] methods on every save,
+        /// driving <see cref="EditorMethodReloadWatcher"/>. Neither scope, target, nor backend is a
         /// choice: the whole Assets tree is watched, each save goes to the connected player(s) if any,
         /// else applies in-editor, and both paths run on the interpreter; a read-only row shows the
         /// current target resolution. Config is locked while a watch is active.
         /// </summary>
-        private void DrawCodeReloadWatchSection()
+        private void DrawMethodReloadWatchSection()
         {
             EditorGUILayout.Space();
-            EditorGUILayout.LabelField("Code Reload Interpreter Watch", EditorStyles.boldLabel);
+            EditorGUILayout.LabelField("Method Reload Interpreter Watch", EditorStyles.boldLabel);
 
-            bool watching = EditorCodeReloadWatcher.IsWatching;
+            bool watching = EditorMethodReloadWatcher.IsWatching;
 
             serializedObject.Update();
 
             // Not a picker: each save is pushed to the connected player(s) if any, else applied
             // in-editor — resolved per save, so plugging in a device mid-watch reroutes the next save.
-            int connected = EditorCodeReloadWatcher.ConnectedPlayerCount;
+            int connected = EditorMethodReloadWatcher.ConnectedPlayerCount;
             using (new EditorGUI.DisabledScope(true))
                 EditorGUILayout.LabelField(
                     new GUIContent("Target", "Resolved automatically at each file change: development player(s) if connected, otherwise the reload applies in this editor process. Both run on the interpreter."),
@@ -223,9 +235,9 @@ namespace Unity.Pipeline.Editor
             // Outside the watching-locked scope: read at each player-connect event, so toggling it
             // takes effect for the next connection even while a watch is active.
             EditorGUILayout.PropertyField(
-                serializedObject.FindProperty("m_CodeReloadRepushOnConnect"),
+                serializedObject.FindProperty("m_MethodReloadRepushOnConnect"),
                 new GUIContent("Re-push On Connect",
-                    "Re-push the watched code-reload state to any player that connects while the watch " +
+                    "Re-push the watched method-reload state to any player that connects while the watch " +
                     "is active. A restarted player boots the original build without previously pushed " +
                     "overrides; this catches it up immediately instead of waiting for the next save."));
 
@@ -238,19 +250,19 @@ namespace Unity.Pipeline.Editor
                     // The UI always watches the whole Assets tree; StartWatch itself accepts any
                     // file or folder for CLI/API callers.
                     if (GUILayout.Button("Start Watching"))
-                        EditorCodeReloadWatcher.StartWatch(Path.GetFullPath(Application.dataPath),
+                        EditorMethodReloadWatcher.StartWatch(Path.GetFullPath(Application.dataPath),
                             isFolder: true);
                 }
                 using (new EditorGUI.DisabledScope(!watching))
                 {
                     if (GUILayout.Button("Stop Watching"))
-                        EditorCodeReloadWatcher.StopWatch();
+                        EditorMethodReloadWatcher.StopWatch();
                 }
             }
 
             if (watching)
                 EditorGUILayout.HelpBox(
-                    "Asset auto-refresh is disabled while watching, so saved scripts code-reload instead of " +
+                    "Asset auto-refresh is disabled while watching, so saved scripts method-reload instead of " +
                     "triggering a domain reload. New or changed assets won't import until you refresh manually " +
                     "(Cmd/Ctrl+R); Stop Watching restores your auto-refresh setting.",
                     MessageType.Warning);
@@ -259,10 +271,10 @@ namespace Unity.Pipeline.Editor
             {
                 // Read WatchPath once: it goes null the instant the watch stops (domain reload / StopWatch),
                 // which can race the `watching` captured at the top of this method — guard against null here.
-                var watchPath = EditorCodeReloadWatcher.WatchPath;
+                var watchPath = EditorMethodReloadWatcher.WatchPath;
                 // The live Target row above shows where saves currently go; this line covers what is watched.
                 string status = watching && !string.IsNullOrEmpty(watchPath)
-                    ? $"{(EditorCodeReloadWatcher.IsFolder ? "folder" : "file")} · {Path.GetFileName(watchPath.TrimEnd('/', '\\'))}"
+                    ? $"{(EditorMethodReloadWatcher.IsFolder ? "folder" : "file")} · {Path.GetFileName(watchPath.TrimEnd('/', '\\'))}"
                     : "idle";
                 EditorGUILayout.LabelField("Watching", status);
 
@@ -271,10 +283,10 @@ namespace Unity.Pipeline.Editor
                     // Liveness: saves applying while the event count stays flat means the OS file
                     // watcher is dead and the reconcile poll is carrying the watch.
                     EditorGUILayout.LabelField("Watcher Events",
-                        $"{EditorCodeReloadWatcher.FsEventCount}{Ago(EditorCodeReloadWatcher.LastFsEventUtc)}");
+                        $"{EditorMethodReloadWatcher.FsEventCount}{Ago(EditorMethodReloadWatcher.LastFsEventUtc)}");
                     EditorGUILayout.LabelField("Last Apply",
-                        EditorCodeReloadWatcher.LastApplyFile is string f
-                            ? $"{f}{Ago(EditorCodeReloadWatcher.LastApplyUtc)}"
+                        EditorMethodReloadWatcher.LastApplyFile is string f
+                            ? $"{f}{Ago(EditorMethodReloadWatcher.LastApplyUtc)}"
                             : "none yet");
                 }
             }

@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using Unity.Pipeline.Commands;
 using UnityEngine;
 
 namespace Unity.Pipeline.Editor
@@ -34,7 +35,8 @@ namespace Unity.Pipeline.Editor
         internal const bool DefaultEvalTelemetryEnabled = true;
         internal const bool DefaultStoreEvalSource = false;
         internal const bool DefaultAllowBrowserClients = false;
-        internal const bool DefaultCodeReloadRepushOnConnect = true;
+        internal const bool DefaultMethodReloadRepushOnConnect = true;
+        internal const bool DefaultRunInBackgroundInPlayMode = false;
 
         [Tooltip("HTTP port for the editor server. 0 = auto-assign from the 7800-7849 range. Applies on next start.")]
         [SerializeField] private ushort m_Port = DefaultPort;
@@ -54,7 +56,7 @@ namespace Unity.Pipeline.Editor
         [SerializeField] private bool m_LogRequestsResponses = DefaultLogRequestsResponses;
 
         [Tooltip("Record local eval-usage telemetry (fingerprints + shape, no raw source) to " +
-                 "<project>/Library/Pipeline/eval-usage.jsonl. Read it back with the 'report_evals' " +
+                 "<project>/Library/Pipeline/eval-usage.jsonl. Read it back with the '" + CommandNames.DiagnosticsReportEvals + "' " +
                  "command. Local-only; no data leaves the machine. Applies live.")]
         [SerializeField] private bool m_EvalTelemetryEnabled = DefaultEvalTelemetryEnabled;
 
@@ -67,9 +69,24 @@ namespace Unity.Pipeline.Editor
                  "either way, and a sandboxed one still needs the bearer token. Applies on next start.")]
         [SerializeField] private bool m_AllowBrowserClients = DefaultAllowBrowserClients;
 
-        // Code Reload Watch config, drawn by a dedicated inspector section (not DrawDefaultInspector).
-        [HideInInspector, SerializeField, UnityEngine.Serialization.FormerlySerializedAs("m_HotReloadRepushOnConnect")]
-        private bool m_CodeReloadRepushOnConnect = DefaultCodeReloadRepushOnConnect;
+        // Method Reload Watch config, drawn by a dedicated inspector section (not DrawDefaultInspector).
+        [HideInInspector, SerializeField, UnityEngine.Serialization.FormerlySerializedAs("m_CodeReloadRepushOnConnect"),
+         UnityEngine.Serialization.FormerlySerializedAs("m_HotReloadRepushOnConnect")]
+        private bool m_MethodReloadRepushOnConnect = DefaultMethodReloadRepushOnConnect;
+
+        // Drawn explicitly by EditorPipelineConfigEditor.DrawConfigFields with its own GUIContent
+        // (not DrawDefaultInspector) so its Inspector label reads "Ensure editor runs in background
+        // in PlayMode" — [InspectorName] only retitles enum values, not fields.
+        [SerializeField] private bool m_RunInBackgroundInPlayMode = DefaultRunInBackgroundInPlayMode;
+
+        // Run In Background override record (CLI-1432): hidden bookkeeping, never user-editable
+        // directly. Toggling m_RunInBackgroundInPlayMode above, or calling
+        // editor.playmode set_run_in_background, changes what these SHOULD be; only
+        // PipelineServerStartup.ReconcileRunInBackground actually writes them, so the record and the
+        // live Application.runInBackground value never drift apart.
+        [HideInInspector, SerializeField] private bool m_RunInBackgroundOverridden;
+        [HideInInspector, SerializeField] private bool m_RunInBackgroundOriginal;
+        [HideInInspector, SerializeField] private bool m_RunInBackgroundCommandOverride;
 
         /// <summary>HTTP port for the editor server. 0 = auto-assign. Applies on next start.</summary>
         public int Port => m_Port;
@@ -85,9 +102,54 @@ namespace Unity.Pipeline.Editor
         public bool StoreEvalSource => m_StoreEvalSource;
         public bool AllowBrowserClients => m_AllowBrowserClients;
 
-        /// <summary>Player-target watches: re-push the watched code-reload state to any player that
+        /// <summary>Player-target watches: re-push the watched method-reload state to any player that
         /// connects mid-watch, so a restarted player catches up without waiting for the next save.</summary>
-        internal bool CodeReloadRepushOnConnect => m_CodeReloadRepushOnConnect;
+        internal bool MethodReloadRepushOnConnect => m_MethodReloadRepushOnConnect;
+
+        /// <summary>
+        /// Force the project's Run In Background Player Setting on while the Editor is in Play mode,
+        /// restoring it in Edit mode (CLI-1432). Off by default. A build always uses the project's
+        /// own value regardless of this setting or of any active <c>editor.playmode set_run_in_background</c>
+        /// override — see <see cref="BuildProcessors.PipelineRuntimeBuildProcessor"/>.
+        /// </summary>
+        public bool RunInBackgroundInPlayMode => m_RunInBackgroundInPlayMode;
+
+        /// <summary>
+        /// Whether Application.runInBackground is currently overridden by this package (CLI-1432) and
+        /// not yet restored — from a Play session driven by <see cref="RunInBackgroundInPlayMode"/>,
+        /// from <see cref="RunInBackgroundCommandOverride"/>, or both.
+        /// </summary>
+        internal bool RunInBackgroundOverridden => m_RunInBackgroundOverridden;
+
+        /// <summary>
+        /// The project's own Run In Background value from just before the override began. Only
+        /// meaningful while <see cref="RunInBackgroundOverridden"/> is true.
+        /// </summary>
+        internal bool RunInBackgroundOriginal => m_RunInBackgroundOriginal;
+
+        /// <summary>
+        /// Whether <c>editor.playmode set_run_in_background(enable: true)</c> is in effect. Persists across
+        /// Editor restarts (it lives in this file) until the command is called again with
+        /// <c>enable: false</c>.
+        /// </summary>
+        internal bool RunInBackgroundCommandOverride => m_RunInBackgroundCommandOverride;
+
+        /// <summary>
+        /// Record that the Run In Background override is now active or inactive, and what the
+        /// project's own value was when it began. In-memory only — the caller owns persistence.
+        /// Called only by <c>PipelineServerStartup.ReconcileRunInBackground</c>.
+        /// </summary>
+        internal void SetRunInBackgroundOverrideRecord(bool overridden, bool original)
+        {
+            m_RunInBackgroundOverridden = overridden;
+            m_RunInBackgroundOriginal = original;
+        }
+
+        /// <summary>
+        /// Record whether <c>editor.playmode set_run_in_background</c>'s standing override is in effect.
+        /// In-memory only — the caller owns persistence.
+        /// </summary>
+        internal void SetRunInBackgroundCommandOverride(bool value) => m_RunInBackgroundCommandOverride = value;
 
         /// <summary>Whether the live server (owned by PipelineServerStartup) is actually running.</summary>
         public bool IsServerRunning => PipelineServerStartup.Server != null && PipelineServerStartup.Server.IsRunning;

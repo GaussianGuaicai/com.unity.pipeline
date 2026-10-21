@@ -28,6 +28,8 @@ namespace Unity.Pipeline.Editor.Commands
     /// </summary>
     static class WaitForCommands
     {
+        const string Group = "job";
+
         /// <summary>Poll interval clamp: below ~a frame is pointless, above 5s risks missing states and starves the timeout check.</summary>
         internal const double MinPollIntervalMs = 16;
         internal const double MaxPollIntervalMs = 5000;
@@ -42,17 +44,24 @@ namespace Unity.Pipeline.Editor.Commands
         /// </summary>
         internal static Func<WaitCaptureInput, WaitCaptureResult> s_CaptureAction = DefaultCapture;
 
-        /// <summary>Grace budget for the never-observed final look on a sync timeout (see the loop).</summary>
-        private const int FinalLookGraceMs = 1000;
+        /// <summary>The longest a wait may last, whatever its timeout.</summary>
+        private static readonly TimeSpan MaxWait = TimeSpan.FromSeconds(600);
 
-        [CliCommand("wait_for",
-            "Wait server-side until a member condition holds, then optionally act in the same frame. Sync waits hold the exec queue (every other command waits behind them, including one the condition may depend on) — keep them short and self-contained; set async=true and poll wait_status for anything else.",
-            MainThreadRequired = false, Tags = new[] { "wait" })]
-        public static object WaitFor(
+        /// <summary>The longest one poll waits for the main thread; a longer stall is a missed poll.</summary>
+        private static readonly TimeSpan MaxPollMarshalWait = TimeSpan.FromSeconds(60);
+
+        /// <summary>Grace budget for the never-observed final look on a sync timeout (see the loop).</summary>
+        private static readonly TimeSpan FinalLookGrace = TimeSpan.FromSeconds(1);
+
+        [CliGroupCommand(Group,
+            "Wait server-side until a member condition holds, then optionally act in the same frame. Sync waits hold the exec queue (every other command waits behind them, including one the condition may depend on) — keep them short and self-contained; set async=true and poll " + CommandNames.JobWaitStatus + " for anything else.",
+            MainThreadRequired = false,
+            Tags = new[] { "wait" })]
+        public static object Wait(
             [CliArg("condition", "Condition to wait for: { member, target?, findType?, op, value }. member is a dotted path (static, or instance under target/findType); op is equals|notEquals|greaterThan|lessThan|contains|changed.", Required = true)]
             WaitConditionInput condition = null,
-            [CliArg("timeout_s", "Maximum seconds to wait (default 30, clamped to 0-600; must be finite).")]
-            double timeoutS = 30,
+            [CliArg("timeout", "Maximum seconds to wait (default 30, clamped to 0-600). A sync wait reports timedOut slightly before it, so the reply lands first.")]
+            double timeoutInSeconds = 30,
             [CliArg("poll_interval_ms", "How often to re-check the condition, in milliseconds (default 100, clamped to 16-5000; must be finite).")]
             double pollIntervalMs = 100,
             [CliArg("on_met", "Follow-up run in the same editor frame the condition first holds: { capture: { view, source, save_path, width, height, include_image }, pause }.")]
@@ -61,19 +70,22 @@ namespace Unity.Pipeline.Editor.Commands
             bool returnHistory = false,
             [CliArg("tolerate_missing", "Treat resolution failures (type/member/instance not found) as condition-not-met and retry until timeout, instead of failing fast. Enables waiting for something to exist (e.g. a spawned object via findType).")]
             bool tolerateMissing = false,
-            [CliArg("async", "Return a wait_id immediately and evaluate in the background; poll wait_status and cancel with wait_cancel. Use this for long waits and whenever the condition depends on a command you still need to issue — a sync wait blocks it.")]
+            [CliArg("async", "Return a wait_id immediately and evaluate in the background; poll " + CommandNames.JobWaitStatus + " and cancel with " + CommandNames.JobWaitCancel + ". Use this for long waits and whenever the condition depends on a command you still need to issue — a sync wait blocks it.")]
             bool async = false)
         {
             var validationError = ValidateCondition(condition);
             if (validationError != null)
                 throw new ArgumentException(validationError);
 
-            if (double.IsNaN(timeoutS) || double.IsInfinity(timeoutS))
-                throw new ArgumentException("timeout_s must be a finite number of seconds (0-600).");
+            if (double.IsNaN(timeoutInSeconds))
+                throw new ArgumentException("timeout must be a number of seconds (0-600).");
             if (double.IsNaN(pollIntervalMs) || double.IsInfinity(pollIntervalMs))
                 throw new ArgumentException($"poll_interval_ms must be a finite number of milliseconds ({MinPollIntervalMs}-{MaxPollIntervalMs}).");
 
-            var timeoutMs = Clamp(timeoutS, 0, 600) * 1000.0;
+            var requested = PipelineTimeout.FromSeconds(timeoutInSeconds);
+            var timeout = async ? requested : PipelineTimeout.StopBefore(requested);
+            if (PipelineTimeout.IsInfinite(timeout) || timeout > MaxWait)
+                timeout = MaxWait;
             var interval = Clamp(pollIntervalMs, MinPollIntervalMs, MaxPollIntervalMs);
 
             var job = new WaitJob
@@ -85,7 +97,7 @@ namespace Unity.Pipeline.Editor.Commands
                 ReturnHistory = returnHistory,
                 TolerateMissing = tolerateMissing,
                 IsAsync = async,
-                TimeoutMs = timeoutMs,
+                Timeout = timeout,
                 PollIntervalMs = interval,
                 StartedAt = DateTime.UtcNow
             };
@@ -112,9 +124,12 @@ namespace Unity.Pipeline.Editor.Commands
                         // Bound the per-poll marshal by the wait's own remaining budget (min 1 ms,
                         // capped at the dispatcher default) instead of inheriting the dispatcher's
                         // 60s default: a stalled main thread must not hold the exec gate for 60s
-                        // when this wait's whole timeout_s is shorter.
-                        var marshalBudgetMs = (int)Math.Max(1, Math.Min(timeoutMs - job.ElapsedMs, 60000));
-                        RunOnMainThread(job.PollOnce, marshalBudgetMs);
+                        // when this wait's whole timeout is shorter.
+                        var left = timeout - job.Elapsed;
+                        var marshalTimeout = left < TimeSpan.FromMilliseconds(1)
+                            ? TimeSpan.FromMilliseconds(1)
+                            : (left < MaxPollMarshalWait ? left : MaxPollMarshalWait);
+                        RunOnMainThread(job.PollOnce, marshalTimeout);
                     }
                     catch (TimeoutException)
                     {
@@ -133,8 +148,8 @@ namespace Unity.Pipeline.Editor.Commands
                     if (job.IsTerminal)
                         break;
 
-                    var remainingMs = timeoutMs - job.ElapsedMs;
-                    if (remainingMs <= 0)
+                    var remaining = timeout - job.Elapsed;
+                    if (remaining <= TimeSpan.Zero)
                     {
                         // Never resolve timedOut having observed NOTHING: if every earlier poll
                         // missed (main thread busy, tight budget), grant one final look with a
@@ -142,7 +157,7 @@ namespace Unity.Pipeline.Editor.Commands
                         // with the Tick path's final look.
                         if (job.FramesObserved == 0)
                         {
-                            try { RunOnMainThread(job.PollOnce, FinalLookGraceMs); }
+                            try { RunOnMainThread(job.PollOnce, FinalLookGrace); }
                             catch (TimeoutException) { /* still stalled; report the bare timeout */ }
                             catch (OperationCanceledException) { job.MarkInterrupted("Wait interrupted: the server is stopping."); break; }
                         }
@@ -153,7 +168,7 @@ namespace Unity.Pipeline.Editor.Commands
 
                     // Never sleep past the remaining budget (a large interval must not stretch a
                     // short timeout), and wake early if the surrounding job is canceled.
-                    if (!SleepUnlessCanceled(Math.Min(interval, remainingMs), job))
+                    if (!SleepUnlessCanceled(Math.Min(interval, remaining.TotalMilliseconds), job))
                     {
                         job.MarkCanceled("Wait canceled by job cancellation request.");
                         break;
@@ -185,7 +200,7 @@ namespace Unity.Pipeline.Editor.Commands
                     return false;
                 if (job.IsTerminal)
                     return true;
-                // Ceiling, never truncation: a fractional remaining (e.g. timeout_s=32.3 ends
+                // Ceiling, never truncation: a fractional remaining (e.g. timeout=32.3 ends
                 // as ...999.9996 ms) would truncate to a 0 slice that never decrements
                 // `remaining` — an infinite spin that never releases the exec gate.
                 var slice = (int)Math.Ceiling(Math.Min(100.0, remaining));
@@ -195,11 +210,12 @@ namespace Unity.Pipeline.Editor.Commands
             return !PipelineCancellation.IsCancellationRequested;
         }
 
-        [CliCommand("wait_status",
-            "Get the status/result of an async wait started with wait_for (async=true).",
-            MainThreadRequired = false, Tags = new[] { "wait" })]
+        [CliGroupCommand(Group,
+            "Get the status/result of an async wait started with " + CommandNames.JobWait + " (async=true).",
+            MainThreadRequired = false,
+            Tags = new[] { "wait" })]
         public static object WaitStatus(
-            [CliArg("wait_id", "The wait id returned by wait_for when async=true.", Required = true)]
+            [CliArg("wait_id", "The wait id returned by " + CommandNames.JobWait + " when async=true.", Required = true)]
             string waitId = null)
         {
             if (string.IsNullOrEmpty(waitId))
@@ -216,9 +232,10 @@ namespace Unity.Pipeline.Editor.Commands
             return job.ToResult(includeWaitId: true);
         }
 
-        [CliCommand("wait_cancel",
-            "Cancel an async wait started with wait_for (async=true).",
-            MainThreadRequired = false, Tags = new[] { "wait" })]
+        [CliGroupCommand(Group,
+            "Cancel an async wait started with " + CommandNames.JobWait + " (async=true).",
+            MainThreadRequired = false,
+            Tags = new[] { "wait" })]
         public static object WaitCancel(
             [CliArg("wait_id", "The wait id to cancel.", Required = true)]
             string waitId = null)
@@ -267,37 +284,37 @@ namespace Unity.Pipeline.Editor.Commands
         }
 
         /// <summary>
-        /// Run <paramref name="action"/> on the editor main thread via the executing server's
-        /// dispatcher (or directly when already on it / no server, e.g. a direct unit-test call),
-        /// waiting at most <paramref name="timeoutMs"/> for the marshal — callers bound it by the
+        /// Run <paramref name="action"/> on the editor main thread via the executing command's
+        /// dispatcher (or directly when already on it / no command, e.g. a direct unit-test call),
+        /// waiting at most <paramref name="timeout"/> for the marshal — callers bound it by the
         /// wait's own remaining budget so a stalled main thread cannot hold the exec gate past
-        /// this wait's timeout_s (the resulting <see cref="TimeoutException"/> is a missed poll).
+        /// this wait's timeout (the resulting <see cref="TimeoutException"/> is a missed poll).
         /// Throws <see cref="OperationCanceledException"/> when the dispatcher is shut down instead
         /// of falling back to evaluating Unity state on this pool thread — the caller resolves the
         /// wait as interrupted ("server stopping").
         /// </summary>
-        private static void RunOnMainThread(Action action, int timeoutMs)
+        private static void RunOnMainThread(Action action, TimeSpan timeout)
         {
-            var server = BasePipelineServer.CurrentServer;
-            if (server == null)
+            var context = CommandContext.Current;
+            if (context == null)
             {
                 // Direct in-process invocation (unit tests) on the test's main thread.
                 action();
                 return;
             }
 
-            if (server.Dispatcher.IsMainThread())
+            if (context.Dispatcher.IsMainThread())
             {
                 action();
                 return;
             }
 
-            if (!server.Dispatcher.IsInitialized)
+            if (!context.Dispatcher.IsInitialized)
                 throw new OperationCanceledException("The server's main-thread dispatcher is shut down (server stopping).");
 
             try
             {
-                server.Dispatcher.Invoke(action, timeoutMs);
+                context.Dispatcher.Invoke(action, timeout);
             }
             catch (InvalidOperationException)
             {
@@ -346,8 +363,8 @@ namespace Unity.Pipeline.Editor.Commands
                     $"Unknown source '{capture.Source}' for on_met.capture. Use 'camera' or 'screen'.");
 
             CaptureResult result = view == "scene"
-                ? CaptureCommands.CaptureSceneView(width, height, capture.SavePath, capture.IncludeImage, 0)
-                : CaptureCommands.CaptureGameView(width, height, null, capture.SavePath, capture.IncludeImage, 0, source);
+                ? CaptureCommands.SceneView(width, height, capture.SavePath, capture.IncludeImage, 0)
+                : CaptureCommands.GameView(width, height, null, capture.SavePath, capture.IncludeImage, 0, source);
 
             return new WaitCaptureResult
             {

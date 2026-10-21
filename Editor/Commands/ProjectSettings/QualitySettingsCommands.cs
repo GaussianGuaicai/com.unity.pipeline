@@ -12,19 +12,20 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
     /// </summary>
     static class QualitySettingsCommands
     {
-        const string Group = "quality";
+        const string Domain = "quality";
+        const string Group = "settings." + Domain;
 
-        [CliCommand("get_quality_settings", "Read QualitySettings (current level, level names, vSync, anti-aliasing).", MainThreadRequired = true, Tags = new[] { "settings/quality" })]
-        public static ProjectSettingsResponse Get() => ProjectSettingsCommand.Get(Group, Read);
+        [CliGroupCommand(Group, "Read QualitySettings (current level, level names, vSync, anti-aliasing).", MainThreadRequired = true, Tags = new[] { "settings/quality" })]
+        public static ProjectSettingsResponse Get() => ProjectSettingsCommand.Get(Domain, Read);
 
-        [CliCommand("set_quality_settings", "Change QualitySettings. Requires confirm=true; use dry_run to preview. Not undoable via Ctrl+Z.", MainThreadRequired = true, Tags = new[] { "settings/quality" })]
+        [CliGroupCommand(Group, "Change QualitySettings. Requires confirm=true; use dry_run to preview. Not undoable via Ctrl+Z.", MainThreadRequired = true, Tags = new[] { "settings/quality" })]
         public static ProjectSettingsResponse Set(
             [CliArg("settings", "Fields to change; omitted fields are left unchanged.")] QualitySettingsInput settings = null,
             [CliArg("confirm", "Apply the change. Without it the call is refused.")] bool confirm = false,
             [CliArg("dry_run", "Preview the change without applying it.")] bool dryRun = false)
         {
             if (settings == null)
-                return ProjectSettingsResponse.Fail(Group, "No 'settings' object provided.");
+                return ProjectSettingsResponse.Fail(Domain, "No 'settings' object provided.");
 
             var names = QualitySettings.names;
             var changes = new List<string>();
@@ -32,7 +33,7 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
             if (settings.Level.HasValue)
             {
                 if (settings.Level.Value < 0 || settings.Level.Value >= names.Length)
-                    return ProjectSettingsResponse.Fail(Group, $"level {settings.Level.Value} out of range (0..{names.Length - 1}).");
+                    return ProjectSettingsResponse.Fail(Domain, $"level {settings.Level.Value} out of range (0..{names.Length - 1}).");
                 if (settings.Level.Value != QualitySettings.GetQualityLevel())
                     changes.Add($"level {QualitySettings.GetQualityLevel()} -> {settings.Level.Value}");
             }
@@ -55,12 +56,12 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
                 AssetDatabase.SaveAssets();
             }
 
-            return ProjectSettingsCommand.Apply(Group, confirm, dryRun, settings, () => planText, Apply, Read);
+            return ProjectSettingsCommand.Apply(Domain, confirm, dryRun, settings, () => planText, Apply, Read);
         }
 
         static ProjectSettingsResponse NoChanges()
         {
-            var response = ProjectSettingsCommand.Get(Group, Read);
+            var response = ProjectSettingsCommand.Get(Domain, Read);
             response.Message = "No changes specified; nothing to apply.";
             return response;
         }
@@ -83,7 +84,7 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
     /// <summary>Quality settings to change. Null/omitted fields are left unchanged.</summary>
     class QualitySettingsInput : IStructuredCommandInput
     {
-        [CliArg("level", "Quality level index (see levelNames from get_quality_settings).")]
+        [CliArg("level", "Quality level index (see levelNames from " + CommandNames.SettingsQualityGet + ").")]
         public int? Level { get; set; }
 
         [CliArg("vSyncCount", "VSync count (0 = off, 1, 2).")]

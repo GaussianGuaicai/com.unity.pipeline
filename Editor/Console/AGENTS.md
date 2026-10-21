@@ -1,3 +1,3 @@
 # Editor Console
 
-`EditorConsoleEntries.cs` wraps the internal console store; `EditorConsoleGroundTruth.cs` publishes main-thread snapshots for background commands. Preserve sampling when no Console window is open and restore any temporary filter changes. Unity 2022.3 uses reflected `LogEntries.GetCountsByType`; newer editors can use `ConsoleWindowUtility`.
+`EditorConsoleEntries.cs` adapts the internal editor log store; `EditorConsoleGroundTruth.cs` publishes snapshots for requests made during compilation. Keep reflection failures nonfatal and retain update-driven sampling even when no Console window is open. Unity 2022.3 reads counts through LogEntries rather than ConsoleWindowUtility.

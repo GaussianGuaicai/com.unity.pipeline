@@ -16,19 +16,20 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
     /// </summary>
     static class PlayerSettingsCommands
     {
-        const string Group = "player";
+        const string Domain = "player";
+        const string Group = "settings." + Domain;
 
-        [CliCommand("get_player_settings", "Read PlayerSettings (company/product/version, scripting backend, API level).", MainThreadRequired = true, Tags = new[] { "settings/player" })]
-        public static ProjectSettingsResponse Get() => ProjectSettingsCommand.Get(Group, Read);
+        [CliGroupCommand(Group, "Read PlayerSettings (company/product/version, scripting backend, API level).", MainThreadRequired = true, Tags = new[] { "settings/player" })]
+        public static ProjectSettingsResponse Get() => ProjectSettingsCommand.Get(Domain, Read);
 
-        [CliCommand("set_player_settings", "Change PlayerSettings. Requires confirm=true; use dry_run to preview. Not undoable via Ctrl+Z. Scripting backend / API level changes trigger a domain reload.", MainThreadRequired = true, Tags = new[] { "settings/player" })]
+        [CliGroupCommand(Group, "Change PlayerSettings. Requires confirm=true; use dry_run to preview. Not undoable via Ctrl+Z. Scripting backend / API level changes trigger a domain reload.", MainThreadRequired = true, Tags = new[] { "settings/player" })]
         public static ProjectSettingsResponse Set(
             [CliArg("settings", "Fields to change; omitted fields are left unchanged.")] PlayerSettingsInput settings = null,
             [CliArg("confirm", "Apply the change. Without it the call is refused.")] bool confirm = false,
             [CliArg("dry_run", "Preview the change without applying it.")] bool dryRun = false)
         {
             if (settings == null)
-                return ProjectSettingsResponse.Fail(Group, "No 'settings' object provided.");
+                return ProjectSettingsResponse.Fail(Domain, "No 'settings' object provided.");
 
             var target = NamedBuildTarget.FromBuildTargetGroup(EditorUserBuildSettings.selectedBuildTargetGroup);
             var changes = new List<string>();
@@ -76,12 +77,12 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
                 AssetDatabase.SaveAssets();
             }
 
-            return ProjectSettingsCommand.Apply(Group, confirm, dryRun, settings, () => planText, Apply, Read, requiresDomainReload: reload);
+            return ProjectSettingsCommand.Apply(Domain, confirm, dryRun, settings, () => planText, Apply, Read, requiresDomainReload: reload);
         }
 
         static ProjectSettingsResponse NoChanges()
         {
-            var response = ProjectSettingsCommand.Get(Group, Read);
+            var response = ProjectSettingsCommand.Get(Domain, Read);
             response.Message = "No changes specified; nothing to apply.";
             return response;
         }

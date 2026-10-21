@@ -16,18 +16,20 @@ namespace Unity.Pipeline.Editor.Commands
     /// </summary>
     static class TestCommands
     {
+        const string Group = "test";
+
         /// <summary>
         /// Execute Unity tests with filtering options.
         /// Synchronous by default (blocks until completion), async mode available with --async-tests flag.
         /// </summary>
-        [CliCommand("run_tests", "Execute Unity tests with filtering options", MainThreadRequired = true, Tags = new[] { "tests" })]
-        public static async Task<TestExecutionResponse> RunTests(
+        [CliGroupCommand(Group, "Execute Unity tests with filtering options", MainThreadRequired = true, Tags = new[] { "tests" })]
+        public static async Task<TestExecutionResponse> Run(
             [CliArg("mode", "Test mode: all, editor, playmode (default: all)")] string mode = "all",
             [CliArg("filter", "Test name filter pattern (case-insensitive partial match)")] string filter = "",
             [CliArg("filter_type", "Filter type: testName, assembly, category (default: testName)")] string filterType = "testName",
             [CliArg("include_explicit", "Include tests marked with [Explicit] attribute")] bool includeExplicit = false,
             [CliArg("async_tests", "Run asynchronously - return immediately, poll /test-status for results")] bool asyncTests = false,
-            [CliArg("timeout", "Test execution timeout in seconds (default: 300)")] int timeout = 300)
+            [CliArg("timeout", "Test execution timeout in seconds (default: 600)")] double timeoutInSeconds = 600)
         {
             // Return the full structured response (including failures and the Error field on a
             // failed run) rather than throwing: the server now awaits this Task and serializes the
@@ -39,15 +41,15 @@ namespace Unity.Pipeline.Editor.Commands
                 filterType,
                 includeExplicit,
                 asyncTests,
-                timeout);
+                PipelineTimeout.FromSeconds(timeoutInSeconds));
         }
 
         /// <summary>
         /// List all available tests without executing any of them.
         /// Enumerates the test tree via TestRunnerApi.RetrieveTestList for the requested mode(s).
         /// </summary>
-        [CliCommand("list_tests", "List all available tests (EditMode and/or PlayMode) without running them", MainThreadRequired = true, Tags = new[] { "tests" })]
-        public static async Task<TestListResponse> ListTests(
+        [CliGroupCommand(Group, "List all available tests (EditMode and/or PlayMode) without running them", MainThreadRequired = true, Tags = new[] { "tests" })]
+        public static async Task<TestListResponse> List(
             [CliArg("mode", "Test mode: all, editor, playmode (default: all)")] string mode = "all")
         {
             try
@@ -57,7 +59,7 @@ namespace Unity.Pipeline.Editor.Commands
                     return new TestListResponse
                     {
                         Success = false,
-                        Command = "list_tests",
+                        Command = CommandNames.TestList,
                         Error = $"Invalid mode '{mode}'. Use 'editor', 'playmode', or 'all'.",
                         ExecutedAt = DateTime.UtcNow
                     };
@@ -72,7 +74,7 @@ namespace Unity.Pipeline.Editor.Commands
                 return new TestListResponse
                 {
                     Success = true,
-                    Command = "list_tests",
+                    Command = CommandNames.TestList,
                     Mode = modes.Count == 2 ? "All" : modes[0].ToString(),
                     Count = tests.Count,
                     Tests = tests,
@@ -82,11 +84,11 @@ namespace Unity.Pipeline.Editor.Commands
             }
             catch (Exception ex)
             {
-                Debug.LogError($"[TestCommands] list_tests failed: {ex.Message}");
+                Debug.LogError($"[TestCommands] {CommandNames.TestList} failed: {ex.Message}");
                 return new TestListResponse
                 {
                     Success = false,
-                    Command = "list_tests",
+                    Command = CommandNames.TestList,
                     Error = "Failed to list tests",
                     ErrorDetails = ex.ToString(),
                     ExecutedAt = DateTime.UtcNow
@@ -97,8 +99,8 @@ namespace Unity.Pipeline.Editor.Commands
         /// <summary>
         /// Get current test status for async test execution
         /// </summary>
-        [CliCommand("test_status", "Get status of running async test execution", MainThreadRequired = false, Tags = new[] { "tests" })]
-        public static JToken GetTestStatus()
+        [CliGroupCommand(Group, "Get status of running async test execution", MainThreadRequired = false, Tags = new[] { "tests" })]
+        public static JToken Status()
         {
             var status = PipelineTestRunner.GetTestStatus();
             return status != null
@@ -109,8 +111,8 @@ namespace Unity.Pipeline.Editor.Commands
         /// <summary>
         /// Cancel running test execution
         /// </summary>
-        [CliCommand("cancel_tests", "Cancel running test execution", MainThreadRequired = true, Tags = new[] { "tests" })]
-        public static object CancelTests()
+        [CliGroupCommand(Group, "Cancel running test execution", MainThreadRequired = true, Tags = new[] { "tests" })]
+        public static object Cancel()
         {
             return PipelineTestRunner.CancelTests();
         }

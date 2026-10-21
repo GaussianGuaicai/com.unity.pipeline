@@ -72,6 +72,19 @@ namespace Unity.Pipeline.Threading
         /// <returns>The function's result.</returns>
         public T Invoke<T>(Func<T> function, int timeoutMs = 60000)
         {
+            return Invoke(function, TimeSpan.FromMilliseconds(timeoutMs));
+        }
+
+        /// <summary>
+        /// Execute a function on the main thread and return the result (synchronous wait).
+        /// </summary>
+        /// <typeparam name="T">The function's return type.</typeparam>
+        /// <param name="function">Function to run on the main thread.</param>
+        /// <param name="timeout">Time to wait before throwing <see cref="TimeoutException"/>;
+        /// <see cref="Timeout.InfiniteTimeSpan"/> waits forever.</param>
+        /// <returns>The function's result.</returns>
+        public T Invoke<T>(Func<T> function, TimeSpan timeout)
+        {
             if (!m_IsInitialized)
                 throw new InvalidOperationException("Dispatcher must be initialized first");
 
@@ -81,17 +94,17 @@ namespace Unity.Pipeline.Threading
             var workItem = new WorkItem<T>(function);
             m_WorkQueue.Enqueue(workItem);
 
-            var startTime = DateTime.UtcNow;
+            var elapsed = System.Diagnostics.Stopwatch.StartNew();
             var task = workItem.TaskCompletionSource.Task;
 
             while (!task.IsCompleted)
             {
-                if ((DateTime.UtcNow - startTime).TotalMilliseconds > timeoutMs)
+                if (timeout != Timeout.InfiniteTimeSpan && elapsed.Elapsed > timeout)
                 {
                     // No-op if execution already started on the main thread — only prevents a
                     // still-queued item from running after we've reported the timeout.
                     workItem.TryCancel();
-                    throw new TimeoutException($"Main thread operation timed out after {timeoutMs}ms");
+                    throw new TimeoutException($"Main thread operation timed out after {timeout.TotalMilliseconds:0}ms");
                 }
 
                 Thread.Sleep(1);
@@ -113,11 +126,22 @@ namespace Unity.Pipeline.Threading
         /// <param name="timeoutMs">Time to wait before throwing <see cref="TimeoutException"/>.</param>
         public void Invoke(Action action, int timeoutMs = 60000)
         {
+            Invoke(action, TimeSpan.FromMilliseconds(timeoutMs));
+        }
+
+        /// <summary>
+        /// Execute an action on the main thread.
+        /// </summary>
+        /// <param name="action">Action to run on the main thread.</param>
+        /// <param name="timeout">Time to wait before throwing <see cref="TimeoutException"/>;
+        /// <see cref="Timeout.InfiniteTimeSpan"/> waits forever.</param>
+        public void Invoke(Action action, TimeSpan timeout)
+        {
             Invoke<object>(() =>
             {
                 action();
                 return null;
-            }, timeoutMs);
+            }, timeout);
         }
 
         /// <summary>
@@ -141,6 +165,38 @@ namespace Unity.Pipeline.Threading
         public async Task InvokeAsync(Action action, int timeoutMs = 60000)
         {
             await Task.Run(() => Invoke(action, timeoutMs));
+        }
+
+        /// <summary>
+        /// Execute a function on the main thread and complete with its result, holding no thread
+        /// while it waits, unlike <see cref="InvokeAsync{T}(Func{T}, int)"/>: for callers that may
+        /// wait in numbers while the main thread is blocked. Runs inline on the main thread. The
+        /// caller resumes on a thread-pool thread, never on the main thread.
+        /// </summary>
+        /// <param name="function">Function to run on the main thread.</param>
+        /// <param name="timeout">Time to wait before throwing <see cref="TimeoutException"/>; a
+        /// function still queued then never runs.</param>
+        internal async Task<T> InvokeWithoutBlockingAsync<T>(Func<T> function, TimeSpan timeout)
+        {
+            if (!m_IsInitialized)
+                throw new InvalidOperationException("Dispatcher must be initialized first");
+
+            if (IsMainThread())
+                return function();
+
+            var workItem = new WorkItem<T>(function);
+            m_WorkQueue.Enqueue(workItem);
+
+            var task = workItem.TaskCompletionSource.Task;
+            if (await Task.WhenAny(task, Task.Delay(timeout)).ConfigureAwait(false) != task)
+            {
+                // No-op if execution already started on the main thread; then the result is
+                // dropped, as Invoke drops it.
+                workItem.TryCancel();
+                throw new TimeoutException($"Main thread operation timed out after {timeout.TotalMilliseconds:0}ms");
+            }
+
+            return await task.ConfigureAwait(false);
         }
 
         /// <summary>
@@ -274,7 +330,9 @@ namespace Unity.Pipeline.Threading
             public WorkItem(Func<T> function)
             {
                 m_Function = function ?? throw new ArgumentNullException(nameof(function));
-                TaskCompletionSource = new TaskCompletionSource<T>();
+                // Continuations run on the thread pool, so a caller awaiting the result never
+                // resumes on the main thread inside ProcessWorkQueue.
+                TaskCompletionSource = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
             }
 
             protected override void ExecuteCore()

@@ -146,5 +146,22 @@ namespace Unity.Pipeline.Security
         {
             s_CachedToken = null;
         }
+
+        /// <summary>
+        /// Test-only: make the given token current again, in memory and in SessionState, so a test
+        /// that replaced the token can hand the live server back the one its clients hold. Call on
+        /// the main thread (touches SessionState).
+        /// </summary>
+        /// <param name="token">The token to make current.</param>
+        internal static void RestoreTokenForTests(string token)
+        {
+            lock (s_Lock)
+            {
+#if UNITY_EDITOR
+                SessionState.SetString(SessionStateKey, token);
+#endif
+                s_CachedToken = token;
+            }
+        }
     }
 }

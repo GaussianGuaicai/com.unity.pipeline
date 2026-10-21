@@ -1,8 +1,8 @@
 # Project settings commands
 
-Read and change a representative slice of Unity's project-wide settings (Audio, Graphics, Input, Physics, Player, Quality, Runtime Pipeline, Tags & Layers, Time). `get_*` commands read a group's current values into a `ProjectSettingsResponse`; `set_*` commands mutate them through the shared `confirm`/`dry_run` convention, so `confirm=true` is required to apply and `dry_run=true` previews the change without applying it. Every command in this group is `MainThreadRequired = true`. On a `set_*`, omitted fields are left unchanged, and the group is re-read after the write so the response reflects the resulting state. Settings writes are not undoable via Ctrl+Z.
+Read and change a representative slice of Unity's project-wide settings (Audio, Graphics, Input, Physics, Player, Quality, Runtime Pipeline, Tags & Layers, Time). Each area is a `settings.<area>` group (`settings.audio`, `settings.graphics`, …) with a `get` and a `set` command. `get` reads the current values into a `ProjectSettingsResponse`; `set` mutates them through the shared `confirm`/`dry_run` convention, so `confirm=true` is required to apply and `dry_run=true` previews the change without applying it. Every command in these groups is `MainThreadRequired = true`. On a `set`, omitted fields are left unchanged, and the group is re-read after the write so the response reflects the resulting state. Settings writes are not undoable via Ctrl+Z.
 
-### `get_audio_settings`
+### `settings.audio get`
 Read project Audio settings (volume, rolloff scale, doppler factor).
 
 No parameters.
@@ -10,7 +10,7 @@ No parameters.
 **Returns:** `ProjectSettingsResponse`
 **Notes:** `MainThreadRequired = true`.
 
-### `set_audio_settings`
+### `settings.audio set`
 Change project Audio settings. Requires confirm=true; use dry_run to preview.
 
 | Parameter | Required | Default | Description |
@@ -30,7 +30,7 @@ Change project Audio settings. Requires confirm=true; use dry_run to preview.
 **Returns:** `ProjectSettingsResponse`
 **Notes:** `MainThreadRequired = true`. `confirm=true` required to apply; supports `dry_run`.
 
-### `get_graphics_settings`
+### `settings.graphics get`
 Read GraphicsSettings (default render pipeline).
 
 No parameters.
@@ -38,7 +38,7 @@ No parameters.
 **Returns:** `ProjectSettingsResponse`
 **Notes:** `MainThreadRequired = true`.
 
-### `set_graphics_settings`
+### `settings.graphics set`
 Set the default render pipeline asset. Requires confirm=true; use dry_run to preview.
 
 | Parameter | Required | Default | Description |
@@ -56,7 +56,7 @@ Set the default render pipeline asset. Requires confirm=true; use dry_run to pre
 **Returns:** `ProjectSettingsResponse`
 **Notes:** `MainThreadRequired = true`. `confirm=true` required to apply; supports `dry_run`.
 
-### `get_input_settings`
+### `settings.input get`
 Read the legacy Input Manager axes (names and count).
 
 No parameters.
@@ -64,7 +64,7 @@ No parameters.
 **Returns:** `ProjectSettingsResponse`
 **Notes:** `MainThreadRequired = true`.
 
-### `set_input_settings`
+### `settings.input set`
 Tune a legacy Input Manager axis (sensitivity/gravity/dead) by name. Requires confirm=true; use dry_run to preview.
 
 | Parameter | Required | Default | Description |
@@ -85,7 +85,7 @@ Tune a legacy Input Manager axis (sensitivity/gravity/dead) by name. Requires co
 **Returns:** `ProjectSettingsResponse`
 **Notes:** `MainThreadRequired = true`. `confirm=true` required to apply; supports `dry_run`.
 
-### `get_physics_settings`
+### `settings.physics get`
 Read Physics settings (gravity, solver iterations, bounce threshold).
 
 No parameters.
@@ -93,7 +93,7 @@ No parameters.
 **Returns:** `ProjectSettingsResponse`
 **Notes:** `MainThreadRequired = true`.
 
-### `set_physics_settings`
+### `settings.physics set`
 Change Physics settings. Requires confirm=true; use dry_run to preview.
 
 | Parameter | Required | Default | Description |
@@ -115,7 +115,7 @@ Change Physics settings. Requires confirm=true; use dry_run to preview.
 **Returns:** `ProjectSettingsResponse`
 **Notes:** `MainThreadRequired = true`. `confirm=true` required to apply; supports `dry_run`.
 
-### `get_player_settings`
+### `settings.player get`
 Read PlayerSettings (company/product/version, scripting backend, API level).
 
 No parameters.
@@ -123,7 +123,7 @@ No parameters.
 **Returns:** `ProjectSettingsResponse`
 **Notes:** `MainThreadRequired = true`.
 
-### `set_player_settings`
+### `settings.player set`
 Change PlayerSettings. Requires confirm=true; use dry_run to preview. Scripting backend / API level changes trigger a domain reload.
 
 | Parameter | Required | Default | Description |
@@ -145,7 +145,7 @@ Change PlayerSettings. Requires confirm=true; use dry_run to preview. Scripting 
 **Returns:** `ProjectSettingsResponse`
 **Notes:** `MainThreadRequired = true`. `confirm=true` required to apply; supports `dry_run`. Changing `scriptingBackend` or `apiCompatibilityLevel` triggers a domain reload (`requiresDomainReload`); scripting-backend / API-level changes are read and written against the active build target.
 
-### `get_quality_settings`
+### `settings.quality get`
 Read QualitySettings (current level, level names, vSync, anti-aliasing).
 
 No parameters.
@@ -153,7 +153,7 @@ No parameters.
 **Returns:** `ProjectSettingsResponse`
 **Notes:** `MainThreadRequired = true`.
 
-### `set_quality_settings`
+### `settings.quality set`
 Change QualitySettings. Requires confirm=true; use dry_run to preview.
 
 | Parameter | Required | Default | Description |
@@ -166,22 +166,22 @@ Change QualitySettings. Requires confirm=true; use dry_run to preview.
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `level` | no | `–` | Quality level index (see levelNames from get_quality_settings). |
+| `level` | no | `–` | Quality level index (see levelNames from `settings.quality get`). |
 | `vSyncCount` | no | `–` | VSync count (0 = off, 1, 2). |
 | `antiAliasing` | no | `–` | MSAA sample count (0, 2, 4, 8). |
 
 **Returns:** `ProjectSettingsResponse`
 **Notes:** `MainThreadRequired = true`. `confirm=true` required to apply; supports `dry_run`.
 
-### `get_runtime_pipeline_settings`
-Read Pipeline Runtime settings (enableInBuilds, port, requestTimeoutMs, enableAuditLogging, autoStart, maxWorkItemsPerFrame). Reports the settings in effect, falling back to built-in defaults when none have been authored; never creates the settings file.
+### `settings.runtime_pipeline get`
+Read Pipeline Runtime settings (enableInDevelopmentBuilds, enableInReleaseBuilds, port, enableAuditLogging, autoStart, maxWorkItemsPerFrame). Reports the settings in effect, falling back to built-in defaults when none have been authored; never creates the settings file. The two toggles are reported for the active build target.
 
 No parameters.
 
 **Returns:** `ProjectSettingsResponse`
 **Notes:** `MainThreadRequired = true`.
 
-### `set_runtime_pipeline_settings`
+### `settings.runtime_pipeline set`
 Change Pipeline Runtime settings. Requires confirm=true; use dry_run to preview.
 
 | Parameter | Required | Default | Description |
@@ -194,17 +194,17 @@ Change Pipeline Runtime settings. Requires confirm=true; use dry_run to preview.
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `enableInBuilds` | no | `–` | Enable the Pipeline HTTP server in Player builds. SECURITY WARNING: only enable in development/QA builds. |
+| `enableInDevelopmentBuilds` | no | `–` | Compile the Pipeline into development builds. Writes a scripting define symbol for every installed build target, so it triggers a recompile. |
+| `enableInReleaseBuilds` | no | `–` | Compile the Pipeline into release builds. SECURITY WARNING: a release build carrying the Pipeline exposes code execution over a local HTTP server. |
 | `port` | no | `–` | HTTP port for the Pipeline server. 0 = auto-assign from range 7900-7999. |
-| `requestTimeoutMs` | no | `–` | Request timeout in milliseconds. |
 | `enableAuditLogging` | no | `–` | Log every remote request for security auditing. |
 | `autoStart` | no | `–` | Start the server automatically when the Player boots (or Play Mode is entered). |
 | `maxWorkItemsPerFrame` | no | `–` | Maximum work items the dispatcher processes per frame. |
 
 **Returns:** `ProjectSettingsResponse`
-**Notes:** `MainThreadRequired = true`. `confirm=true` required to apply; supports `dry_run`. Refused while in Play Mode — the running driver already loaded its own settings, so a change would silently not apply until the next Play session or build. `port` (0-65535), `requestTimeoutMs` (1000-60000), and `maxWorkItemsPerFrame` (1-50) are rejected outright with a `Fail` response if outside these bounds — the same ones the Project Settings page enforces — rather than being clamped or silently applied.
+**Notes:** `MainThreadRequired = true`. `confirm=true` required to apply; supports `dry_run`. Changing `enableInDevelopmentBuilds` or `enableInReleaseBuilds` triggers a domain reload (`requiresDomainReload`). Refused while in Play Mode — the running driver already loaded its own settings, so a change would silently not apply until the next Play session or build. `port` (0-65535) and `maxWorkItemsPerFrame` (1-50) are rejected outright with a `Fail` response if outside these bounds — the same ones the Project Settings page enforces — rather than being clamped or silently applied.
 
-### `get_tags_layers`
+### `settings.tags_layers get`
 Read the project's tags and (named) layers.
 
 No parameters.
@@ -212,7 +212,7 @@ No parameters.
 **Returns:** `ProjectSettingsResponse`
 **Notes:** `MainThreadRequired = true`.
 
-### `set_tags_layers`
+### `settings.tags_layers set`
 Add/remove tags and assign user layer names (index 8-31). Requires confirm=true; use dry_run to preview.
 
 | Parameter | Required | Default | Description |
@@ -239,7 +239,7 @@ Add/remove tags and assign user layer names (index 8-31). Requires confirm=true;
 **Returns:** `ProjectSettingsResponse`
 **Notes:** `MainThreadRequired = true`. `confirm=true` required to apply; supports `dry_run`. User layers are indices 8-31 (0-7 are reserved).
 
-### `get_time_settings`
+### `settings.time get`
 Read Time settings (fixedDeltaTime, maximumDeltaTime, timeScale).
 
 No parameters.
@@ -247,7 +247,7 @@ No parameters.
 **Returns:** `ProjectSettingsResponse`
 **Notes:** `MainThreadRequired = true`.
 
-### `set_time_settings`
+### `settings.time set`
 Change Time settings. Requires confirm=true; use dry_run to preview.
 
 | Parameter | Required | Default | Description |

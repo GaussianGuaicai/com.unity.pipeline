@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -47,47 +48,44 @@ namespace Unity.Pipeline
         /// </summary>
         private const long MaxCancelBodyBytes = 4 * 1024;
 
-        /// <summary>
-        /// Dispatcher wait for a detached job's main-thread execution. Nothing is synchronously
-        /// waiting on this thread (the job's HTTP response was already sent), so this only needs
-        /// to be larger than any command's own timeout (e.g. eval's 24h cap) rather than bounded
-        /// by an HTTP-facing default.
-        /// </summary>
-        private const int UnboundedJobDispatcherTimeoutMs = int.MaxValue;
-
         private bool m_IsRunning;
         private int m_Port;
-
-        /// <summary>
-        /// Serializes /api/exec command execution now that requests are processed
-        /// concurrently: execs queue exactly as they did when the accept loop was serial,
-        /// while read-only endpoints (/api/status, /api/progress, …) answer immediately.
-        /// </summary>
-        private readonly SemaphoreSlim m_ExecGate = new SemaphoreSlim(1, 1);
 
         private HttpListener m_HttpListener;
         private readonly Dispatcher m_Dispatcher = new Dispatcher();
 
-        /// <summary>This server's own progress-reporting state (see CliProgress).</summary>
-        internal CliProgressState Progress { get; } = new CliProgressState();
+        /// <summary>The progress of the command this server's queue runs now (see CliProgress).</summary>
+        internal CliProgressState Progress => Queue.Progress;
 
         /// <summary>This server's own modal-dialog state (see EditorDialogStateMirror, Task 7).</summary>
         internal DialogStateTracker Dialogs { get; } = new DialogStateTracker();
 
-        /// <summary>This server's own detached-job registry (see PipelineCancellation, /api/job).</summary>
-        internal PipelineJobRegistry JobRegistry { get; } = new PipelineJobRegistry();
+        /// <summary>
+        /// The detached jobs (CLI-335) this server ran for <c>/api/exec</c> with <c>"job": true</c>,
+        /// by id: each one's execution and what it wrote, kept after it ends so a client that
+        /// timed out or disconnected can still collect it with <c>/api/job</c>. In-memory by design:
+        /// a domain reload discards them, as it does every other C# static.
+        /// </summary>
+        readonly ConcurrentDictionary<CommandExecutionId, Job> m_Jobs = new ConcurrentDictionary<CommandExecutionId, Job>();
+
+        /// <summary>Ended jobs kept beyond this count are pruned oldest-first.</summary>
+        const int MaxRetainedEndedJobs = 100;
+
+        /// <summary>Ended jobs older than this are pruned regardless of count.</summary>
+        static readonly TimeSpan s_JobRetention = TimeSpan.FromHours(1);
+
 
         /// <summary>
-        /// The server instance currently executing a command on this thread, if any. Set only
-        /// around the actual command invocation (see <see cref="ExecuteCommandDirect"/>) so
-        /// CliProgress.Report/PipelineCancellation — called from arbitrary command code with no
-        /// reference to "which server is running me" — resolve to the right instance. Correct
-        /// regardless of which physical thread ends up running the command, since the push/read/pop
-        /// all happen within one synchronous call frame; a command that awaits and resumes on a
-        /// different thread before calling either API would not see it (no command does today).
+        /// Runs this server's commands one at a time on its dispatcher. The status routes use it
+        /// directly; everything else goes through <see cref="Executor"/>.
         /// </summary>
-        [ThreadStatic] private static BasePipelineServer m_CurrentServer;
-        internal static BasePipelineServer CurrentServer => m_CurrentServer;
+        internal DefaultCommandQueue Queue { get; }
+
+        /// <summary>
+        /// Runs the commands this server's requests ask for, through <see cref="Queue"/>, and
+        /// decides whether a command can run now.
+        /// </summary>
+        internal ICommandExecutor Executor { get; }
 
         private bool m_WatchdogEnabled;
         private bool m_WatchdogArmed;
@@ -101,6 +99,25 @@ namespace Unity.Pipeline
         /// player; pumped explicitly by tests).
         /// </summary>
         public Dispatcher Dispatcher => m_Dispatcher;
+
+        /// <summary>Creates the server, with its executor over this domain's command registry.</summary>
+        protected BasePipelineServer()
+        {
+            DefaultCommandExecutor executor = null;
+            Queue = new DefaultCommandQueue(m_Dispatcher, info => executor.ReportEnded(info));
+            Executor = executor = CreateExecutor(CommandRegistry.GetRegistry(), Queue);
+        }
+
+        /// <summary>
+        /// Creates this server's executor, whose rules decide what may run. Called from the
+        /// constructor, so an override uses only what the base class has set up, such as
+        /// <see cref="Dispatcher"/> and <see cref="Dialogs"/>. Default: an executor that refuses
+        /// nothing, as a Player's.
+        /// </summary>
+        internal virtual DefaultCommandExecutor CreateExecutor(ICommandRegistry registry, ICommandQueue queue)
+        {
+            return new DefaultCommandExecutor(registry, queue);
+        }
 
         /// <summary>
         /// Whether the server is running AND its HTTP listener is actually listening. More accurate
@@ -156,19 +173,34 @@ namespace Unity.Pipeline
         public int Port => m_Port;
 
         /// <summary>UTC time this server instance started listening.</summary>
-        public abstract DateTime StartedAt { get; }
+        public DateTime StartedAt => m_StartedAt;
+
+        private DateTime m_StartedAt;
 
         /// <summary>
-        /// Whether this server writes/deletes the shared instance descriptor (.unity-pipeline-port).
-        /// Test servers override this to false so they never clobber the live server's descriptor —
-        /// the test already knows its port, so no discovery file is needed.
+        /// Whether this server registers its <c>http</c> endpoint in <see cref="PipelineEndpoints"/>
+        /// while running. Test servers return false so they don't show up beside the live server.
         /// </summary>
-        protected virtual bool WritesDescriptor => true;
+        protected virtual bool AdvertisesEndpoint => true;
+
+        /// <summary>
+        /// Whether this server's endpoint is currently registered in <see cref="PipelineEndpoints"/>:
+        /// true from a successful <see cref="Start"/> until <see cref="Stop"/> (or a failed start)
+        /// unregisters it. Always false when <see cref="AdvertisesEndpoint"/> is false. Subclasses
+        /// report /api/status "ready" vs. "error" from it.
+        /// </summary>
+        protected bool IsEndpointRegistered => m_Endpoint != null;
+
+        private PipelineServiceEndpoint m_Endpoint;
+
+        // Unregister from the same registry, even if PipelineEndpoints has released it since.
+        private IEndpointRegistrationService m_EndpointRegistry;
 
         /// <summary>
         /// Whether requests from a sandboxed browser frame (Origin: null) are accepted. Off by default;
         /// an ordinary web page is refused either way, and a sandboxed one still needs the bearer token,
-        /// which lives in a file no browser can read.
+        /// which lives in a file no browser can read. Such a frame may also address the server as
+        /// localhost. Read by <see cref="Start"/>, so set it before <see cref="Start"/>.
         /// </summary>
         public bool AllowSandboxedBrowserClients
         {
@@ -188,65 +220,96 @@ namespace Unity.Pipeline
         /// </summary>
         private const string LoopbackHost = "127.0.0.1";
 
-        /// <summary>Write the shared instance descriptor file so clients can discover this server.</summary>
-        protected abstract void CreateInstanceDescriptor();
-        /// <summary>Remove the shared instance descriptor file on shutdown.</summary>
-        protected abstract void DeleteInstanceDescriptor();
-        /// <summary>Refresh the descriptor's heartbeat timestamp so discovery can detect a live server.</summary>
-        protected abstract void UpdateHeartBeat();
+        /// <summary>The host a sandboxed browser frame dials, accepted only from such a frame.</summary>
+        private const string LocalhostName = "localhost";
+
+        /// <summary>How long <see cref="Start"/> waits for "localhost" to resolve on the main thread.</summary>
+        private static readonly TimeSpan LocalhostResolveTimeout = TimeSpan.FromSeconds(1);
+
+        /// <summary>
+        /// Whether listeners also register a localhost prefix. Decided once per <see cref="Start"/>:
+        /// the port probe and the watchdog re-open build listeners too, and must not repeat the DNS
+        /// lookup or its warning.
+        /// </summary>
+        private bool m_ServesLocalhost;
+
         /// <summary>Build the host-specific payload for <c>/api/status</c> (Editor vs. Player fields differ).</summary>
         /// <returns>The status payload.</returns>
         protected abstract object GetServerStatus();
+
+        /// <summary>
+        /// The Editor's state, for <c>/api/editor_status</c>. A Player has none, and the route
+        /// answers its failure.
+        /// </summary>
+        /// <exception cref="NotSupportedException">This server is not an Editor's.</exception>
+        internal virtual Task<StatusResponse> GetEditorStatus()
+        {
+            throw new NotSupportedException("Only an Editor reports its status.");
+        }
+
+        /// <summary>
+        /// The state of the asynchronous test run, for <c>/api/test-status</c>. A Player runs no
+        /// tests, and the route answers its failure.
+        /// </summary>
+        /// <exception cref="NotSupportedException">This server is not an Editor's.</exception>
+        internal virtual object GetTestStatus()
+        {
+            throw new NotSupportedException("Only an Editor runs tests.");
+        }
+
+        /// <summary>
+        /// Answers a command the executor refused as though it ran, for a server that has a result
+        /// to give in its place. Called on the HTTP thread. None by default.
+        /// </summary>
+        /// <param name="refusal">Why the command can't run now.</param>
+        /// <param name="answer">The result to answer with.</param>
+        /// <returns>False to answer the refusal itself.</returns>
+        internal virtual bool TryAnswerRefusal(CommandUnavailableException refusal, out object answer)
+        {
+            answer = null;
+            return false;
+        }
+
         /// <summary>The bearer token clients must present to authenticate requests.</summary>
         /// <returns>The current token.</returns>
         protected abstract string GetToken();
 
         /// <summary>
-        /// Optional wire features this server understands, advertised on /api/status and in the
-        /// port descriptor.
+        /// Optional wire features every server understands, advertised on /api/status and in the
+        /// port descriptor. A Player server advertises exactly these; the Editor server advertises
+        /// <see cref="EditorCapabilities"/>.
         ///
-        /// One array feeds both carriers so they cannot drift: a server that claims a capability
-        /// it lacks is worse than one that claims nothing, because a client's fallback is keyed on
-        /// the claim. Absence of the key entirely means the server is too old to have it, and
-        /// clients must then assume no raw command-line support.
+        /// One array per server feeds both carriers so they cannot drift: a server that claims a
+        /// capability it lacks is worse than one that claims nothing, because a client's fallback
+        /// is keyed on the claim. Absence of the key entirely means the server is too old to have
+        /// it, and clients must then assume no raw command-line support.
+        ///
+        /// <c>exec.commandTimeouts</c>: a request without a <c>timeout</c> gets the command's own
+        /// default, and the server always answers (504 <c>TIMEOUT</c>) when a timeout runs out.
         /// </summary>
-        internal static readonly string[] Capabilities = { "exec.argv", "exec.commandLine" };
+        internal static readonly string[] Capabilities = { "exec.argv", "exec.commandLine", "exec.commandTimeouts" };
+
+        /// <summary>The capability of a server that answers <c>/api/commands?detail=obsolete_names</c>.</summary>
+        internal const string ObsoleteNamesCapability = "commands.obsoleteNames";
+
+        /// <summary>
+        /// <see cref="Capabilities"/> plus what only the Editor serves: the obsolete command names,
+        /// which ship as a package file a Player does not carry.
+        /// </summary>
+        internal static readonly string[] EditorCapabilities = Capabilities.Append(ObsoleteNamesCapability).ToArray();
+
+        /// <summary>
+        /// Old command name to the full name that replaced it, served by
+        /// <c>/api/commands?detail=obsolete_names</c>. Null on a server that does not serve them,
+        /// which then refuses that detail value like an older package does.
+        /// </summary>
+        protected virtual IReadOnlyDictionary<string, string> ObsoleteCommandNames => null;
 
         /// <summary>Hook invoked once the listener is accepting requests. No-op by default.</summary>
         protected virtual void ServerStarted()
         {
 
         }
-
-        /// <summary>
-        /// Busy probe for the /api/exec gate: return a non-null, human-readable reason when the
-        /// host cannot service <paramref name="command"/> right now (e.g. the Editor is still
-        /// importing/compiling while settling after a cold start), or null to let it run. A busy
-        /// command is rejected with HTTP 503 and a structured, retryable envelope — before sync
-        /// execution and before a detached job is created — instead of executing into a
-        /// half-ready host and failing opaquely (AUTHAPI-35). Called on the request thread, so
-        /// implementations must only read thread-safe state. Default: never busy.
-        /// </summary>
-        /// <param name="command">The command about to be dispatched.</param>
-        /// <returns>A human-readable busy reason, or null to let the command run.</returns>
-        protected virtual string GetBusyReason(CommandInfo command) => null;
-
-        /// <summary>
-        /// For a command otherwise blocked by the dialog gate, an optional cached-but-still-valid
-        /// result to serve as a normal 200 success instead of the 503 (e.g. editor_status: nothing
-        /// about compilation/play-mode/domain-reload can change while the main thread is stuck
-        /// inside the dialog's native message loop, so a snapshot taken just before it blocked
-        /// stays correct for the whole window — see EditorPipelineServer's override). Called on the
-        /// request thread, so implementations must only read thread-safe state. Default: no
-        /// fallback exists, so every MainThreadRequired command stays hard-gated.
-        ///
-        /// Internal, not protected: DialogInfo is internal, and a protected member can't expose a
-        /// less-accessible type in its signature — a subclass outside this assembly (without
-        /// InternalsVisibleTo) couldn't reference DialogInfo to override it. EditorPipelineServer
-        /// overrides this from Unity.Pipeline.Editor, which already has that grant (same as
-        /// Dialogs and BuildDialogPayload above).
-        /// </summary>
-        internal virtual object TryGetDialogBlockedFallback(CommandInfo command, DialogInfo blockingDialog) => null;
 
         /// <summary>Hook invoked once the listener has stopped accepting requests. No-op by default.</summary>
         protected virtual void ServerStopped()
@@ -276,6 +339,7 @@ namespace Unity.Pipeline
             if (m_IsRunning)
                 return;
 
+            m_ServesLocalhost = ShouldServeLocalhost();
             m_Port = port == 0 ? FindAvailablePort() : port;
             PortAutoAssigned = port == 0;
 
@@ -297,8 +361,9 @@ namespace Unity.Pipeline
 
                 System.Console.WriteLine($"Start HTTP server: port:{m_Port}");
 
-                if (WritesDescriptor)
-                    CreateInstanceDescriptor();
+                m_StartedAt = DateTime.UtcNow;
+                if (AdvertisesEndpoint)
+                    RegisterEndpoint();
 
                 ArmWatchdog();
 
@@ -307,6 +372,8 @@ namespace Unity.Pipeline
             catch (Exception)
             {
                 m_IsRunning = false;
+                // Don't leave a failed start advertised.
+                UnregisterEndpoint();
                 m_HttpListener?.Stop();
                 m_HttpListener = null;
                 throw;
@@ -342,10 +409,64 @@ namespace Unity.Pipeline
         ///
         /// IPv4 only: Mono mis-parses a bracketed "[::1]" host, so the IPv6 loopback cannot be
         /// served whichever prefix is registered.
+        ///
+        /// The one exception is <see cref="AllowSandboxedBrowserClients"/>: a browser frame dials
+        /// "localhost", and a managed listener refuses that Host unless a matching prefix exists. The
+        /// prefix is registered only when "localhost" resolves to loopback addresses alone, so it
+        /// cannot widen the socket binding. It is never registered over http.sys (see
+        /// <see cref="ListenerMatchesHostAgainstPrefixes"/>).
         /// </summary>
-        private static void AddLoopbackPrefixes(HttpListener listener, int port)
+        private void AddLoopbackPrefixes(HttpListener listener, int port)
         {
             listener.Prefixes.Add(BaseUrlFor(port));
+
+            if (m_ServesLocalhost)
+                listener.Prefixes.Add($"http://{LocalhostName}:{port}/");
+        }
+
+        private bool ShouldServeLocalhost()
+        {
+            if (!AllowSandboxedBrowserClients || !ListenerMatchesHostAgainstPrefixes)
+                return false;
+
+            if (ResolvesToLoopbackOnly(LocalhostName, LocalhostResolveTimeout))
+                return true;
+
+            Debug.LogWarning($"Pipeline: '{LocalhostName}' did not resolve to the loopback only, so browser "
+                + $"clients must address the server as {LoopbackHost}.");
+            return false;
+        }
+
+        /// <summary>
+        /// Whether the listener refuses a Host that matches no registered prefix. Mono's managed
+        /// listener does, and so does the managed one CoreCLR uses on macOS and Linux. CoreCLR on
+        /// Windows runs over http.sys instead, which already serves "Host: localhost" through the
+        /// 127.0.0.1 prefix, and listens on every interface for a hostname prefix.
+        /// </summary>
+        private static readonly bool ListenerMatchesHostAgainstPrefixes =
+            Type.GetType("Mono.Runtime") != null
+            || !System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(
+                System.Runtime.InteropServices.OSPlatform.Windows);
+
+        /// <summary>
+        /// Whether <paramref name="host"/> resolves, within <paramref name="timeout"/>, to loopback
+        /// addresses alone. A failed or slower lookup counts as no: DNS has no timeout of its own.
+        /// </summary>
+        internal static bool ResolvesToLoopbackOnly(string host, TimeSpan timeout)
+        {
+            try
+            {
+                var lookup = Dns.GetHostAddressesAsync(host);
+                if (!lookup.Wait(timeout))
+                    return false;
+
+                var addresses = lookup.Result;
+                return addresses.Length > 0 && addresses.All(IPAddress.IsLoopback);
+            }
+            catch (Exception)
+            {
+                return false;
+            }
         }
 
         /// <summary>
@@ -355,6 +476,33 @@ namespace Unity.Pipeline
         /// it its own way would be answered 400 the moment the two drifted apart.
         /// </summary>
         internal static string BaseUrlFor(int port) => $"http://{LoopbackHost}:{port}/";
+
+        /// <summary>The endpoint this server advertises while running. Called once per start.</summary>
+        /// <remarks>Internal, not protected: <see cref="PipelineServiceEndpoint"/> is internal.</remarks>
+        /// <returns>An <c>http</c> endpoint with this server's <c>port</c>.</returns>
+        internal virtual PipelineServiceEndpoint CreateEndpoint()
+        {
+            return new PipelineServiceEndpoint("http", new Dictionary<string, string>
+            {
+                ["port"] = m_Port.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            });
+        }
+
+        private void RegisterEndpoint()
+        {
+            m_EndpointRegistry = PipelineEndpoints.GetRegistrationService();
+            m_Endpoint = CreateEndpoint();
+            m_EndpointRegistry.RegisterEndpoint(m_Endpoint);
+        }
+
+        private void UnregisterEndpoint()
+        {
+            if (m_Endpoint == null)
+                return;
+            m_EndpointRegistry.UnregisterEndpoint(m_Endpoint);
+            m_Endpoint = null;
+            m_EndpointRegistry = null;
+        }
 
         /// <summary>
         /// Stop the HTTP server and clean up resources.
@@ -371,8 +519,7 @@ namespace Unity.Pipeline
 
             try
             {
-                if (WritesDescriptor)
-                    DeleteInstanceDescriptor();
+                UnregisterEndpoint();
 
                 // Shut the dispatcher down BEFORE Close() below, not after: a MainThreadRequired
                 // command still parked in Dispatcher.Invoke's polling loop has no pump left to wait
@@ -494,7 +641,7 @@ namespace Unity.Pipeline
                     // /api/progress polls that exist precisely for that situation (CLI-488;
                     // the "editor is unresponsive until the command finishes" report in
                     // CLI-335). Command execution itself stays strictly serialized via
-                    // m_ExecGate below, so exec ordering semantics are unchanged.
+                    // the command queue, so exec ordering semantics are unchanged.
                     _ = ProcessRequestDetached(context);
                 }
                 catch (ObjectDisposedException)
@@ -719,7 +866,11 @@ namespace Unity.Pipeline
         ///
         /// Strict on purpose. Everything in this package addresses a server through
         /// <see cref="BaseUrlFor"/>, so the one spelling that has to work is the one it produces;
-        /// admitting "localhost" as well would widen the surface for no caller's benefit.
+        /// admitting "localhost" as well would widen the surface for no caller's benefit. The one
+        /// caller that needs it is a sandboxed browser frame, so "localhost" is accepted only with
+        /// <see cref="AllowSandboxedBrowserClients"/> on and an Origin of "null". A rebinding
+        /// request still names the attacker's domain, so this admits nothing the Origin gate
+        /// would not.
         /// </summary>
         private bool IsHostAllowed(HttpListenerRequest request)
         {
@@ -736,7 +887,7 @@ namespace Unity.Pipeline
             // bracketed IPv6 form to parse, but splitting from the right is correct either way.
             var separator = host.LastIndexOf(':');
             var name = separator >= 0 ? host.Substring(0, separator) : host;
-            if (name != LoopbackHost)
+            if (name != LoopbackHost && !IsSandboxedBrowserAtLocalhost(request, name))
                 return false;
 
             // A Host with no port means the scheme's default. Spelled out rather than waved through
@@ -745,6 +896,13 @@ namespace Unity.Pipeline
                 return m_Port == 80;
 
             return int.TryParse(host.Substring(separator + 1), out var port) && port == m_Port;
+        }
+
+        private bool IsSandboxedBrowserAtLocalhost(HttpListenerRequest request, string hostName)
+        {
+            return AllowSandboxedBrowserClients
+                && string.Equals(hostName, LocalhostName, StringComparison.OrdinalIgnoreCase)
+                && request.Headers["Origin"] == SandboxedOrigin;
         }
 
         private bool IsAuthorized(HttpListenerRequest request)
@@ -880,53 +1038,28 @@ namespace Unity.Pipeline
         }
 
         /// <summary>
-        /// Handle /api/editor_status endpoint - returns detailed Editor state via command execution.
-        /// Executes the "editor_status" command to get rich Editor information.
+        /// Handle /api/editor_status endpoint - returns detailed Editor state, read by
+        /// <see cref="GetEditorStatus"/>.
         /// </summary>
         private async Task HandleEditorStatusRequest(HttpListenerResponse response)
         {
             try
             {
-                // TODO: should this be implemented as a command??
+                var editorStatus = await GetEditorStatus();
 
-                // Queue behind the same gate as /api/exec so this doesn't run concurrently with
-                // an in-flight exec (or another editor_status/test_status call): it dispatches
-                // onto the main thread just like exec does, so left ungated it would race rather
-                // than queue the way it did under the old serial accept loop.
-                object result;
-                await m_ExecGate.WaitAsync();
-                try
-                {
-                    result = await ExecuteCommandByName("editor_status", new JObject());
-                }
-                finally
-                {
-                    m_ExecGate.Release();
-                }
+                // Update with server-specific information
+                UpdateStatusWithServerInfo(editorStatus);
 
-                // The editor_status command returns a StatusResponse directly
-                var editorStatus = result as StatusResponse;
-                if (editorStatus != null)
-                {
-                    // Update with server-specific information
-                    UpdateStatusWithServerInfo(editorStatus);
+                var json = JsonConvert.SerializeObject(editorStatus, Formatting.Indented);
 
-                    var json = JsonConvert.SerializeObject(editorStatus, Formatting.Indented);
+                response.StatusCode = 200;
+                response.ContentType = "application/json";
 
-                    response.StatusCode = 200;
-                    response.ContentType = "application/json";
+                var buffer = Encoding.UTF8.GetBytes(json);
+                response.ContentLength64 = buffer.Length;
 
-                    var buffer = Encoding.UTF8.GetBytes(json);
-                    response.ContentLength64 = buffer.Length;
-
-                    await response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
-                    response.OutputStream.Close();
-                }
-                else
-                {
-                    Debug.LogError($"HandleEditorStatusRequest: editor_status command returned wrong type: {result?.GetType().FullName ?? "null"}");
-                    await SendErrorResponse(response, "Editor Status Error", "editor_status command did not return valid StatusResponse");
-                }
+                await response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
+                response.OutputStream.Close();
             }
             catch (Exception ex)
             {
@@ -942,12 +1075,11 @@ namespace Unity.Pipeline
 
         /// <summary>
         /// Update StatusResponse with server-specific information.
-        /// Used by /api/editor_status to add server metadata to command result.
+        /// Used by /api/editor_status to add server metadata to the Editor's state.
         /// </summary>
         private void UpdateStatusWithServerInfo(StatusResponse editorStatus)
         {
-            UpdateHeartBeat();
-            // Ensure heartbeat is current
+            // The response time; see StatusResponse.LastHeartbeat.
             editorStatus.LastHeartbeat = DateTime.UtcNow;
         }
 
@@ -956,19 +1088,28 @@ namespace Unity.Pipeline
         ///
         /// Optional query parameters (filters combine with AND):
         ///  - detail: 'full' (default) includes parameters and the generated JSON schema;
-        ///    'compact' returns a lightweight index (name, description, tags, package) so a
+        ///    'compact' returns a lightweight index (command, name, group, description, tags, package) so a
         ///    client can cheaply browse, then fetch full detail only for the commands it
         ///    intends to invoke; 'tags' returns a 'tags' array of {tag, count} INSTEAD of
         ///    'commands' — the entry point to browsing, so a client needs no catalog of its
         ///    own. Each count covers the tag's whole subtree, so it is exactly what
-        ///    'tag=<that tag>' returns.
-        ///  - query: case-insensitive substring match on name, description, or any tag.
+        ///    'tag=<that tag>' returns. 'groups' returns a 'groups' array of {group, count} the
+        ///    same way, one row per group including parents that hold only subgroups; each
+        ///    count is exactly what 'group=<that group>' returns. 'obsolete_names', on a server
+        ///    that overrides <see cref="ObsoleteCommandNames"/>, returns an 'obsoleteNames' array of
+        ///    {oldName, command}: each flat name a command had before groups, and its full name now.
+        ///  - query: case-insensitive substring match on full name, description, or any tag.
+        ///  - group: scope to a group and its subgroups ('build' matches 'build' and
+        ///    'build.target' but not 'buildx').
+        ///  - include_tests: 'true' also lists the commands the test assemblies declare, which
+        ///    are hidden by default (they stay executable either way).
         ///  - tag: scope to a tag subtree via segment-aware prefix match ('assets' matches
         ///    'assets' and 'assets/import' but not 'assetsx').
-        ///  - group_by: 'flat' (default) returns a 'commands' array; 'package' and 'tag'
-        ///    return a 'groups' array instead ('tag' is a nested tree mirroring tag/subtag;
-        ///    untagged commands land in a node with an empty tag).
-        ///  - sort: 'name' (default) or 'package' (originating package, name as tiebreak);
+        ///  - group_by: 'flat' (default) returns a 'commands' array; 'package', 'tag' and
+        ///    'group' return a 'groups' array instead ('tag' and 'group' are nested trees
+        ///    mirroring tag/subtag and group.subgroup; untagged or ungrouped commands land in a
+        ///    node with an empty tag or group).
+        ///  - sort: 'name' (default, by full name) or 'package' (originating package, full name as tiebreak);
         ///    order: 'asc' (default) or 'desc'. Sorting applies to the flat list before
         ///    pagination and grouping.
         ///  - offset / limit: paginate the filtered, sorted flat list (applied before
@@ -984,36 +1125,46 @@ namespace Unity.Pipeline
                 var detail = queryString["detail"] ?? "full";
                 bool fullDetail = false;
                 var tagIndex = false;
+                var groupIndex = false;
+                var obsoleteNames = ObsoleteCommandNames;
+                var obsoleteIndex = false;
                 if (string.Equals(detail, "full", StringComparison.OrdinalIgnoreCase))
                     fullDetail = true;
                 else if (string.Equals(detail, "compact", StringComparison.OrdinalIgnoreCase))
                     fullDetail = false;
                 else if (string.Equals(detail, "tags", StringComparison.OrdinalIgnoreCase))
                     tagIndex = true;
+                else if (string.Equals(detail, "groups", StringComparison.OrdinalIgnoreCase))
+                    groupIndex = true;
+                else if (obsoleteNames != null && string.Equals(detail, "obsolete_names", StringComparison.OrdinalIgnoreCase))
+                    obsoleteIndex = true;
                 else
                 {
+                    var accepted = obsoleteNames != null ? "compact, full, tags, groups, obsolete_names" : "compact, full, tags, groups";
                     await SendStatusResponse(response, 400, "Invalid Request",
-                        $"Unknown detail value '{detail}'. Accepted values: compact, full, tags");
+                        $"Unknown detail value '{detail}'. Accepted values: {accepted}");
                     return;
                 }
 
                 var groupBy = queryString["group_by"] ?? "flat";
                 var groupByPackage = string.Equals(groupBy, "package", StringComparison.OrdinalIgnoreCase);
                 var groupByTag = string.Equals(groupBy, "tag", StringComparison.OrdinalIgnoreCase);
-                if (!groupByPackage && !groupByTag && !string.Equals(groupBy, "flat", StringComparison.OrdinalIgnoreCase))
+                var groupByGroup = string.Equals(groupBy, "group", StringComparison.OrdinalIgnoreCase);
+                if (!groupByPackage && !groupByTag && !groupByGroup && !string.Equals(groupBy, "flat", StringComparison.OrdinalIgnoreCase))
                 {
                     await SendStatusResponse(response, 400, "Invalid Request",
-                        $"Unknown group_by value '{groupBy}'. Accepted values: flat, package, tag");
+                        $"Unknown group_by value '{groupBy}'. Accepted values: flat, package, tag, group");
                     return;
                 }
 
-                // Grouping a tag index is meaningless — its rows ARE the tags — so refuse the
-                // combination rather than silently ignoring one of the two.
-                if (tagIndex && (groupByPackage || groupByTag))
+                // Grouping an index is meaningless — its rows ARE the tags or groups — so refuse
+                // the combination rather than silently ignoring one of the two.
+                if ((tagIndex || groupIndex) && (groupByPackage || groupByTag || groupByGroup))
                 {
+                    var kind = tagIndex ? "tag" : "group";
                     await SendStatusResponse(response, 400, "Invalid Request",
-                        $"detail=tags cannot be combined with group_by='{groupBy}'. The tag index is "
-                        + "already one row per tag; use group_by with detail=compact or detail=full.");
+                        $"detail={kind}s cannot be combined with group_by='{groupBy}'. The {kind} index is "
+                        + $"already one row per {kind}; use group_by with detail=compact or detail=full.");
                     return;
                 }
 
@@ -1028,11 +1179,23 @@ namespace Unity.Pipeline
 
                 // A tag belongs to no single package, so there is nothing for a package sort to
                 // order a tag index by — refuse rather than silently falling back to name order.
-                if (tagIndex && sortByPackage)
+                if ((tagIndex || groupIndex) && sortByPackage)
+                {
+                    var kind = tagIndex ? "tag" : "group";
+                    await SendStatusResponse(response, 400, "Invalid Request",
+                        $"detail={kind}s cannot be combined with sort=package. A {kind} is not owned by a "
+                        + "package; use sort=name, or sort=package with detail=compact or detail=full.");
+                    return;
+                }
+
+                // An obsolete name is not a command: it has no package, tag or group to order,
+                // group or scope it by.
+                if (obsoleteIndex && (groupByPackage || groupByTag || groupByGroup || sortByPackage
+                        || queryString["tag"] != null || queryString["group"] != null))
                 {
                     await SendStatusResponse(response, 400, "Invalid Request",
-                        "detail=tags cannot be combined with sort=package. A tag is not owned by a "
-                        + "package; use sort=name, or sort=package with detail=compact or detail=full.");
+                        "detail=obsolete_names cannot be combined with group_by, sort=package, tag or group. "
+                        + "Narrow it with query; order, offset and limit apply.");
                     return;
                 }
 
@@ -1067,15 +1230,29 @@ namespace Unity.Pipeline
                 }
 
                 var query = queryString["query"];
+                if (obsoleteIndex)
+                {
+                    await SendObsoleteNamesResponse(response, obsoleteNames, query, descending, offset, limit);
+                    return;
+                }
+
                 var tag = queryString["tag"];
+                var group = queryString["group"];
+                var includeTests = string.Equals(queryString["include_tests"], "true", StringComparison.OrdinalIgnoreCase);
 
                 var filtered = CommandRegistry.DiscoverCommands()
-                    .Where(c => MatchesQuery(c, query) && MatchesTagSubtree(c, tag));
+                    .Where(c => (includeTests || !IsTestCommand(c))
+                        && MatchesQuery(c, query) && MatchesTagSubtree(c, tag) && MatchesGroupSubtree(c, group));
                 // The tag index is a different projection of the same filtered set: one row per
                 // distinct tag, so pagination and sorting apply to TAGS rather than to commands.
                 if (tagIndex)
                 {
                     await SendTagIndexResponse(response, filtered.ToList(), descending, offset, limit);
+                    return;
+                }
+                if (groupIndex)
+                {
+                    await SendGroupIndexResponse(response, filtered.ToList(), group, descending, offset, limit);
                     return;
                 }
 
@@ -1095,6 +1272,8 @@ namespace Unity.Pipeline
                     responseData["groups"] = BuildPackageGroups(page, project);
                 else if (groupByTag)
                     responseData["groups"] = BuildTagTree(page, project);
+                else if (groupByGroup)
+                    responseData["groups"] = BuildGroupTree(page, project);
                 else
                     responseData["commands"] = page.Select(project).ToList();
                 responseData["count"] = page.Count;
@@ -1154,6 +1333,40 @@ namespace Unity.Pipeline
         }
 
         /// <summary>
+        /// Answer detail=obsolete_names: one {oldName, command} row per old command name, ordered
+        /// by old name. <paramref name="query"/> keeps the rows whose old or full name contains it.
+        /// </summary>
+        private async Task SendObsoleteNamesResponse(HttpListenerResponse response,
+            IReadOnlyDictionary<string, string> obsoleteNames, string query, bool descending, int offset, int? limit)
+        {
+            bool Matches(string name) => string.IsNullOrEmpty(query) || name.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0;
+
+            IEnumerable<KeyValuePair<string, string>> ordered = obsoleteNames
+                .Where(pair => Matches(pair.Key) || Matches(pair.Value))
+                .OrderBy(pair => pair.Key, StringComparer.Ordinal);
+            if (descending)
+                ordered = ordered.Reverse();
+            var all = ordered.ToList();
+
+            IEnumerable<KeyValuePair<string, string>> window = all.Skip(offset);
+            if (limit.HasValue)
+                window = window.Take(limit.Value);
+            var page = window.ToList();
+
+            var responseData = new Dictionary<string, object>
+            {
+                ["obsoleteNames"] = page.Select(pair => new { oldName = pair.Key, command = pair.Value }).ToList(),
+                ["count"] = page.Count,
+                ["total"] = all.Count,
+                ["offset"] = offset,
+                ["limit"] = limit,
+                ["server"] = BuildServerBlock()
+            };
+
+            await SendJsonPayload(response, responseData);
+        }
+
+        /// <summary>
         /// Answer detail=tags: one row per distinct tag carried by <paramref name="commands"/>,
         /// each with the number of commands in that tag's subtree — so a row's count is exactly
         /// what a follow-up 'tag=&lt;that tag&gt;' request returns.
@@ -1203,13 +1416,65 @@ namespace Unity.Pipeline
         }
 
         /// <summary>
+        /// Answer detail=groups: one row per group the filtered commands define, parents that hold
+        /// only subgroups included (<c>animation</c> for <c>animation.clip</c>), each with the number
+        /// of commands in its subtree — exactly what a follow-up 'group=&lt;that group&gt;' returns.
+        /// </summary>
+        private async Task SendGroupIndexResponse(HttpListenerResponse response,
+            List<CommandInfo> commands, string scope, bool descending, int offset, int? limit)
+        {
+            // Under a group filter, the parents above it are not part of the answer.
+            bool InScope(string group) => string.IsNullOrEmpty(scope) || CommandInfo.IsInGroupSubtree(group, scope);
+            var distinct = new SortedSet<string>(StringComparer.Ordinal);
+            foreach (var command in commands)
+            {
+                for (var group = command.Group; !string.IsNullOrEmpty(group);
+                     group = CommandInfo.ParentGroup(group))
+                {
+                    if (!InScope(group) || !distinct.Add(group))
+                        break;
+                }
+            }
+
+            IEnumerable<string> ordered = distinct;
+            if (descending)
+                ordered = ordered.Reverse();
+            var allGroups = ordered.ToList();
+
+            IEnumerable<string> window = allGroups.Skip(offset);
+            if (limit.HasValue)
+                window = window.Take(limit.Value);
+            var page = window.ToList();
+
+            var responseData = new Dictionary<string, object>
+            {
+                ["groups"] = page
+                    .Select(group => new
+                    {
+                        group,
+                        count = commands.Count(c => MatchesGroupSubtree(c, group))
+                    })
+                    .ToList(),
+                ["count"] = page.Count,
+                ["total"] = allGroups.Count,
+                ["offset"] = offset,
+                ["limit"] = limit,
+                ["server"] = BuildServerBlock()
+            };
+
+            await SendJsonPayload(response, responseData);
+        }
+
+        /// <summary>
         /// Build the lightweight index entry for a single command (detail=compact).
         /// </summary>
         private static object BuildCompactCommandResponse(CommandInfo command)
         {
             return new
             {
+                command = command.FullName,
                 name = command.Name,
+                group = command.Group,
                 description = command.Description,
                 tags = command.Tags,
                 package = command.Package
@@ -1239,7 +1504,9 @@ namespace Unity.Pipeline
         {
             return JObject.FromObject(new
             {
+                command = command.FullName,
                 name = command.Name,
+                group = command.Group,
                 description = command.Description,
                 tags = command.Tags,
                 package = command.Package,
@@ -1257,18 +1524,46 @@ namespace Unity.Pipeline
 
         /// <summary>
         /// Attaches the bound-parameter echo for raw-form requests, and only for those, leaving
-        /// the structured path's envelope unchanged.
+        /// the structured path's envelope unchanged. Such a reply also always names the command it
+        /// ran (<see cref="CommandExecutionResponse.EchoCommand"/>).
         ///
-        /// The value is exactly what the binder stored, so the echo cannot disagree with what the
-        /// command executes with. A client that does not bind locally has no other way to report
-        /// what the command received.
+        /// The values are exactly what the binder stored, each with its JSON type, so the echo cannot
+        /// disagree with what the command executes with. A client that does not bind locally has no
+        /// other way to report what the command received.
         /// </summary>
         private static CommandExecutionResponse WithBoundParameters(
-            CommandExecutionResponse response, CommandExecutionRequest request)
+            CommandExecutionResponse response, bool rawForm, IReadOnlyDictionary<string, object> bound)
         {
-            if (request.IsRawForm)
-                response.BoundParameters = request.Parameters ?? new JObject();
+            if (rawForm)
+            {
+                response.BoundParameters = bound == null ? new JObject() : (JObject)ToJson(bound);
+                response.EchoCommand = true;
+            }
             return response;
+        }
+
+        /// <summary>
+        /// A bound value as JSON: a dictionary as an object, a list as an array, anything else as
+        /// the value it is. Built directly rather than through a serializer, whose settings a
+        /// project can change.
+        /// </summary>
+        private static JToken ToJson(object value)
+        {
+            switch (value)
+            {
+                case IReadOnlyDictionary<string, object> values:
+                    var obj = new JObject();
+                    foreach (var pair in values)
+                        obj[pair.Key] = ToJson(pair.Value);
+                    return obj;
+                case IReadOnlyList<object> items:
+                    var array = new JArray();
+                    foreach (var item in items)
+                        array.Add(ToJson(item));
+                    return array;
+                default:
+                    return new JValue(value);
+            }
         }
 
         /// <summary>
@@ -1279,7 +1574,7 @@ namespace Unity.Pipeline
         /// any client that meets a <c>kind</c> it does not recognize, so it must stay useful on
         /// its own.
         /// </summary>
-        private static string DescribeArgProblems(CommandInfo command, List<ArgProblem> problems)
+        internal static string DescribeArgProblems(CommandInfo command, List<ArgProblem> problems)
         {
             if (problems == null || problems.Count == 0)
                 return "Invalid arguments";
@@ -1303,14 +1598,14 @@ namespace Unity.Pipeline
                         break;
                     case ArgProblemKind.UnknownName:
                         parts.Add(problem.Suggestion != null
-                            ? $"{command.Name} has no parameter --{problem.Name}. Did you mean --{problem.Suggestion}?"
-                            : $"{command.Name} has no parameter --{problem.Name}. Valid parameters: {DescribeParameterNames(command)}.");
+                            ? $"{command.FullName} has no parameter --{problem.Name}. Did you mean --{problem.Suggestion}?"
+                            : $"{command.FullName} has no parameter --{problem.Name}. Valid parameters: {DescribeParameterNames(command)}.");
                         break;
                     case ArgProblemKind.BareAssignment:
                         parts.Add($"'{problem.Token}' looks like a flag written without dashes. Use --name value instead.");
                         break;
                     case ArgProblemKind.ExcessPositional:
-                        parts.Add($"{command.Name} takes {problem.Capacity} argument(s) but {problem.Given} were given (starting at '{problem.Token}').");
+                        parts.Add($"{command.FullName} takes {problem.Capacity} argument(s) but {problem.Given} were given (starting at '{problem.Token}').");
                         break;
                     case ArgProblemKind.PositionalConflict:
                         parts.Add($"--{problem.Name} is already set by an explicit flag, so there is no slot for '{problem.Token}'.");
@@ -1354,7 +1649,7 @@ namespace Unity.Pipeline
         }
 
         /// <summary>
-        /// Order the filtered command list: by name, or by originating package with name as
+        /// Order the filtered command list: by full name, or by originating package with full name as
         /// tiebreak. Both keys follow the requested direction.
         /// </summary>
         private static IEnumerable<CommandInfo> SortCommands(IEnumerable<CommandInfo> commands, bool byPackage, bool descending)
@@ -1365,23 +1660,23 @@ namespace Unity.Pipeline
                     ? commands.OrderByDescending(c => c.Package ?? string.Empty, StringComparer.Ordinal)
                     : commands.OrderBy(c => c.Package ?? string.Empty, StringComparer.Ordinal);
                 return descending
-                    ? byPkg.ThenByDescending(c => c.Name, StringComparer.Ordinal)
-                    : byPkg.ThenBy(c => c.Name, StringComparer.Ordinal);
+                    ? byPkg.ThenByDescending(c => c.FullName, StringComparer.Ordinal)
+                    : byPkg.ThenBy(c => c.FullName, StringComparer.Ordinal);
             }
             return descending
-                ? commands.OrderByDescending(c => c.Name, StringComparer.Ordinal)
-                : commands.OrderBy(c => c.Name, StringComparer.Ordinal);
+                ? commands.OrderByDescending(c => c.FullName, StringComparer.Ordinal)
+                : commands.OrderBy(c => c.FullName, StringComparer.Ordinal);
         }
 
         /// <summary>
-        /// Case-insensitive substring match on the command's name, description, or any tag.
-        /// A null/empty query matches everything.
+        /// Case-insensitive substring match on the command's full name (so its group and name), its
+        /// description, or any tag. A null/empty query matches everything.
         /// </summary>
         private static bool MatchesQuery(CommandInfo command, string query)
         {
             if (string.IsNullOrEmpty(query))
                 return true;
-            return command.Name.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0
+            return command.FullName.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0
                 || command.Description.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0
                 || command.Tags.Any(t => t.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0);
         }
@@ -1393,6 +1688,28 @@ namespace Unity.Pipeline
         private static bool MatchesTagSubtree(CommandInfo command, string tag)
         {
             return command.HasTagInSubtree(tag);
+        }
+
+        /// <summary>
+        /// Whether a test assembly declares the command: the fixtures this package's own tests
+        /// register. Recognised by assembly, so no group name is reserved for them.
+        /// </summary>
+        internal static bool IsTestCommand(CommandInfo command)
+        {
+            return command.Package != null
+                && (command.Package.StartsWith("Unity.Pipeline.Tests", StringComparison.Ordinal)
+                    || command.Package.StartsWith("Unity.Pipeline.Samples.Tests", StringComparison.Ordinal));
+        }
+
+        /// <summary>
+        /// Segment-aware group subtree match: 'build' matches groups 'build' and 'build.target'
+        /// but not 'buildx'. A null/empty group matches everything.
+        /// </summary>
+        private static bool MatchesGroupSubtree(CommandInfo command, string group)
+        {
+            if (string.IsNullOrEmpty(group))
+                return true;
+            return CommandInfo.IsInGroupSubtree(command.Group, group);
         }
 
         /// <summary>
@@ -1413,8 +1730,9 @@ namespace Unity.Pipeline
         }
 
         /// <summary>
-        /// Node of the group_by=tag tree. A command appears in the node of each tag it carries;
-        /// untagged commands land in a top-level node with an empty tag.
+        /// Node of the group_by=tag and group_by=group trees. In the tag tree a command appears in
+        /// the node of each tag it carries; untagged commands land in a top-level node with an
+        /// empty tag. In the group tree it appears once, in its group's node.
         /// </summary>
         private class TagTreeNode
         {
@@ -1449,6 +1767,42 @@ namespace Unity.Pipeline
             return root.Children
                 .Select(kv => ToTagGroup(kv.Key, kv.Value, project))
                 .ToList();
+        }
+
+        /// <summary>
+        /// Build the nested group_by=group tree mirroring group.subgroup. A command has one group,
+        /// so it appears exactly once; commands without a group land in a top-level node with an
+        /// empty group. Each node's 'count' covers its whole subtree.
+        /// </summary>
+        private static List<object> BuildGroupTree(List<CommandInfo> commands, Func<CommandInfo, object> project)
+        {
+            var root = new TagTreeNode();
+            foreach (var command in commands)
+            {
+                var node = command.Group == null ? GetOrAddChild(root, string.Empty) : root;
+                if (command.Group != null)
+                {
+                    foreach (var segment in command.Group.Split('.'))
+                        node = GetOrAddChild(node, segment);
+                }
+                node.Commands.Add(command);
+            }
+            return root.Children
+                .Select(kv => ToGroupNode(kv.Key, kv.Value, project))
+                .ToList();
+        }
+
+        private static object ToGroupNode(string path, TagTreeNode node, Func<CommandInfo, object> project)
+        {
+            return new
+            {
+                group = path,
+                count = SubtreeCommandCount(node),
+                commands = node.Commands.Select(project).ToList(),
+                children = node.Children
+                    .Select(kv => ToGroupNode(path.Length == 0 ? kv.Key : path + "." + kv.Key, kv.Value, project))
+                    .ToList()
+            };
         }
 
         private static TagTreeNode GetOrAddChild(TagTreeNode node, string key)
@@ -1505,28 +1859,14 @@ namespace Unity.Pipeline
         }
 
         /// <summary>
-        /// Handle /api/test-status endpoint - returns status of async test execution.
+        /// Handle /api/test-status endpoint - returns status of async test execution, read by
+        /// <see cref="GetTestStatus"/>.
         /// </summary>
         private async Task HandleTestStatusRequest(HttpListenerResponse response)
         {
             try
             {
-                // Queue behind the same gate as /api/exec/editor_status — see the comment in
-                // HandleEditorStatusRequest. (In practice this rarely blocks: the async-test-status
-                // workflow polls this only once run_tests --async_tests has already returned and
-                // released the gate.)
-                object result;
-                await m_ExecGate.WaitAsync();
-                try
-                {
-                    result = await ExecuteCommandByName("test_status", new JObject());
-                }
-                finally
-                {
-                    m_ExecGate.Release();
-                }
-
-                var jsonResponse = JsonConvert.SerializeObject(result);
+                var jsonResponse = JsonConvert.SerializeObject(GetTestStatus());
 
                 response.StatusCode = 200;
                 response.ContentType = "application/json";
@@ -1545,194 +1885,136 @@ namespace Unity.Pipeline
         }
 
         /// <summary>
-        /// Runs <paramref name="body"/> under the exec gate: tracks the in-flight count for
-        /// /api/progress ("active" while any exec runs) via CliProgress's own atomic
-        /// BeginExecutionCount/EndExecutionCount, owns CliProgress for the duration
-        /// (BeginExecution/EndExecution) so a queued execution can't surface the previous one's
-        /// stale progress, and resets the explicit report when the last in-flight execution
-        /// completes. Shared by the synchronous /api/exec path and <see cref="RunJobDetached"/> so
-        /// the two copies of this scaffold can't drift apart.
+        /// Project progress to the <c>{title,info,current,total,pct}</c> wire shape shared by
+        /// /api/progress and a running job's <c>progress</c> field — kept as one helper so the two
+        /// can't drift out of sync with each other or the documented contract.
         /// </summary>
-        /// <param name="executionId">Id CliProgress.Report calls during this execution are attributed to.</param>
-        /// <param name="body">The gated work to run once the exec gate is acquired.</param>
-        /// <param name="preStartCheck">Runs after the gate is acquired but before
-        /// CliProgress.BeginExecution; returning false skips <paramref name="body"/> entirely
-        /// (used by the job path to honor a cancellation requested while still queued).</param>
-        private async Task ExecuteGated(string executionId, Func<Task> body, Func<bool> preStartCheck = null)
+        private static object BuildProgressPayload(CommandProgress progress)
         {
-            Progress.BeginExecutionCount();
-            try
-            {
-                await m_ExecGate.WaitAsync();
-                try
-                {
-                    if (preStartCheck != null && !preStartCheck())
-                        return;
-
-                    Progress.BeginExecution(executionId);
-                    try
-                    {
-                        await body();
-                    }
-                    finally
-                    {
-                        Progress.EndExecution(executionId);
-                    }
-                }
-                finally
-                {
-                    m_ExecGate.Release();
-                }
-            }
-            finally
-            {
-                Progress.EndExecutionCount();
-            }
-        }
-
-        /// <summary>
-        /// Execute a detached job (CLI-335). A cancellation requested while the job is still
-        /// queued prevents it from starting; a running job is only cooperatively cancelable (see
-        /// PipelineCancellation).
-        /// </summary>
-        private async Task RunJobDetached(PipelineJobRecord record, CommandInfo command, CommandExecutionRequest commandRequest)
-        {
-            // Set once the command actually starts, so a job canceled while still queued reports
-            // nothing at all.
-            var ran = false;
-            var succeeded = false;
-            var timer = new System.Diagnostics.Stopwatch();
-            try
-            {
-                await ExecuteGated(record.Id, async () =>
-                {
-                    JobRegistry.MarkRunning(record);
-                    ran = true;
-                    timer.Start();
-                    try
-                    {
-                        var result = await ExecuteCommandByName(command, commandRequest.Parameters,
-                            UnboundedJobDispatcherTimeoutMs);
-                        if (record.CancellationRequested)
-                        {
-                            // The code honored (or raced) a cancellation request; report
-                            // canceled rather than a half-relevant result.
-                            JobRegistry.MarkCanceled(record);
-                        }
-                        else
-                        {
-                            succeeded = IsSuccessfulResult(result);
-                            JobRegistry.MarkCompleted(record, result);
-                        }
-                    }
-                    catch (OperationCanceledException)
-                    {
-                        JobRegistry.MarkCanceled(record);
-                    }
-                    catch (ArgumentException ex)
-                    {
-                        // Match the synchronous handler, which classifies ArgumentException as
-                        // "Parameter Validation Failed": without this arm a client polling
-                        // GET /api/job cannot tell bad input from a command that ran and failed.
-                        if (record.CancellationRequested)
-                        {
-                            JobRegistry.MarkCanceled(record);
-                        }
-                        else
-                        {
-                            JobRegistry.MarkFailed(record, "Parameter Validation Failed", ex.Message);
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        // The command layer wraps thrown exceptions (an
-                        // OperationCanceledException from PipelineCancellation surfaces as
-                        // a wrapped execution failure) — after a cancellation request, any
-                        // failure is reported as the cancellation taking effect.
-                        if (record.CancellationRequested)
-                        {
-                            JobRegistry.MarkCanceled(record);
-                        }
-                        else
-                        {
-                            JobRegistry.MarkFailed(record, "Command Execution Failed", ex.Message);
-                        }
-                    }
-                    finally
-                    {
-                        timer.Stop();
-                    }
-                },
-                preStartCheck: () =>
-                {
-                    if (record.CancellationRequested)
-                    {
-                        JobRegistry.MarkCanceled(record);
-                        return false;
-                    }
-                    return true;
-                });
-            }
-            catch (Exception ex)
-            {
-                // The runner is fire-and-forget; a failure here must be recorded, never thrown.
-                Debug.LogError($"RunJobDetached failed: {ex.Message}");
-                JobRegistry.MarkFailed(record, "Internal Server Error", ex.Message);
-            }
-
-            // The submission already reported its own transaction, which could only say the job was
-            // queued. This is the point where the command's real result is known.
-            if (ran)
-                OnCommandDone(CommandExecutionInfo.ForDetachedJob(command, succeeded, timer.ElapsedMilliseconds,
-                    commandRequest.Parameters));
-        }
-
-        /// <summary>
-        /// Project a progress snapshot to the <c>{title,info,current,total,pct}</c> wire shape
-        /// shared by /api/progress and a running job's <c>progress</c> field — kept as one helper
-        /// so the two can't drift out of sync with each other or the documented contract.
-        /// </summary>
-        private static object BuildProgressPayload(CliProgressState.Snapshot snapshot)
-        {
-            if (!snapshot.HasReport)
+            if (progress == null)
                 return null;
 
             return new
             {
-                title = snapshot.Title,
-                info = snapshot.Info,
-                current = snapshot.Current,
-                total = snapshot.Total,
-                pct = snapshot.Progress01
+                title = progress.Title,
+                info = progress.Info,
+                current = progress.Current,
+                total = progress.Total,
+                pct = progress.Fraction
             };
         }
 
-        /// <summary>Serialize one job record to the wire shape shared by the job endpoints.</summary>
-        private object BuildJobResponse(PipelineJobRecord record, string warning = null)
+        /// <summary>A detached job: its execution, and what it wrote — its output and why it failed.</summary>
+        private sealed class Job
         {
-            lock (record.Gate)
-            {
-                var running = record.State == PipelineJobState.Running;
-                var progress = running ? BuildProgressPayload(Progress.Current) : null;
+            public CommandExecution Execution;
+            public readonly StringWriter Out = new StringWriter();
+            public readonly StringWriter Error = new StringWriter();
+        }
 
-                return new
-                {
-                    jobId = record.Id,
-                    command = record.Command,
-                    state = record.State.ToString().ToLowerInvariant(),
-                    cancellationRequested = record.CancellationRequested,
-                    enqueuedAt = record.EnqueuedAt,
-                    startedAt = record.StartedAt,
-                    completedAt = record.CompletedAt,
-                    result = record.Result,
-                    error = record.Error,
-                    errorDetails = record.ErrorDetails,
-                    progress,
-                    // Corrective guidance for the caller (e.g. an unparseable omit_nulls value);
-                    // null when there is nothing to say.
-                    warnings = warning == null ? null : new[] { warning }
-                };
+        /// <summary>Forgets the ended jobs beyond the retained count, oldest first, and those that expired.</summary>
+        private void PruneJobs()
+        {
+            var now = DateTime.UtcNow;
+            var ended = m_Jobs.Values
+                .Where(job => job.Execution.State == CommandExecutionState.Ended)
+                .OrderBy(job => job.Execution.EndedAt)
+                .ToList();
+
+            var excess = ended.Count - MaxRetainedEndedJobs;
+            for (var i = 0; i < ended.Count; i++)
+            {
+                var execution = ended[i].Execution;
+                if (i < excess || now - execution.EndedAt > s_JobRetention)
+                    m_Jobs.TryRemove(execution.Id, out _);
             }
+        }
+
+        /// <summary>Finds a job by the id a client holds, pruning the ones that aged out first.</summary>
+        private bool TryGetJob(string id, out Job job)
+        {
+            PruneJobs();
+            job = null;
+            return CommandExecutionId.TryParse(id, out var executionId) && m_Jobs.TryGetValue(executionId, out job);
+        }
+
+        /// <summary>Test hook: forget every job.</summary>
+        internal void ResetJobs()
+        {
+            m_Jobs.Clear();
+        }
+
+        /// <summary>
+        /// Serialize one job to the wire shape shared by the job endpoints. An ended job completed
+        /// when its command returned (its output is its result, a returned failure included),
+        /// failed when it threw, and was canceled when its cancellation took effect.
+        /// </summary>
+        private object BuildJobResponse(Job job, bool omitNulls, string warning = null)
+        {
+            var execution = job.Execution;
+            // State first: every other field is set before it moves past it.
+            var state = execution.State;
+
+            string wireState;
+            object result = null;
+            string error = null;
+            string errorDetails = null;
+            switch (state)
+            {
+                case CommandExecutionState.Queued:
+                    wireState = "queued";
+                    break;
+                case CommandExecutionState.Running:
+                    wireState = "running";
+                    break;
+                default:
+                    var written = job.Out.ToString();
+                    if (execution.Result == CommandResult.Cancelled)
+                    {
+                        wireState = "canceled";
+                    }
+                    else if (!string.IsNullOrEmpty(written))
+                    {
+                        wireState = "completed";
+                        // A null result as null, which the reply's settings keep or drop as they
+                        // always did.
+                        result = written == "null" ? null : ExecResponseSerializer.ResultFromOutput(written, omitNulls);
+                    }
+                    else
+                    {
+                        wireState = "failed";
+                        error = execution.Result == CommandResult.InvalidArguments
+                            ? "Parameter Validation Failed"
+                            : "Command Execution Failed";
+                        errorDetails = ErrorText(job.Error);
+                    }
+                    break;
+            }
+
+            return new
+            {
+                jobId = execution.Id.ToString(),
+                command = execution.Command,
+                state = wireState,
+                cancellationRequested = execution.CancellationRequested,
+                enqueuedAt = execution.EnqueuedAt,
+                startedAt = execution.StartedAt,
+                completedAt = execution.EndedAt,
+                result,
+                error,
+                errorDetails,
+                progress = state == CommandExecutionState.Running ? BuildProgressPayload(execution.Progress) : null,
+                // Corrective guidance for the caller (e.g. an unparseable omit_nulls value);
+                // null when there is nothing to say.
+                warnings = warning == null ? null : new[] { warning }
+            };
+        }
+
+        /// <summary>What a command wrote to its Error, without the line break that ends it; null when nothing.</summary>
+        private static string ErrorText(StringWriter error)
+        {
+            var text = error?.ToString().TrimEnd('\r', '\n');
+            return string.IsNullOrEmpty(text) ? null : text;
         }
 
         /// <summary>
@@ -1749,14 +2031,14 @@ namespace Unity.Pipeline
                     await SendStatusResponse(response, 400, "Bad Request", "Query parameter 'id' is required");
                     return;
                 }
-                if (!JobRegistry.TryGet(id, out var record))
+                if (!TryGetJob(id, out var job))
                 {
                     await SendStatusResponse(response, 404, "Job Not Found", $"No job with id '{id}' (jobs do not survive domain reloads and are pruned after retention)");
                     return;
                 }
 
                 var omitNulls = ParseOmitNulls(request, out var omitNullsWarning);
-                await SendJsonResponse(response, 200, BuildJobResponse(record, omitNullsWarning), omitNulls);
+                await SendJsonResponse(response, 200, BuildJobResponse(job, omitNulls, omitNullsWarning), omitNulls);
             }
             catch (Exception ex)
             {
@@ -1818,14 +2100,17 @@ namespace Unity.Pipeline
                     await SendStatusResponse(response, 400, "Bad Request", "Request body must be JSON with an 'id' field");
                     return;
                 }
-                if (!JobRegistry.RequestCancel(id, out var record))
+                if (!TryGetJob(id, out var job))
                 {
                     await SendStatusResponse(response, 404, "Job Not Found", $"No job with id '{id}'");
                     return;
                 }
 
+                // A job that already ended can't be cancelled; it is answered as it ended.
+                job.Execution.Cancel();
+
                 var omitNulls = ParseOmitNulls(request, out var omitNullsWarning);
-                await SendJsonResponse(response, 200, BuildJobResponse(record, omitNullsWarning), omitNulls);
+                await SendJsonResponse(response, 200, BuildJobResponse(job, omitNulls, omitNullsWarning), omitNulls);
             }
             catch (Exception ex)
             {
@@ -1852,7 +2137,7 @@ namespace Unity.Pipeline
             try
             {
                 var active = Progress.IsActive;
-                var progress = active ? BuildProgressPayload(Progress.Current) : null;
+                var progress = active ? BuildProgressPayload(CommandProgress.From(Progress.Current)) : null;
 
                 var omitNulls = ParseOmitNulls(request, out var omitNullsWarning);
                 await SendJsonResponse(response, 200, new
@@ -1921,7 +2206,7 @@ namespace Unity.Pipeline
         };
 
         /// <summary>Human-readable one-line summary of a dialog for the busy-gate message. Message/Level are null for a ManagedCustomWindow source, so both are omitted when absent.</summary>
-        private static string FormatDialogSummary(DialogInfo info)
+        internal static string FormatDialogSummary(DialogInfo info)
         {
             var levelPrefix = string.IsNullOrEmpty(info.Level) ? "" : $"[{info.Level}] ";
             var messageSuffix = string.IsNullOrEmpty(info.Message) ? "" : $": {info.Message}";
@@ -1939,13 +2224,22 @@ namespace Unity.Pipeline
             // validation, so a verbose request gets a verbose validation failure. (AUTHAPI-21)
             var verbose = false;
             var omitNulls = false;
+            // Whether the request named its command on a command line (argv/commandLine). Such a
+            // reply always carries the resolved command; see EchoIfRaw.
+            var rawForm = false;
             string requestBody = null;
-            // The execution half of the info reported to OnCommandDone. Both stay at their
-            // defaults on every branch that answers without running a command, and the timer is
-            // readable from the catch blocks below because it is started inside the gated body.
-            CommandInfo executed = null;
-            JObject executedParameters = null;
-            var timer = new System.Diagnostics.Stopwatch();
+            // Hoisted so the catch blocks below can report the caller context the request sent.
+            CommandExecutionRequest commandRequest = null;
+
+            // Marks a reply to a raw request so it carries `command` in every mode, not only
+            // verbose: the caller named the command by position and learns here what it resolved to.
+            // Structured requests keep the lean envelope.
+            CommandExecutionResponse EchoIfRaw(CommandExecutionResponse reply)
+            {
+                reply.EchoCommand = rawForm;
+                return reply;
+            }
+
             try
             {
                 // Reject oversized bodies up front via Content-Length (cheap, before reading anything).
@@ -1993,7 +2287,6 @@ namespace Unity.Pipeline
                 }
 
                 // Parse command request
-                CommandExecutionRequest commandRequest;
                 try
                 {
                     commandRequest = JsonConvert.DeserializeObject<CommandExecutionRequest>(requestBody);
@@ -2019,6 +2312,7 @@ namespace Unity.Pipeline
                 // the structure-validation failure below can respect them.
                 verbose = commandRequest.Verbose;
                 omitNulls = commandRequest.OmitNulls;
+                rawForm = commandRequest.IsRawForm;
 
                 // Validate request structure
                 var requestValidationError = commandRequest.Validate();
@@ -2030,11 +2324,9 @@ namespace Unity.Pipeline
                 }
 
                 // Raw command-line forms. Tokenize `commandLine`, or take `argv` as-is (it is
-                // already split; re-splitting would corrupt any value containing a space), then
-                // normalize the request IN PLACE by assigning the command name. Normalizing here
-                // rather than deeper down is what leaves the rest of this method unchanged:
-                // RunJobDetached re-reads commandRequest, so `job` needs no special handling, and
-                // the CmdSuccess command echo stays correct.
+                // already split; re-splitting would corrupt any value containing a space). The
+                // tokens go to the executor as the command request's command and arguments, and
+                // it resolves the leading ones; a run and a job take the same tokens.
                 //
                 // Placed after Validate() so transport concerns do not depend on the command
                 // registry, after the reply-shape flags are captured so a malformed line still
@@ -2072,192 +2364,206 @@ namespace Unity.Pipeline
                         return;
                     }
 
-                    commandRequest.Command = rawTokens[0];
-                }
+                    // Hand the executor the tokens, so it resolves and binds one shape whichever
+                    // raw form the request used.
+                    commandRequest.Argv = rawTokens;
 
-                cmd = commandRequest.Command;
-
-                // Resolve the command once — the busy gate and the execution path share this
-                // single registry lookup instead of scanning twice per request. An unknown name
-                // throws here and surfaces as the usual Command Not Found via the catch below
-                // (for a "job": true submission that now happens BEFORE a job is created, so a
-                // misnamed command fails fast instead of producing a job that fails later).
-                var command = ResolveCommand(cmd);
-
-                // Bind the remaining tokens and normalize in place, so everything from
-                // ExtractCommandParameters downwards sees exactly one shape.
-                //
-                // Before the busy gate: a malformed command line is a deterministic client fault,
-                // and answering 503-retryable first would send clients into a retry loop over an
-                // error that will never clear. Also before job creation, so a mistyped parameter
-                // can never return a job id and exit 0.
-                if (rawTokens != null)
-                {
-                    var args = rawTokens.GetRange(1, rawTokens.Count - 1);
-                    if (!CommandLineBinder.TryBind(command, args, out var bound, out var argProblems))
+                    // A group named with nothing after it is answered with its listing: it names
+                    // no command, so it never reaches the executor.
+                    var index = CommandRegistry.Index;
+                    var group = TryResolveRawCommand(rawTokens, index).ListedGroup;
+                    if (group != null)
                     {
-                        await SendExecResponse(response, 400,
-                            CommandExecutionResponse.CmdInvalidArgs(cmd,
-                                DescribeArgProblems(command, argProblems), argProblems,
-                                BuildCommandEntry(command)),
-                            requestBody, verbose, omitNulls);
-                        return;
-                    }
-
-                    commandRequest.Parameters = bound;
-
-                    // Refuse a known-invalid raw submission before the busy gate and before job
-                    // creation. Binding SUCCEEDS when a required parameter simply was not supplied
-                    // — that rule belongs to parameter validation, not the binder — so without
-                    // this check `{"argv":["log_editor"],"job":true}` reached job creation, was
-                    // acknowledged with a job id and a 200, and only failed later inside the
-                    // detached run. The client would be told a deterministically invalid request
-                    // had been accepted.
-                    var missingRequired = ValidateRequiredParametersBound(command, bound);
-                    if (!string.IsNullOrEmpty(missingRequired))
-                    {
-                        await SendExecResponse(response, 400,
-                            CommandExecutionResponse.CmdFailure(cmd, "Parameter Validation Failed", missingRequired),
-                            requestBody, verbose, omitNulls);
-                        return;
-                    }
-                }
-
-                // Dialog busy gate: checked before the settling gate below. A modal dialog genuinely
-                // blocks the main thread inside a nested OS message loop (unlike settling, which
-                // merely delays), so it's true regardless of settle state and is the more actionable
-                // fact for a caller — settling resolves on its own, a dialog needs a human.
-                // TryGetDialogBlockedFallback is the one exception: a command whose result can be
-                // served from a cached snapshot instead of running for real (editor_status).
-                if (command.MainThreadRequired)
-                {
-                    var openDialogs = Dialogs.CurrentlyOpen;
-                    if (openDialogs.Count > 0)
-                    {
-                        object fallback = TryGetDialogBlockedFallback(command, openDialogs[0]);
-                        if (fallback != null)
+                        if (commandRequest.Job)
                         {
-                            await SendExecResponse(response, 200,
-                                WithBoundParameters(
-                                    CommandExecutionResponse.CmdSuccess(cmd, fallback), commandRequest),
-                                requestBody, verbose, omitNulls);
+                            // A listing is answered at once and is not a job. Refused with an error
+                            // code, so a client does not read it as a server too old for raw requests.
+                            var notACommand = EchoIfRaw(CommandExecutionResponse.CmdFailure(group, "Invalid Request",
+                                $"'{group}' is a group, not a command, so it cannot run as a job. " +
+                                $"Name a command in it, as '{group} <name>'."));
+                            notACommand.ErrorCode = GroupNotACommandErrorCode;
+                            await SendExecResponse(response, 400, notACommand, requestBody, verbose, omitNulls);
                             return;
                         }
 
-                        var summary = FormatDialogSummary(openDialogs[0]);
-                        var separator = summary.EndsWith(".") || summary.EndsWith("!") || summary.EndsWith("?") ? " " : ". ";
-                        var busyResponse = CommandExecutionResponse.CmdBusy(cmd,
-                            $"A modal dialog is currently open and blocking the main thread: {summary}{separator}" +
-                            "Poll GET /api/dialog for details, or retry once it is dismissed.",
-                            "blocked_by_dialog");
-                        busyResponse.Dialogs = openDialogs.Select(BuildDialogPayload).ToList();
-                        await SendExecResponse(response, 503, busyResponse, requestBody, verbose, omitNulls);
+                        // A listing binds nothing, but it is a raw-form success, and every raw-form
+                        // success echoes its bound parameters: a client reads a missing echo as a
+                        // server too old to parse command lines.
+                        var listing = WithBoundParameters(CommandExecutionResponse.CmdSuccess(group,
+                            BuildGroupListing(group, index)), rawForm, null);
+                        listing.ListedGroup = group;
+                        await SendExecResponse(response, 200, listing, requestBody, verbose, omitNulls);
                         return;
                     }
+
+                    cmd = rawTokens[0];
+                }
+                else
+                {
+                    cmd = commandRequest.Command;
                 }
 
-                // Busy gate (AUTHAPI-35): while the host is settling after startup, reject
-                // not-yet-serviceable commands up front — before sync execution AND before a
-                // detached job is created (a queued job would otherwise run into the half-ready
-                // Editor in the background). 503 with a retryable envelope, distinguishable from
-                // a genuine command failure. Only the exec endpoint gates; the status endpoints
-                // keep working so the busy state itself stays observable.
-                var busyReason = GetBusyReason(command);
-                if (busyReason != null)
+                // The executor finds the command, binds its arguments and refuses one that can't
+                // run now, all before anything runs or a job is created, and throws each refusal
+                // for the catches below to answer. A command line goes to it as argv; a structured
+                // request's parameters as their JSON text, bound by name as they are. The
+                // executor's options lead the arguments, asking for what the command returns as
+                // the answer will carry it.
+                CommandRequest NewRequest(TextWriter output, TextWriter error, params string[] options)
                 {
-                    // The busy reply is a standard exec envelope, so it follows the request's
-                    // reply-shape flags like every other branch: lean drops the command echo and
-                    // envelope metadata; verbose restores them (AUTHAPI-21 x AUTHAPI-35).
-                    await SendExecResponse(response, 503,
-                        CommandExecutionResponse.CmdBusy(cmd, busyReason, "settling"), requestBody, verbose, omitNulls);
-                    return;
+                    var arguments = new List<string>(options);
+                    if (rawTokens != null)
+                        arguments.AddRange(rawTokens.GetRange(1, rawTokens.Count - 1));
+                    return new CommandRequest(cmd, arguments, null, output, error)
+                    {
+                        Timeout = PipelineTimeout.FromRequest(commandRequest.Timeout),
+                        Requester = new Requester(commandRequest.ClientSource, commandRequest.ClientName, commandRequest.CommandId),
+                        ParametersJson = rawTokens == null ? (commandRequest.Parameters ?? new JObject()).ToString(Formatting.None) : null,
+                    };
                 }
 
                 // Detached job (CLI-335): reply with a job id immediately and run the command
                 // in the background — the client polls GET /api/job?id=… to reattach and
-                // collect the result after its own HTTP timeout would have expired.
+                // collect the result after its own HTTP timeout would have expired. The job and
+                // what it writes are kept here for that poll.
                 if (commandRequest.Job)
                 {
-                    if (!JobRegistry.TryCreate(commandRequest.Command, out var jobRecord))
-                    {
-                        await SendExecResponse(response, 429,
-                            CommandExecutionResponse.CmdFailure(commandRequest.Command, "Too Many Queued Jobs",
-                                "Too many jobs are queued or running; wait for some to finish and retry."), requestBody, verbose, omitNulls);
-                        return;
-                    }
-                    _ = RunJobDetached(jobRecord, command, commandRequest);
+                    var job = new Job();
+                    // A job's result has no envelope: every field is payload, a nested response's
+                    // metadata included, so it is written verbose with its nulls kept until a poll
+                    // asks to omit them.
+                    var executionRequest = NewRequest(job.Out, job.Error, CommandRequest.VerboseOption);
+                    // A job runs until it ends, however long its request allowed: its client
+                    // collects it later rather than waiting on it.
+                    executionRequest.Timeout = Timeout.InfiniteTimeSpan;
+
+                    PruneJobs();
+                    job.Execution = Executor.Execute(executionRequest);
+                    m_Jobs[job.Execution.Id] = job;
+
                     // Standard exec envelope; the job handle is the command's "result".
                     await SendExecResponse(response, 200,
                         WithBoundParameters(
-                            CommandExecutionResponse.CmdSuccess(commandRequest.Command,
-                                new { jobId = jobRecord.Id, state = "queued" }), commandRequest),
-                        requestBody, verbose, omitNulls);
+                            CommandExecutionResponse.CmdSuccess(job.Execution.Command,
+                                new { jobId = job.Execution.Id.ToString(), state = "queued" }), rawForm,
+                            job.Execution.Parameters),
+                        requestBody, verbose, omitNulls, commandRequest);
                     return;
                 }
 
-                // Execute command using shared execution logic (see ExecuteGated: one command at
-                // a time, exactly as when the accept loop was serial).
-                DateTime execStartUtc = default;
-                object result = null;
-                await ExecuteGated(Guid.NewGuid().ToString("N"), async () =>
+                // One command at a time, exactly as when the accept loop was serial.
+                var output = new StringWriter();
+                var error = new StringWriter();
+                var options = new List<string>(2);
+                if (verbose)
+                    options.Add(CommandRequest.VerboseOption);
+                if (omitNulls)
+                    options.Add(CommandRequest.OmitNullsOption);
+                var execution = Executor.Execute(NewRequest(output, error, options.ToArray()));
+                var result = await execution;
+                cmd = execution.Command;
+
+                // A command that returned answers with what it returned, a returned failure
+                // included; one that threw answers with why. The output is already the JSON this
+                // reply's flags give the result, so it is embedded as it is; a null result as
+                // null, which the envelope's own settings keep or drop as they always did.
+                var written = output.ToString();
+                if (written.Length > 0)
                 {
-                    // Claimed here rather than before ExecuteGated, so that a request which never
-                    // gets past the gate reports no execution at all, and so that the wait for the
-                    // one-at-a-time gate counts as queueing rather than as time the command ran.
-                    executed = command;
-                    executedParameters = commandRequest.Parameters;
-                    execStartUtc = DateTime.UtcNow;
-                    timer.Start();
-                    try
-                    {
-                        result = await ExecuteCommandByName(command, commandRequest.Parameters,
-                            commandRequest.Timeout ?? 60000);
-                    }
-                    finally
-                    {
-                        timer.Stop();
-                    }
-                });
+                    var returned = written == "null" ? null : new JRaw(written);
+                    await SendExecResponse(response, 200,
+                        WithBoundParameters(CommandExecutionResponse.CmdSuccess(cmd, returned), rawForm,
+                            execution.Parameters),
+                        requestBody, verbose, omitNulls, commandRequest);
+                    return;
+                }
 
-                // Send success response, attaching any dialog(s) that opened during this call
-                // (dialogsDuringExecution) so a caller learns about them even without polling
-                // /api/dialog concurrently while the call was in flight.
-                var successResponse = WithBoundParameters(
-                    CommandExecutionResponse.CmdSuccess(commandRequest.Command, result), commandRequest);
-                var dialogEvents = Dialogs.EventsSince(execStartUtc);
-                if (dialogEvents.Count > 0)
-                    successResponse.DialogsDuringExecution = dialogEvents.Select(BuildDialogPayload).ToList();
+                var details = ErrorText(error);
+                switch (result)
+                {
+                    case CommandResult.TimedOut:
+                        await SendExecResponse(response, 504,
+                            EchoIfRaw(CommandExecutionResponse.CmdTimeout(cmd, details)),
+                            requestBody, verbose, omitNulls, commandRequest);
+                        break;
+                    case CommandResult.InvalidArguments:
+                        await SendExecResponse(response, 400,
+                            EchoIfRaw(CommandExecutionResponse.CmdFailure(cmd, "Parameter Validation Failed", details)),
+                            requestBody, verbose, omitNulls, commandRequest);
+                        break;
+                    case CommandResult.Cancelled:
+                        await SendExecResponse(response, 400,
+                            EchoIfRaw(CommandExecutionResponse.CmdFailure(cmd, "Command Cancelled",
+                                details ?? "The command was cancelled before it ended.")),
+                            requestBody, verbose, omitNulls, commandRequest);
+                        break;
+                    default:
+                        await SendExecResponse(response, 400,
+                            EchoIfRaw(CommandExecutionResponse.CmdFailure(cmd, "Command Execution Failed", details)),
+                            requestBody, verbose, omitNulls, commandRequest);
+                        break;
+                }
+            }
+            catch (CommandArgumentsException ex)
+            {
+                await SendExecResponse(response, 400,
+                    EchoIfRaw(CommandExecutionResponse.CmdInvalidArgs(ex.Command, ex.Message, ex.Problems.ToList(),
+                        BuildCommandEntry(ex.CommandInfo))),
+                    requestBody, verbose, omitNulls, commandRequest);
+            }
+            catch (CommandUnavailableException ex)
+            {
+                // A result the server gives in the command's place, for a job too: nothing ran,
+                // so nothing was queued.
+                if (TryAnswerRefusal(ex, out var answer))
+                {
+                    // Echoes no arguments: the only command answered this way, editor status,
+                    // takes none, and a command line with any is refused before it gets here.
+                    await SendExecResponse(response, 200,
+                        WithBoundParameters(CommandExecutionResponse.CmdSuccess(ex.Command, answer), rawForm,
+                            null),
+                        requestBody, verbose, omitNulls, commandRequest);
+                    return;
+                }
 
-                await SendExecResponse(response, 200, successResponse, requestBody, verbose, omitNulls,
-                    executed, IsSuccessfulResult(result), timer.ElapsedMilliseconds, commandRequest.Parameters);
+                // A 503 with a retryable envelope, distinguishable from a genuine command failure
+                // (AUTHAPI-35). The busy reply follows the request's reply-shape flags like every
+                // other branch (AUTHAPI-21 x AUTHAPI-35).
+                var busyResponse = EchoIfRaw(CommandExecutionResponse.CmdBusy(ex.Command, ex.Message,
+                    ex.Reason == CommandUnavailableReason.BlockedByDialog ? "blocked_by_dialog" : "settling"));
+                if (ex.Dialogs.Count > 0)
+                    busyResponse.Dialogs = ex.Dialogs.Select(BuildDialogPayload).ToList();
+                await SendExecResponse(response, 503, busyResponse, requestBody, verbose, omitNulls, commandRequest);
+            }
+            catch (TooManyCommandsException ex)
+            {
+                // Labelled as it always was for a job, which released clients branch on.
+                var error = commandRequest?.Job == true ? "Too Many Queued Jobs" : "Too Many Queued Commands";
+                await SendExecResponse(response, 429,
+                    EchoIfRaw(CommandExecutionResponse.CmdFailure(ex.Command, error, ex.Message)),
+                    requestBody, verbose, omitNulls, commandRequest);
             }
             catch (ArgumentException ex)
             {
                 // Parameter validation errors
                 await SendExecResponse(response, 400,
-                    CommandExecutionResponse.CmdFailure(cmd, "Parameter Validation Failed", ex.Message), requestBody, verbose, omitNulls,
-                    executed, false, timer.ElapsedMilliseconds, executedParameters);
+                    EchoIfRaw(CommandExecutionResponse.CmdFailure((ex as ParameterValidationException)?.Command ?? cmd,
+                        "Parameter Validation Failed", ex.Message)), requestBody, verbose, omitNulls, commandRequest);
             }
-            catch (InvalidOperationException ex) when (ex.Message.Contains("No command named"))
+            catch (CommandNotFoundException ex)
             {
-                // Command not found errors
+                // Command not found errors. The exception names what was looked up, in the CLI
+                // form the caller typed: for `<group> <name>` that is both tokens, not just the
+                // group.
                 await SendExecResponse(response, 400,
-                    CommandExecutionResponse.CmdFailure(cmd, "Command Not Found", ex.Message), requestBody, verbose, omitNulls,
-                    executed, false, timer.ElapsedMilliseconds, executedParameters);
-            }
-            catch (InvalidOperationException ex)
-            {
-                // Command execution errors
-                await SendExecResponse(response, 400,
-                    CommandExecutionResponse.CmdFailure(cmd, "Command Execution Failed", ex.Message), requestBody, verbose, omitNulls,
-                    executed, false, timer.ElapsedMilliseconds, executedParameters);
+                    EchoIfRaw(CommandExecutionResponse.CmdFailure(ex.CommandName ?? cmd, "Command Not Found",
+                        ObsoleteCommandNameMessage.ForMiss(ex.CommandName, ObsoleteCommandNames) ?? ex.Message)), requestBody, verbose, omitNulls, commandRequest);
             }
             catch (Exception ex)
             {
                 Debug.LogError($"Failed to handle /api/exec request: {ex.Message}");
                 await SendExecResponse(response, 400,
-                    CommandExecutionResponse.CmdFailure(cmd, "Internal Server Error", ex.Message), requestBody, verbose, omitNulls,
-                    executed, false, timer.ElapsedMilliseconds, executedParameters);
+                    EchoIfRaw(CommandExecutionResponse.CmdFailure(cmd, "Internal Server Error", ex.Message)), requestBody, verbose, omitNulls, commandRequest);
             }
         }
 
@@ -2324,14 +2630,13 @@ namespace Unity.Pipeline
         /// <see cref="OnCommandDone"/>. Single send point for the exec handler so every branch
         /// (success and error) is captured uniformly.
         ///
-        /// The executed* arguments carry the execution half of the info. Branches that reject a
-        /// request before any command runs (413, malformed body, busy host, job queue full) leave
-        /// them at their defaults, which reports an info with no command.
+        /// The report carries the transaction only; the executor reports the command, if one ran.
         /// </summary>
+        /// <param name="request">The request as it deserialized, for its caller context; null
+        /// before it did.</param>
         private async Task SendExecResponse(HttpListenerResponse response, int statusCode,
                                             BaseResponse body, string requestJson, bool verbose = false, bool omitNulls = false,
-                                            CommandInfo executedCommand = null, bool executedSuccess = false, long executedDurationMs = 0,
-                                            JObject executedParameters = null)
+                                            CommandExecutionRequest request = null)
         {
             response.StatusCode = statusCode;
             response.ContentType = "application/json";
@@ -2345,41 +2650,20 @@ namespace Unity.Pipeline
             await response.OutputStream.WriteAsync(buffer, 0, buffer.Length);
             response.OutputStream.Close();
 
-            OnCommandDone(new CommandExecutionInfo(requestJson, json, executedCommand, executedSuccess, executedDurationMs,
-                executedParameters));
+            OnCommandDone(CommandExecutionInfo.ForTransaction(request, requestJson, json));
         }
 
         /// <summary>
-        /// Hook invoked once per finished /api/exec interaction, and once more when a detached job
-        /// completes. The single place to hang post-command work: the Editor server writes the
-        /// transaction log here and queues its analytics from here. No-op by default (the Player
-        /// does neither).
+        /// Hook invoked once per finished /api/exec interaction: the Editor server writes the
+        /// transaction log here. No-op by default. The executor reports each command that ran,
+        /// a detached job's included, once it ends.
         ///
         /// Runs on the background HTTP thread, so an implementation must either stick to
         /// thread-safe work or marshal to the main thread itself. It must also never throw —
         /// an exception here would surface as a failed request for work the caller never asked for.
         /// </summary>
-        /// <param name="info">The finished interaction: its transaction, its execution, or both.</param>
-        protected virtual void OnCommandDone(in CommandExecutionInfo info) { }
-
-        /// <summary>
-        /// Whether a command reported success. A command fails in two ways: by throwing, which the
-        /// caller has already accounted for, or by RETURNING a response that carries its own
-        /// failure — eval, code reload, run_script and test runs all do the latter, so nothing
-        /// throws and the outer envelope says success while the inner result says otherwise.
-        /// </summary>
-        private static bool IsSuccessfulResult(object result)
-        {
-            switch (result)
-            {
-                case CommandExecutionResponse commandResponse:
-                    return commandResponse.Success;
-                case BaseResponse baseResponse:
-                    return string.IsNullOrEmpty(baseResponse.Error);
-                default:
-                    return true;
-            }
-        }
+        /// <param name="info">The finished transaction, with the caller context its request sent.</param>
+        internal virtual void OnCommandDone(in CommandExecutionInfo info) { }
 
         /// <summary>
         /// Convert a single JSON parameter token to the command's parameter type.
@@ -2438,7 +2722,7 @@ namespace Unity.Pipeline
         /// asked, an ignored <c>timeout</c> waits longer than allowed. The slot still gets the default
         /// so the array stays well-formed, but the callers reject the request.</para>
         /// </summary>
-        private object[] ExtractCommandParameters(CommandInfo command, Newtonsoft.Json.Linq.JObject parametersJson, out string conversionError)
+        internal static object[] ExtractCommandParameters(CommandInfo command, Newtonsoft.Json.Linq.JObject parametersJson, out string conversionError)
         {
             StringBuilder conversionErrors = null;
             var parameterValues = new object[command.Parameters.Count];
@@ -2548,7 +2832,7 @@ namespace Unity.Pipeline
         /// normalize to a CLR value and call <see cref="IsMissingRequiredValue"/>, so the raw and
         /// structured paths cannot drift on what counts as missing.
         /// </summary>
-        private static string ValidateRequiredParametersBound(CommandInfo command, JObject parameters)
+        internal static string ValidateRequiredParametersBound(CommandInfo command, JObject parameters)
         {
             for (var i = 0; i < command.Parameters.Count; i++)
             {
@@ -2591,7 +2875,7 @@ namespace Unity.Pipeline
         /// <summary>
         /// Validate that all required command parameters are provided.
         /// </summary>
-        private string ValidateCommandParameters(CommandInfo command, object[] parameters)
+        internal static string ValidateCommandParameters(CommandInfo command, object[] parameters)
         {
             for (int i = 0; i < command.Parameters.Count; i++)
             {
@@ -2607,243 +2891,202 @@ namespace Unity.Pipeline
         }
 
         /// <summary>
-        /// Resolve a command name to its <see cref="CommandInfo"/>, or throw the standard
-        /// Command Not Found error. Single registry scan — /api/exec resolves once and shares
-        /// the result between the busy gate and execution.
+        /// What a command that matched nothing was looked up by: the name the caller typed (what an
+        /// error shows) and the commands a suggestion may come from. Carries no logging, so a caller
+        /// that must stay quiet (a batch dry run) can build the message itself.
         /// </summary>
-        private static CommandInfo ResolveCommand(string commandName)
+        internal sealed class RawCommandMiss
         {
-            var commands = CommandRegistry.DiscoverCommands().ToList();
-            var command = commands.FirstOrDefault(c => c.Name == commandName);
-            if (command == null)
+            /// <summary>What the caller typed, as <c>group name</c> (<c>editor nope</c>) or a single token, for messages and the reply's <c>command</c> echo.</summary>
+            public string TypedName { get; }
+
+            /// <summary>The commands a suggestion or prefix match is drawn from.</summary>
+            public IReadOnlyList<CommandInfo> Candidates { get; }
+
+            /// <summary>The commands that share <see cref="TypedName"/> as their name, in several groups; empty unless the name is ambiguous.</summary>
+            public IReadOnlyList<CommandInfo> SharingTheName { get; }
+
+            /// <param name="typedName">What the caller typed.</param>
+            /// <param name="candidates">The commands a suggestion is drawn from.</param>
+            /// <param name="named">The commands named <paramref name="typedName"/> (<see cref="CommandIndex.CommandsNamed"/>); two or more make the miss an ambiguous name.</param>
+            public RawCommandMiss(string typedName, IEnumerable<CommandInfo> candidates, IReadOnlyList<CommandInfo> named = null)
             {
-                var availableCommands = string.Join(", ", commands.Select(c => c.Name));
-                var errorMessage = $"No command named '{commandName}' is available. Available: [{availableCommands}]";
-                Debug.LogError($"ExecuteCommandByName: {errorMessage}");
-                throw new InvalidOperationException(errorMessage);
+                TypedName = typedName;
+                Candidates = candidates.ToList();
+                SharingTheName = named != null && named.Count > 1 ? named : Array.Empty<CommandInfo>();
             }
-            return command;
+
+            /// <summary>
+            /// The Command Not Found message for this miss: the commands sharing the name when it is
+            /// ambiguous, else <see cref="CommandNotFoundMessage(string, IEnumerable{string})"/>.
+            /// </summary>
+            public string Message => SharingTheName.Count > 0
+                ? $"No command named '{TypedName}' is available. '{TypedName}' names several commands; run one of: " +
+                  string.Join(", ", SharingTheName.Select(c => c.FullName).OrderBy(n => n, StringComparer.Ordinal)) + "."
+                : CommandNotFoundMessage(TypedName, Candidates.Select(c => c.FullName));
         }
 
         /// <summary>
-        /// Execute a command by name with JSON parameters.
-        /// Handles command lookup, parameter validation, and execution.
-        /// Used by callers that only hold a name (status endpoints, detached job runner); the
-        /// /api/exec handler resolves the command itself and uses the CommandInfo overload.
+        /// What a raw request's leading tokens name: a command and the index of its first
+        /// argument, a group to list, or nothing (<see cref="Miss"/>).
         /// </summary>
-        private async Task<object> ExecuteCommandByName(string commandName, JObject parametersJson, int dispatcherTimeoutMs = 60000)
+        internal readonly struct RawCommandResolution
         {
-            return await ExecuteCommandByName(ResolveCommand(commandName), parametersJson, dispatcherTimeoutMs);
+            public readonly CommandInfo Command;
+            public readonly int ArgumentsStart;
+            public readonly string ListedGroup;
+
+            /// <summary>Set when the tokens name no command and no group; every other field is then empty.</summary>
+            public readonly RawCommandMiss Miss;
+
+            RawCommandResolution(CommandInfo command, int argumentsStart, string listedGroup, RawCommandMiss miss)
+            {
+                Command = command;
+                ArgumentsStart = argumentsStart;
+                ListedGroup = listedGroup;
+                Miss = miss;
+            }
+
+            public static RawCommandResolution ForCommand(CommandInfo command, int argumentsStart) =>
+                new RawCommandResolution(command, argumentsStart, null, null);
+
+            public static RawCommandResolution ForGroup(string group) =>
+                new RawCommandResolution(null, 0, group, null);
+
+            public static RawCommandResolution ForMiss(RawCommandMiss miss) =>
+                new RawCommandResolution(null, 0, null, miss);
         }
 
         /// <summary>
-        /// Execute a pre-resolved command with JSON parameters (parameter extraction, required
-        /// validation, threading).
+        /// Resolve the leading tokens of a raw request (<c>argv</c> or <c>commandLine</c>), logging
+        /// and throwing the standard Command Not Found error when they name nothing. Groups are
+        /// checked first: see <see cref="TryResolveRawCommand"/>.
         /// </summary>
-        private async Task<object> ExecuteCommandByName(CommandInfo command, JObject parametersJson, int dispatcherTimeoutMs = 60000)
+        /// <exception cref="CommandNotFoundException">The tokens name no command and no group.</exception>
+        internal static RawCommandResolution ResolveRawCommand(IReadOnlyList<string> tokens, CommandIndex index)
         {
-            // Extract parameters
-            var parameters = ExtractCommandParameters(command, parametersJson, out var conversionError);
-
-            // Reject unconvertible arguments rather than silently running with the default
-            if (!string.IsNullOrEmpty(conversionError))
-            {
-                Debug.LogError($"ExecuteCommandByName: Parameter conversion failed: {conversionError}");
-                throw new ArgumentException(conversionError);
-            }
-
-            // Validate required parameters
-            var validationError = ValidateCommandParameters(command, parameters);
-            if (!string.IsNullOrEmpty(validationError))
-            {
-                Debug.LogError($"ExecuteCommandByName: Parameter validation failed: {validationError}");
-                throw new ArgumentException(validationError);
-            }
-
-            // Execute command with appropriate threading
-            return await ExecuteCommand(command, parameters, dispatcherTimeoutMs);
+            var resolution = TryResolveRawCommand(tokens, index);
+            if (resolution.Miss != null)
+                throw CommandNotFound(resolution.Miss);
+            return resolution;
         }
 
         /// <summary>
-        /// Execute the command method with provided parameters.
-        /// Handles main thread execution if required.
+        /// The resolution core shared by /api/exec (which logs a miss, see
+        /// <see cref="ResolveRawCommand"/>) and the batch command (which must stay quiet): never
+        /// logs and never throws. Groups are checked first: when token 0 is a group and token 1 a
+        /// name in it, that command is named. Otherwise token 0 is the name of a command in
+        /// <see cref="CommandInfo.GlobalGroup"/> or, when it is not a group, the one-word spelling
+        /// of a full name (<see cref="CommandInfo.GetIdFromName"/>), accepted without being shown
+        /// anywhere, or a command's name alone when no other command has it; a name several
+        /// commands share is a miss that names them. Only then is a group with nothing after it listed, so a global command named
+        /// like a group runs instead of answering with a listing. A group is one token: <c>animation animator add_state</c> is
+        /// not <c>animation.animator add_state</c>. A miss carries what was looked up.
         /// </summary>
-        private async Task<object> ExecuteCommand(CommandInfo command, object[] parameters, int dispatcherTimeoutMs = 60000)
+        internal static RawCommandResolution TryResolveRawCommand(IReadOnlyList<string> tokens, CommandIndex index)
         {
-            object raw;
-            if (command.MainThreadRequired)
+            var first = tokens[0];
+            var isGroup = index.IsGroup(first);
+            string fullName = null;
+            if (isGroup && tokens.Count > 1)
             {
-                // Execute on the main thread using THIS server's dispatcher.
-                if (m_Dispatcher.IsMainThread())
-                {
-                    raw = ExecuteCommandDirect(command, parameters);
-                }
-                else
-                {
-                    // If the command declares its own int "timeout" parameter (e.g. eval/eval_file),
-                    // honor it as the wait budget instead of the caller-provided dispatcher budget
-                    // (UUM-148641) — that's the only mechanism that actually enforces such a
-                    // command's requested deadline end-to-end, in both directions: a request below
-                    // the dispatcher default must time out early, not wait it out. Detached jobs
-                    // are the one exception: they pass an unbounded budget (CLI-335) and rely on
-                    // cooperative cancellation, so the requested value must not re-bound them.
-                    var requestedTimeoutMs = ResolveRequestedTimeoutMs(command, parameters);
-                    var waitBudgetMs = dispatcherTimeoutMs == UnboundedJobDispatcherTimeoutMs
-                        ? dispatcherTimeoutMs
-                        : requestedTimeoutMs ?? dispatcherTimeoutMs;
-                    raw = await Task.Run(() => m_Dispatcher.Invoke(() => ExecuteCommandDirect(command, parameters), waitBudgetMs));
-                }
-            }
-            else
-            {
-                // Execute on background thread
-                raw = await Task.Run(() => ExecuteCommandDirect(command, parameters));
+                fullName = CommandInfo.ComposeFullName(first, tokens[1]);
+                if (index.TryGetCommand(fullName, out var inGroup))
+                    return RawCommandResolution.ForCommand(inGroup, 2);
             }
 
-            return await UnwrapResult(raw);
+            if ((!isGroup && index.TryGetCommandByOneWord(first, out var command)) || index.TryGetGlobalCommand(first, out command)
+                || (!isGroup && index.TryGetCommandByUniqueName(first, out command)))
+                return RawCommandResolution.ForCommand(command, 1);
+
+            if (!isGroup)
+                return RawCommandResolution.ForMiss(new RawCommandMiss(first, index.Commands, index.CommandsNamed(first)));
+
+            if (fullName == null)
+                return RawCommandResolution.ForGroup(first);
+
+            // Suggest from the group's own subtree, so `animation animator` points at the
+            // animation.animator commands.
+            return RawCommandResolution.ForMiss(new RawCommandMiss(fullName, index.CommandsUnder(first)));
         }
 
-        /// <summary>
-        /// Commands whose own "timeout" parameter is documented in milliseconds and is meant to bound
-        /// the whole main-thread call. Other commands happen to also declare a "timeout" parameter
-        /// (e.g. run_tests, in seconds) with different semantics, so this can't be a blanket
-        /// name/type match — it has to be opted into per command.
-        /// </summary>
-        private static readonly HashSet<string> CommandsWithMillisecondTimeoutParameter = new HashSet<string> { "eval", "eval_file", "run_script" };
+        /// <summary>The error code of a job submission that names a group instead of a command.</summary>
+        internal const string GroupNotACommandErrorCode = "GROUP_NOT_A_COMMAND";
 
-        /// <summary>
-        /// For commands in <see cref="CommandsWithMillisecondTimeoutParameter"/>, return the value the
-        /// caller passed for their own "timeout" parameter. Returns null otherwise, in which case the
-        /// caller should fall back to Dispatcher.Invoke's own default wait.
-        /// </summary>
-        private static int? ResolveRequestedTimeoutMs(CommandInfo command, object[] parameters)
+        /// <summary>The listing <c>/api/exec</c> returns for a group named with nothing after it.</summary>
+        internal static GroupListing BuildGroupListing(string group, CommandIndex index)
         {
-            if (!CommandsWithMillisecondTimeoutParameter.Contains(command.Name))
-                return null;
-
-            for (int i = 0; i < command.Parameters.Count; i++)
+            return new GroupListing
             {
-                // eval/eval_file name their budget "timeout"; run_script names it "timeout_ms".
-                var pName = command.Parameters[i].Name;
-                if ((pName == "timeout" || pName == "timeout_ms") && command.Parameters[i].ParameterType == typeof(int))
-                {
-                    // A non-positive value cannot be a meaningful wait budget. Forwarding it would
-                    // make Dispatcher.Invoke fail with its own opaque timeout before the command
-                    // ever runs — fall back to the default budget instead, so the command's own
-                    // friendly "timeout must be between …" validation is what answers the caller.
-                    var requested = (int)parameters[i];
-                    return requested > 0 ? requested : (int?)null;
-                }
-            }
-
-            return null;
+                Group = group,
+                Subgroups = index.SubgroupsOf(group).OrderBy(g => g, StringComparer.Ordinal).ToList(),
+                Commands = index.CommandsIn(group)
+                    .OrderBy(c => c.FullName, StringComparer.Ordinal)
+                    .Select(c => new GroupListingCommand { Command = c.FullName, Name = c.Name, Description = c.Description })
+                    .ToList(),
+            };
         }
 
-        /// <summary>
-        /// Commands declared as `async Task`/`Task&lt;T&gt;` return their Task from reflection Invoke.
-        /// Await it here (on the calling background thread, leaving the main thread free to pump the
-        /// dispatcher) so the actual value is serialized rather than the Task itself, and so a faulted
-        /// command surfaces its real exception to the request handler instead of being masked when
-        /// Newtonsoft reads Task.Result during serialization.
-        /// </summary>
-        private static async Task<object> UnwrapResult(object result)
+        /// <summary>Log and build the standard Command Not Found error for a miss.</summary>
+        internal static CommandNotFoundException CommandNotFound(RawCommandMiss miss)
         {
-            if (result is Task task)
-            {
-                await task.ConfigureAwait(false);
-                // Task&lt;T&gt; exposes a Result property; non-generic Task does not.
-                var resultProperty = task.GetType().GetProperty("Result");
-                return resultProperty?.GetValue(task);
-            }
-
-            return result;
+            var errorMessage = miss.Message;
+            Debug.LogError($"ExecuteCommandByName: {errorMessage}");
+            return new CommandNotFoundException(miss.TypedName, errorMessage);
         }
 
+        /// <summary>Most commands a Command Not Found message names before it summarises the rest.</summary>
+        internal const int MaxPrefixMatchesListed = 5;
+
+        /// <summary>Where a Command Not Found message with no suggestion sends the caller.</summary>
+        internal const string ListCommandsHint = "Run 'unity command' to list the commands this instance exposes.";
+
         /// <summary>
-        /// Extract, validate, and invoke a pre-resolved command with JSON parameters synchronously on
-        /// the current main thread, returning its unwrapped result. This is the exact parameter
-        /// extraction, required-parameter validation, reflection invoke, and Task unwrap that the
-        /// <c>/api/exec</c> path (<see cref="ExecuteCommandByName(CommandInfo, JObject, int)"/>) uses,
-        /// exposed for composite commands (e.g. <c>batch</c>) that re-dispatch other registered
-        /// commands from inside their own main-thread execution — so each sub-operation behaves, and
-        /// its result is shaped, identically to a standalone call.
+        /// The Command Not Found message: the name that missed plus either the command that was
+        /// probably meant (a typo) or, failing that, the commands that start with what was typed
+        /// (a partial name such as <c>editor</c> + <c>sta</c>), capped at <see cref="MaxPrefixMatchesListed"/>.
+        /// When there is neither, it points at <c>unity command</c> (<see cref="ListCommandsHint"/>).
+        /// It deliberately never lists the whole registry — that is hundreds of names, and it
+        /// flooded both the CLI and the Editor console on a single typo (UUM-154017). The full
+        /// catalog is served by /api/commands.
         ///
-        /// MUST be called on the main thread. A composite command is itself
-        /// <c>MainThreadRequired</c>, so it already runs there; calling off the main thread throws.
-        /// A command that throws surfaces exactly as it would through <c>/api/exec</c>
-        /// (<see cref="ArgumentException"/> preserved, other exceptions wrapped in
-        /// <see cref="InvalidOperationException"/>) so the caller can record a per-operation failure.
+        /// <para>A typo is matched against full names (<c>group name</c>); a prefix is matched in the
+        /// one-word spelling, so a partial name finds its commands whichever separator was typed.
+        /// What the message shows is always the typed name and the full name of every suggested
+        /// command.</para>
         /// </summary>
-        internal object DispatchCommandOnMainThread(CommandInfo command, JObject parametersJson)
+        /// <param name="typedName">What was typed, shown in the message.</param>
+        /// <param name="available">The full name of every candidate.</param>
+        internal static string CommandNotFoundMessage(string typedName, IEnumerable<string> available)
         {
-            if (command == null)
-                throw new ArgumentNullException(nameof(command));
-            if (!m_Dispatcher.IsMainThread())
-                throw new InvalidOperationException(
-                    "DispatchCommandOnMainThread must be called on the main thread.");
+            typedName = typedName ?? string.Empty;
+            var candidates = available.ToList();
+            var message = $"No command named '{typedName}' is available.";
+            // With nothing to suggest, point at the listing instead (the hint #130 introduced).
+            var withListingHint = message + " " + ListCommandsHint;
 
-            var parameters = ExtractCommandParameters(command, parametersJson, out var conversionError);
+            var suggestion = CommandLineBinder.SuggestClosestName(typedName, candidates);
+            if (suggestion != null)
+                return $"{message} Did you mean '{suggestion}'?";
 
-            // Same contract as ExecuteCommandByName: an argument that could not be converted is a
-            // rejected request, not a silent fallback to the parameter's default.
-            if (!string.IsNullOrEmpty(conversionError))
-                throw new ArgumentException(conversionError);
+            // An empty name is a prefix of everything; listing for it would be the old flood.
+            if (typedName.Length == 0)
+                return withListingHint;
 
-            var validationError = ValidateCommandParameters(command, parameters);
-            if (!string.IsNullOrEmpty(validationError))
-                throw new ArgumentException(validationError);
+            // Compared in one-word spelling on both sides, so a space and a dot are the same
+            // separator and `animation animator` finds the animation.animator commands.
+            var typedPrefix = typedName.Replace(' ', '.');
+            var prefixMatches = candidates
+                .Where(c => CommandInfo.GetIdFromName(c).StartsWith(typedPrefix, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(c => c, StringComparer.Ordinal)
+                .ToList();
+            if (prefixMatches.Count == 0)
+                return withListingHint;
 
-            var raw = ExecuteCommandDirect(command, parameters);
-            // Unwrap a Task result inline. WARNING: this GetResult() blocks the main thread, so it is
-            // only safe for results that are already complete (synchronous commands, or async methods
-            // that happened to complete synchronously). An async command driven to completion by
-            // EditorApplication.update callbacks (run_tests/list_tests) could NEVER finish here —
-            // update cannot pump while this call blocks — and the Editor would freeze permanently.
-            // That is why composite callers (batch) must reject commands with Task return types
-            // before dispatching them through this path.
-            return UnwrapResult(raw).GetAwaiter().GetResult();
-        }
-
-        /// <summary>
-        /// Direct command execution using reflection. Sets <see cref="CurrentServer"/> for the
-        /// duration so CliProgress/PipelineCancellation calls inside the command body resolve to
-        /// this server, regardless of which thread this ends up running on.
-        /// </summary>
-        private object ExecuteCommandDirect(CommandInfo command, object[] parameters)
-        {
-            var previousServer = m_CurrentServer;
-            m_CurrentServer = this;
-            try
-            {
-                // Target is null for every attribute-declared command (they are static) and carries
-                // the receiver for a dynamically registered instance-method handler.
-                return command.Method.Invoke(command.Target, parameters);
-            }
-            catch (System.Reflection.TargetInvocationException tie) when (tie.InnerException != null)
-            {
-                // Reflection wraps the command's own exception in a TargetInvocationException; surface
-                // the inner message so callers (and agents) get an actionable error instead of the
-                // generic "Exception has been thrown by the target of an invocation."
-                var inner = tie.InnerException;
-                Debug.LogError($"Command '{command.Name}' failed: {inner.Message}");
-
-                // Preserve validation-oriented exceptions so HandleExecRequest's dedicated
-                // catch (ArgumentException) classifies them as "Parameter Validation Failed" rather than
-                // collapsing them into "Command Execution Failed". Rethrow the original with its stack.
-                if (inner is ArgumentException)
-                    System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(inner).Throw();
-
-                throw new InvalidOperationException($"Command '{command.Name}' failed: {inner.Message}", inner);
-            }
-            catch (Exception ex)
-            {
-                Debug.LogError($"Command execution failed: {ex.Message}");
-                throw new InvalidOperationException($"Command '{command.Name}' failed: {ex.Message}", ex);
-            }
-            finally
-            {
-                m_CurrentServer = previousServer;
-            }
+            var listed = string.Join(", ", prefixMatches.Take(MaxPrefixMatchesListed));
+            var remaining = prefixMatches.Count - MaxPrefixMatchesListed;
+            var more = remaining > 0 ? $", … ({remaining} more)" : string.Empty;
+            return $"{message} Commands starting with '{typedName}': {listed}{more}.";
         }
 
 
@@ -2878,10 +3121,19 @@ namespace Unity.Pipeline
         /// <summary>
         /// Check if a specific port is available for binding.
         /// </summary>
+        /// <remarks>
+        /// A plain socket bind is tried first. Mono shares one socket per port between every
+        /// HttpListener in the process, and a failed HttpListener probe on a port another server
+        /// in this process is listening on closes that server's socket.
+        /// </remarks>
         private bool IsPortAvailable(int port)
         {
             try
             {
+                var socket = new System.Net.Sockets.TcpListener(IPAddress.Parse(LoopbackHost), port);
+                socket.Start();
+                socket.Stop();
+
                 using (var listener = new HttpListener())
                 {
                     AddLoopbackPrefixes(listener, port);

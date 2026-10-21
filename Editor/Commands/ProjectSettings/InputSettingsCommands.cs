@@ -17,28 +17,29 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
     /// </summary>
     static class InputSettingsCommands
     {
-        const string Group = "input";
+        const string Domain = "input";
+        const string Group = "settings." + Domain;
         const string AssetPath = "ProjectSettings/InputManager.asset";
 
-        [CliCommand("get_input_settings", "Read the legacy Input Manager axes (names and count).", MainThreadRequired = true, Tags = new[] { "settings/input" })]
-        public static ProjectSettingsResponse Get() => ProjectSettingsCommand.Get(Group, Read);
+        [CliGroupCommand(Group, "Read the legacy Input Manager axes (names and count).", MainThreadRequired = true, Tags = new[] { "settings/input" })]
+        public static ProjectSettingsResponse Get() => ProjectSettingsCommand.Get(Domain, Read);
 
-        [CliCommand("set_input_settings", "Tune a legacy Input Manager axis (sensitivity/gravity/dead) by name. Requires confirm=true; use dry_run to preview. Not undoable via Ctrl+Z.", MainThreadRequired = true, Tags = new[] { "settings/input" })]
+        [CliGroupCommand(Group, "Tune a legacy Input Manager axis (sensitivity/gravity/dead) by name. Requires confirm=true; use dry_run to preview. Not undoable via Ctrl+Z.", MainThreadRequired = true, Tags = new[] { "settings/input" })]
         public static ProjectSettingsResponse Set(
             [CliArg("settings", "Axis change. 'axis' selects the axis by name; omitted numeric fields are left unchanged.")] InputAxisInput settings = null,
             [CliArg("confirm", "Apply the change. Without it the call is refused.")] bool confirm = false,
             [CliArg("dry_run", "Preview the change without applying it.")] bool dryRun = false)
         {
             if (settings == null)
-                return ProjectSettingsResponse.Fail(Group, "No 'settings' object provided.");
+                return ProjectSettingsResponse.Fail(Domain, "No 'settings' object provided.");
             if (string.IsNullOrEmpty(settings.Axis))
-                return ProjectSettingsResponse.Fail(Group, "'axis' is required.");
+                return ProjectSettingsResponse.Fail(Domain, "'axis' is required.");
 
             var so = ProjectSettingsAsset.Load(AssetPath);
             var axes = so.FindProperty("m_Axes");
             var index = FindAxisIndex(axes, settings.Axis);
             if (index < 0)
-                return ProjectSettingsResponse.Fail(Group, $"No axis named '{settings.Axis}'.");
+                return ProjectSettingsResponse.Fail(Domain, $"No axis named '{settings.Axis}'.");
 
             var axis = axes.GetArrayElementAtIndex(index);
             var changes = new List<string>();
@@ -67,12 +68,12 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
                 AssetDatabase.SaveAssets();
             }
 
-            return ProjectSettingsCommand.Apply(Group, confirm, dryRun, settings, () => planText, Apply, Read);
+            return ProjectSettingsCommand.Apply(Domain, confirm, dryRun, settings, () => planText, Apply, Read);
         }
 
         static ProjectSettingsResponse NoChanges()
         {
-            var response = ProjectSettingsCommand.Get(Group, Read);
+            var response = ProjectSettingsCommand.Get(Domain, Read);
             response.Message = "No changes specified; nothing to apply.";
             return response;
         }

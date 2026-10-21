@@ -29,11 +29,13 @@ namespace Unity.Pipeline.Runtime.Commands
     /// </summary>
     static class ConsoleCommand
     {
+        const string Group = "console";
+
         /// <summary>Default number of entries returned when <c>tail</c> is not supplied.</summary>
         public const int DefaultTail = 100;
 
-        [CliCommand("console", "Get captured Unity console output (Editor or Player; supports tail, level filtering, and follow via a cursor)", MainThreadRequired = false, Tags = new[] { "observability/console" })]
-        public static ConsoleLogResponse GetConsole(
+        [CliGroupCommand(Group, "Get captured Unity console output (Editor or Player; supports tail, level filtering, and follow via a cursor)", MainThreadRequired = false, Tags = new[] { "observability/console" })]
+        public static ConsoleLogResponse Get(
             [CliArg("tail", "Maximum number of most-recent entries to return")] int tail = DefaultTail,
             [CliArg("level", "Minimum severity to include: log | warn | error")] string level = ConsoleLogBuffer.LevelLog,
             [CliArg("since", "Cursor: only return entries newer than this seq. Use the 'cursor' from a previous response to follow.")] long since = -1,
@@ -50,8 +52,8 @@ namespace Unity.Pipeline.Runtime.Commands
             return response;
         }
 
-        [CliCommand("console_status", "Console ground truth and buffer counters without pulling entries: compile-failure flag, Editor console counts, and the buffer's retained counts and cursor.", MainThreadRequired = false, Tags = new[] { "observability/console" })]
-        public static ConsoleLogResponse GetConsoleStatus()
+        [CliGroupCommand(Group, "Console ground truth and buffer counters without pulling entries: compile-failure flag, Editor console counts, and the buffer's retained counts and cursor.", MainThreadRequired = false, Tags = new[] { "observability/console" })]
+        public static ConsoleLogResponse Status()
         {
             // Same shape as `console` with no entries, so a client polling during a long compile
             // gets the counters and the compile-failure flag without paying for the payload.
@@ -60,8 +62,8 @@ namespace Unity.Pipeline.Runtime.Commands
             return response;
         }
 
-        [CliCommand("clear_console", "Clear the captured log buffer and the Unity Editor console.", Tags = new[] { "observability/console" })]
-        public static object ClearConsole()
+        [CliGroupCommand(Group, "Clear the captured log buffer and the Unity Editor console.", Tags = new[] { "observability/console" })]
+        public static object Clear()
         {
             // Clearing keeps the sequence counter, so a client following the console sees dropped=true
             // on its next poll rather than silently skipping the window that was cleared.

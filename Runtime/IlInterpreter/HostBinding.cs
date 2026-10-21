@@ -1137,7 +1137,7 @@ internal sealed unsafe class HostBinding
 
     /// <summary>
     /// Register the NON-PUBLIC members (fields, properties, methods — instance AND static) of
-    /// <paramref name="type"/> and its user-defined base types, so an interpreter-run [CodeReload] body —
+    /// <paramref name="type"/> and its user-defined base types, so an interpreter-run [MethodReload] body —
     /// compiled with access checks disabled (BinderFlags.IgnoreAccessibility) — can read/write private
     /// state (including private statics like the `s_Instance = this;` singleton pattern) and call private
     /// helpers on its target type. Public members are already covered by <see cref="AllowType(Type)"/>.

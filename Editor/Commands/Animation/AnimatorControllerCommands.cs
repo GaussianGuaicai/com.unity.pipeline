@@ -29,11 +29,13 @@ namespace Unity.Pipeline.Editor.Commands.Animation
     /// </summary>
     static class AnimatorControllerCommands
     {
-        [CliCommand("create_animator_controller",
+        const string Group = "animation.animator";
+
+        [CliGroupCommand(Group,
             "Create an .controller AnimatorController asset (with a default Base Layer) under the authoring root.",
             MainThreadRequired = true,
             Tags = new[] { "animation/animator" })]
-        public static AuthoringResult CreateAnimatorController(
+        public static AuthoringResult CreateController(
             [CliArg("path", "Asset path ending in .controller, relative to the authoring root. The Assets/ prefix is optional.", Required = true)] string path,
             [CliArg("confirm", "Required (true) only when overwriting an existing asset at the path.")] bool confirm = false,
             [CliArg("dry_run", "If true, validate inputs and report what would be created without writing anything.")] bool dryRun = false)
@@ -68,11 +70,11 @@ namespace Unity.Pipeline.Editor.Commands.Animation
             return result;
         }
 
-        [CliCommand("add_animator_parameter",
+        [CliGroupCommand(Group,
             "Add a parameter (Float | Int | Bool | Trigger) to an AnimatorController. A duplicate name returns code 'duplicate_parameter'.",
             MainThreadRequired = true,
             Tags = new[] { "animation/animator" })]
-        public static object AddAnimatorParameter(
+        public static object AddParameter(
             [CliArg("controller", "Reference to the AnimatorController to edit (path / guid / globalId).", Required = true)] ObjectRef controller,
             [CliArg("name", "Parameter name.", Required = true)] string name,
             [CliArg("type", "Parameter type: Float | Int | Bool | Trigger.", Required = true)] string type = null,
@@ -135,11 +137,11 @@ namespace Unity.Pipeline.Editor.Commands.Animation
             return result;
         }
 
-        [CliCommand("add_animator_layer",
+        [CliGroupCommand(Group,
             "Add a layer to an AnimatorController.",
             MainThreadRequired = true,
             Tags = new[] { "animation/animator" })]
-        public static object AddAnimatorLayer(
+        public static object AddLayer(
             [CliArg("controller", "Reference to the AnimatorController to edit (path / guid / globalId).", Required = true)] ObjectRef controller,
             [CliArg("name", "Layer name.", Required = true)] string name,
             [CliArg("weight", "Layer weight (default 1).")] float weight = 1f,
@@ -178,12 +180,12 @@ namespace Unity.Pipeline.Editor.Commands.Animation
             return result;
         }
 
-        [CliCommand("add_animator_state",
+        [CliGroupCommand(Group,
             "Add a state to a layer, optionally with a motion (AnimationClip or BlendTree) and as the layer default. " +
             "A layer name with no match returns code 'layer_not_found'.",
             MainThreadRequired = true,
             Tags = new[] { "animation/animator" })]
-        public static object AddAnimatorState(
+        public static object AddState(
             [CliArg("controller", "Reference to the AnimatorController to edit (path / guid / globalId).", Required = true)] ObjectRef controller,
             [CliArg("layer", "Layer index (int) or name (string). Default 0 (Base Layer).")] JToken layer = null,
             [CliArg("name", "State name.", Required = true)] string name = null,
@@ -255,12 +257,12 @@ namespace Unity.Pipeline.Editor.Commands.Animation
             return result;
         }
 
-        [CliCommand("add_animator_transition",
+        [CliGroupCommand(Group,
             "Add a transition between two states (or from AnyState/Entry, to Exit) on a layer, with optional conditions. " +
             "Validates that the states exist and each condition's parameter exists and its mode matches the parameter type.",
             MainThreadRequired = true,
             Tags = new[] { "animation/animator" })]
-        public static object AddAnimatorTransition(
+        public static object AddTransition(
             [CliArg("controller", "Reference to the AnimatorController to edit (path / guid / globalId).", Required = true)] ObjectRef controller,
             [CliArg("layer", "Layer index (int) or name (string). Default 0 (Base Layer).")] JToken layer = null,
             [CliArg("fromState", "Source state name, or the special \"AnyState\" / \"Entry\".", Required = true)] string fromState = null,
@@ -382,11 +384,11 @@ namespace Unity.Pipeline.Editor.Commands.Animation
             return result;
         }
 
-        [CliCommand("get_animator_controller",
+        [CliGroupCommand(Group,
             "Read an AnimatorController's full structure: parameters, layers, states (with motion / default), and transitions (with conditions).",
             MainThreadRequired = true,
             Tags = new[] { "animation/animator" })]
-        public static AnimatorControllerInfo GetAnimatorController(
+        public static AnimatorControllerInfo GetController(
             [CliArg("controller", "Reference to the AnimatorController to read (path / guid / globalId).", Required = true)] ObjectRef controller)
         {
             var (ctrl, ctrlPath) = ResolveController(controller);
@@ -629,7 +631,7 @@ namespace Unity.Pipeline.Editor.Commands.Animation
                 }
             }
 
-            error = $"No layer named '{name}' on the controller. Add it first with add_animator_layer.";
+            error = $"No layer named '{name}' on the controller. Add it first with {CommandNames.AnimationAnimatorAddLayer}.";
             return false;
         }
 

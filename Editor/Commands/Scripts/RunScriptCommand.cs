@@ -30,7 +30,7 @@ namespace Unity.Pipeline.Editor.Commands.Scripts
     /// It composes the two halves the pipeline already had — <c>eval_file</c> (code from disk) and
     /// <c>reload_file</c> (single-file in-memory Roslyn compile) — into one first-class command:
     ///   - <c>ephemeral</c> (default): compile to an in-memory assembly, run the entry point, discard.
-    ///   - <c>hotpatch</c>: delegate to <c>reload_file</c>'s in-place <c>[CodeReload]</c> semantics.
+    ///   - <c>hotpatch</c>: delegate to <c>reload_file</c>'s in-place <c>[MethodReload]</c> semantics.
     ///
     /// This is still arbitrary code execution — only the carrier changes (a reviewable file on disk
     /// instead of a protocol string). It is grouped under the same <c>scripts/eval</c> tag as
@@ -38,22 +38,22 @@ namespace Unity.Pipeline.Editor.Commands.Scripts
     /// </summary>
     static class RunScriptCommand
     {
-        /// <summary>Upper bound on a single run's timeout — 24 hours, matching the <c>eval</c> cap (CLI-335).</summary>
-        private const int MaxTimeoutMs = 86_400_000;
+        const string Group = "script";
 
-        [CliCommand("run_script",
+        [CliGroupCommand(Group,
             "Compile a project C# file in memory (no domain reload) and execute a named static entry point. " +
-            "The builder-pattern path for bulk construction. Still arbitrary code execution — shares eval's capability gate.",
-            MainThreadRequired = true, Tags = new[] { "scripts/eval" })]
-        public static async Task<RunScriptResponse> RunScript(
+            "The builder-pattern path for bulk construction. Still arbitrary code execution — shares " + CommandNames.ScriptEval + "'s capability gate.",
+            MainThreadRequired = true,
+            Tags = new[] { "scripts/eval" })]
+        public static async Task<RunScriptResponse> Run(
             [CliArg("file", "Path to a .cs file to compile. Relative paths resolve against the PROJECT ROOT (the parent of Assets/), not the process working directory. May live OUTSIDE Assets/ (e.g. AgentScripts/) so writing it never triggers an asset import or domain reload.", Required = true)] string file,
             [CliArg("entry", "Entry point as Namespace.Type.Method (or Type.Method, or a bare Method name). Default: the single public static method if unambiguous, else a method named Main. Static methods only in v1. Ephemeral mode only (rejected with mode=hotpatch, which never invokes an entry point).")] string entry = null,
             [CliArg("args", "JSON array of arguments passed to the entry point, coerced to its parameter types: primitives, enum names, string[], and a string/object handle (ObjectRef) for UnityEngine.Object parameters. Ephemeral mode only (rejected with mode=hotpatch).")] JArray args = null,
-            [CliArg("mode", "ephemeral (default): compile to an in-memory assembly, run the entry, discard. hotpatch: apply [CodeReload] method replacements to already-loaded types (reload_file semantics).")] string mode = "ephemeral",
-            [CliArg("references", "Extra assembly name prefixes to reference beyond the auto-resolved set. In the Editor all loaded assemblies are already referenced, so this is effectively a no-op there. Ephemeral mode only; not applied by hotpatch (which delegates to reload_file's own compile).")] string[] references = null,
+            [CliArg("mode", "ephemeral (default): compile to an in-memory assembly, run the entry, discard. hotpatch: apply [MethodReload] method replacements to already-loaded types (" + CommandNames.ScriptMethodreloadReload + " semantics).")] string mode = "ephemeral",
+            [CliArg("references", "Extra assembly name prefixes to reference beyond the auto-resolved set. In the Editor all loaded assemblies are already referenced, so this is effectively a no-op there. Ephemeral mode only; not applied by hotpatch (which delegates to " + CommandNames.ScriptMethodreloadReload + "'s own compile).")] string[] references = null,
             [CliArg("defines", "Extra scripting define symbols APPENDED to the project's active editor defines (UNITY_EDITOR etc. are already set) for the compilation's #if directives. Ephemeral mode only; not applied by hotpatch.")] string[] defines = null,
             [CliArg("pdb", "Emit a portable PDB mapped to the source file so breakpoints bind and exception stack traces map to file:line. Compiles unoptimized.")] bool pdb = false,
-            [CliArg("timeout_ms", "Timeout in milliseconds. Bounds the main-thread dispatcher wait AND, for an async entry point, how long its Task is awaited (on expiry the task keeps running detached).")] int timeoutMs = 30000,
+            [CliArg("timeout", "Timeout in seconds. Bounds the whole run, including how long an async entry point's Task is awaited (on expiry the task keeps running detached).")] double timeoutInSeconds = 60,
             [CliArg("dry_run", "Compile only: return diagnostics; the emitted assembly is NOT loaded into the domain and nothing executes. Ephemeral mode only (rejected with mode=hotpatch, which would apply live method replacements).")] bool dryRun = false)
         {
             var total = Stopwatch.StartNew();
@@ -64,9 +64,7 @@ namespace Unity.Pipeline.Editor.Commands.Scripts
             if (!file.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
                 return RunScriptResponse.Fail("Bad Request", "The 'file' must have a .cs extension.", total.ElapsedMilliseconds);
 
-            if (timeoutMs <= 0 || timeoutMs > MaxTimeoutMs)
-                return RunScriptResponse.Fail("Bad Request", $"'timeout_ms' must be between 1 and {MaxTimeoutMs}.", total.ElapsedMilliseconds);
-
+            var timeout = PipelineTimeout.FromSeconds(timeoutInSeconds);
             var normalizedMode = (mode ?? "ephemeral").Trim().ToLowerInvariant();
 
             try
@@ -74,10 +72,10 @@ namespace Unity.Pipeline.Editor.Commands.Scripts
                 switch (normalizedMode)
                 {
                     case "ephemeral":
-                        return await RunEphemeral(file, entry, args, references, defines, pdb, dryRun, timeoutMs, total);
+                        return await RunEphemeral(file, entry, args, references, defines, pdb, dryRun, timeout, total);
                     case "hotpatch":
                     {
-                        // hotpatch delegates wholesale to reload_file's [CodeReload] semantics:
+                        // hotpatch delegates wholesale to reload_file's [MethodReload] semantics:
                         // nothing is invoked, so entry/args are meaningless, and there is no
                         // compile-only path — a "dry run" would still apply live method
                         // replacements. Reject rather than silently ignore or, worse, apply.
@@ -96,12 +94,12 @@ namespace Unity.Pipeline.Editor.Commands.Scripts
                         {
                             return RunScriptResponse.Fail("Bad Request",
                                 $"{string.Join(" and ", unsupported)} {(unsupported.Count == 1 ? "is" : "are")} not supported with mode=hotpatch: " +
-                                "it applies [CodeReload] method replacements in place and never invokes an entry point. " +
+                                "it applies [MethodReload] method replacements in place and never invokes an entry point. " +
                                 "Use mode=ephemeral to run an entry point.",
                                 total.ElapsedMilliseconds);
                         }
 
-                        return RunHotpatch(file, pdb, timeoutMs, total);
+                        return RunHotpatch(file, pdb, timeout, total);
                     }
                     default:
                         return RunScriptResponse.Fail("Bad Request", $"Unknown mode '{mode}'. Expected 'ephemeral' or 'hotpatch'.", total.ElapsedMilliseconds);
@@ -109,7 +107,7 @@ namespace Unity.Pipeline.Editor.Commands.Scripts
             }
             catch (Exception ex)
             {
-                Debug.LogError($"Pipeline: run_script failed: {ex}");
+                Debug.LogError($"Pipeline: {CommandNames.ScriptRun} failed: {ex}");
                 return RunScriptResponse.Fail("Execution Failed", ex.ToString(), total.ElapsedMilliseconds);
             }
         }
@@ -118,10 +116,10 @@ namespace Unity.Pipeline.Editor.Commands.Scripts
         /// ephemeral mode: single-file in-memory compile → resolve the entry point → coerce args →
         /// invoke → serialize. No <c>AssetDatabase.Refresh</c> and no domain reload occur. Async so
         /// a Task-returning entry point can be awaited without blocking the main thread (see the
-        /// comment at the await); <paramref name="timeoutMs"/> bounds that wait.
+        /// comment at the await); <paramref name="timeout"/> bounds that wait.
         /// </summary>
         private static async Task<RunScriptResponse> RunEphemeral(
-            string file, string entry, JArray args, string[] references, string[] defines, bool pdb, bool dryRun, int timeoutMs, Stopwatch total)
+            string file, string entry, JArray args, string[] references, string[] defines, bool pdb, bool dryRun, TimeSpan timeout, Stopwatch total)
         {
             // Resolve the path: absolute as-is, else relative to the PROJECT ROOT (the parent of
             // Assets/) — NOT the process working directory, which is usually but not guaranteed to
@@ -226,22 +224,25 @@ namespace Unity.Pipeline.Editor.Commands.Scripts
                 // blocking wait here deadlocks the whole Editor permanently. Awaiting instead
                 // returns control to the editor loop at this point (the server unwraps the
                 // command's own Task off the main thread), letting those continuations pump.
-                // The wait is bounded by what remains of timeout_ms; on expiry the task keeps
+                // The wait is bounded by what remains of the timeout; on expiry the task keeps
                 // running detached, like an abandoned eval. Task<T> exposes Result via reflection
                 // (an `async Task` materializes as Task<VoidTaskResult>, whose Result carries no
                 // value — treat it as null).
                 if (returnValue is Task task)
                 {
-                    var remainingMs = (int)Math.Max(0, timeoutMs - total.ElapsedMilliseconds);
-                    var completed = await Task.WhenAny(task, Task.Delay(remainingMs));
+                    var stopAt = PipelineTimeout.StopBefore(timeout);
+                    var remaining = PipelineTimeout.IsInfinite(stopAt)
+                        ? stopAt
+                        : (stopAt > total.Elapsed ? stopAt - total.Elapsed : TimeSpan.Zero);
+                    var completed = await Task.WhenAny(task, Task.Delay(remaining));
                     if (completed != task)
                     {
                         execSw.Stop();
                         return RunScriptResponse.Fail(
                             "Timeout",
-                            $"The entry point's Task did not complete within the {timeoutMs}ms budget " +
-                            $"({remainingMs}ms remained after the synchronous part). The task keeps running detached and " +
-                            "its effects may still land; raise timeout_ms if it legitimately needs longer.",
+                            $"The entry point's Task did not complete within the {PipelineTimeout.Describe(timeout)} timeout " +
+                            $"({PipelineTimeout.Describe(remaining)} remained after the synchronous part). The task keeps running detached and " +
+                            "its effects may still land; raise --timeout if it legitimately needs longer.",
                             total.ElapsedMilliseconds,
                             compilation.Diagnostics,
                             compileSw.ElapsedMilliseconds,
@@ -286,13 +287,13 @@ namespace Unity.Pipeline.Editor.Commands.Scripts
         }
 
         /// <summary>
-        /// hotpatch mode: apply in-place <c>[CodeReload]</c> method replacements to already-loaded
+        /// hotpatch mode: apply in-place <c>[MethodReload]</c> method replacements to already-loaded
         /// types, delegating to the existing <c>reload_file</c> command so its behavior/tests are
         /// preserved. The result is re-shaped into a <see cref="RunScriptResponse"/>.
         /// </summary>
-        private static RunScriptResponse RunHotpatch(string file, bool pdb, int timeoutMs, Stopwatch total)
+        private static RunScriptResponse RunHotpatch(string file, bool pdb, TimeSpan timeout, Stopwatch total)
         {
-            var hr = CodeReloadCommands.ReloadFile(file, timeoutMs, null, pdb);
+            var hr = MethodReloadCommands.Reload(file, PipelineTimeout.IsInfinite(timeout) ? double.PositiveInfinity : timeout.TotalSeconds, null, pdb);
 
             // reload_file reports a single duration for the whole reload (compile + apply); surface
             // it as executeMs rather than mislabeling it compile time. compileMs stays 0 here.
@@ -314,7 +315,7 @@ namespace Unity.Pipeline.Editor.Commands.Scripts
             var diagnostics = (hr.Diagnostics ?? new List<string>())
                 .Select(d => new DiagnosticInfo { Severity = "error", Message = d })
                 .ToList();
-            return RunScriptResponse.Fail(hr.Error ?? "Code Reload Failed", hr.ErrorDetails, total.ElapsedMilliseconds,
+            return RunScriptResponse.Fail(hr.Error ?? "Method Reload Failed", hr.ErrorDetails, total.ElapsedMilliseconds,
                 diagnostics, 0, reloadMs, hr.AssemblyName);
         }
 
@@ -632,7 +633,7 @@ namespace Unity.Pipeline.Editor.Commands.Scripts
             return new RunScriptResponse
             {
                 Success = true,
-                Command = "run_script",
+                Command = CommandNames.ScriptRun,
                 Result = result,
                 AssemblyName = assemblyName,
                 CompileMs = compileMs,
@@ -649,7 +650,7 @@ namespace Unity.Pipeline.Editor.Commands.Scripts
             return new RunScriptResponse
             {
                 Success = false,
-                Command = "run_script",
+                Command = CommandNames.ScriptRun,
                 Error = error,
                 ErrorDetails = errorDetails,
                 AssemblyName = assemblyName,

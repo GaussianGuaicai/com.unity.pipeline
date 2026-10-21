@@ -1,6 +1,6 @@
 using System;
 using System.Collections.Generic;
-using Unity.Pipeline.CodeReload;
+using Unity.Pipeline.MethodReload;
 using UnityEditor;
 using UnityEditor.Networking.PlayerConnection;
 using UnityEngine;
@@ -9,7 +9,7 @@ using UnityEngine.Networking.PlayerConnection;
 namespace Unity.Pipeline.Editor
 {
     /// <summary>
-    /// Editor side of code-reload push signing. Owns the per-player session table (nonce announced by
+    /// Editor side of method-reload push signing. Owns the per-player session table (nonce announced by
     /// each player's HandshakeMsg) and produces signed <see cref="PushEnvelope"/>s with the project key
     /// (<c>Library/Pipeline/signing.key</c>, created at build time — never here: a key no build has
     /// baked would sign pushes nothing accepts, so its absence should say "build first").
@@ -58,14 +58,14 @@ namespace Unity.Pipeline.Editor
             try
             {
                 EditorConnection.instance.Initialize();
-                EditorConnection.instance.Register(PipelineCodeReloadConnect.HandshakeMsg, OnHandshake);
+                EditorConnection.instance.Register(PipelineMethodReloadConnect.HandshakeMsg, OnHandshake);
                 s_Registered = true;
 
                 // A domain reload just wiped the session table; ask every connected player to
                 // re-announce so it is warm again before anyone pushes.
                 var players = EditorConnection.instance.ConnectedPlayers;
                 if (players != null && players.Count > 0)
-                    EditorConnection.instance.Send(PipelineCodeReloadConnect.RequestHandshakeMsg, RequestPayload());
+                    EditorConnection.instance.Send(PipelineMethodReloadConnect.RequestHandshakeMsg, RequestPayload());
             }
             catch (Exception ex)
             {
@@ -82,7 +82,7 @@ namespace Unity.Pipeline.Editor
                 s_DeferPumpHooked = false;
             }
             if (!s_Registered) return;
-            try { EditorConnection.instance.Unregister(PipelineCodeReloadConnect.HandshakeMsg, OnHandshake); }
+            try { EditorConnection.instance.Unregister(PipelineMethodReloadConnect.HandshakeMsg, OnHandshake); }
             catch { /* connection may already be gone during teardown */ }
             s_Registered = false;
         }
@@ -93,7 +93,7 @@ namespace Unity.Pipeline.Editor
         // Main thread (EditorConnection dispatches there, same as the ack handler in PushReloadCommand).
         private static void OnHandshake(MessageEventArgs args)
         {
-            if (!PipelineCodeReloadConnect.TryDecodeHandshake(args.data, out var version, out var fingerprint, out var nonce))
+            if (!PipelineMethodReloadConnect.TryDecodeHandshake(args.data, out var version, out var fingerprint, out var nonce))
             {
                 Debug.LogWarning($"[PushReload] Undecodable handshake from player {args.playerId} — its pushes will fail.");
                 return;
@@ -127,7 +127,7 @@ namespace Unity.Pipeline.Editor
                 else
                     // A player connecting is only interesting once something is pushed to it; a
                     // connected dev player with the watcher off used to log this on every connect.
-                    CodeReloadRegistry.NoteForFirstReload(session);
+                    MethodReloadRegistry.NoteForFirstReload(session);
             }
 
             PumpDeferred(); // a deferred push may have been waiting exactly for this handshake
@@ -161,7 +161,7 @@ namespace Unity.Pipeline.Editor
 
             try
             {
-                EditorConnection.instance.Send(PipelineCodeReloadConnect.RequestHandshakeMsg, RequestPayload(), playerId);
+                EditorConnection.instance.Send(PipelineMethodReloadConnect.RequestHandshakeMsg, RequestPayload(), playerId);
             }
             catch (Exception ex)
             {
@@ -209,7 +209,7 @@ namespace Unity.Pipeline.Editor
             try
             {
                 var envelope = PushEnvelope.Sign(privateKey, session.Nonce, session.Counter, payload);
-                EditorConnection.instance.Send(PipelineCodeReloadConnect.ApplyReloadMsg, envelope, playerId);
+                EditorConnection.instance.Send(PipelineMethodReloadConnect.ApplyReloadMsg, envelope, playerId);
                 Commands.PushReloadCommand.TrackAck(desc + $" → player {playerId}");
                 return true;
             }

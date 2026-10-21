@@ -1,5 +1,3 @@
-# Code Analysis Dependencies
+# Bundled Compiler Dependencies
 
-This folder contains the namespace-isolated Roslyn and metadata DLLs used by runtime compilation and the IL interpreter. The DLL importer `.meta` files control their platform availability.
-
-Keep PluginImporter `serializedVersion: 2` and the list-based `platformData` format readable by Unity 2022.3. Preserve GUIDs, platform selections, automatic references, and the editor/development/runtime-pipeline define constraint. Do not replace these DLLs with non-isolated assemblies.
+This directory contains the renamed Roslyn and metadata dependencies used by compilation and the IL interpreter. Preserve DLL GUIDs and runtime define constraints. Keep PluginImporter metadata in serializedVersion 2 platform-list format so Unity 2022.3 can import these dependencies; newer editors also accept that format.

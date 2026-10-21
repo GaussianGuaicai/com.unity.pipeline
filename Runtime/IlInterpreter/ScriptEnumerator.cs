@@ -22,7 +22,7 @@ sealed partial class ScriptInterpreter
 
         // Set when a pump threw: the iterator is over. Without this guard an exception from
         // an interpreted body propagates out of MoveNext into Unity's coroutine scheduler and
-        // kills the ENTIRE host coroutine chain that yielded on this bridge (a code-reload
+        // kills the ENTIRE host coroutine chain that yielded on this bridge (a method-reload
         // error froze the whole scene loop). A compiled body has the registry's
         // fall-back-to-original safety net at dispatch; a coroutine body runs after dispatch,
         // so this is its equivalent: log through the interpreter's sink and end the iterator —
@@ -104,7 +104,7 @@ sealed partial class ScriptInterpreter
             // carries its location in the message, but a raw exception escaping the VM (an
             // interpreter bug or a fast-path host throw) is only diagnosable from its stack.
             _owner._logSink(
-                $"CodeReload: interpreted coroutine '{StateMachine.Type.Name}' threw in {where} — " +
+                $"MethodReload: interpreted coroutine '{StateMachine.Type.Name}' threw in {where} — " +
                 $"ending this iterator so the host coroutine chain survives: {ex}");
         }
     }

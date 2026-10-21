@@ -1,6 +1,7 @@
 using System;
 using System.Linq;
 using System.Reflection;
+using Unity.Pipeline.Commands;
 using UnityEditor;
 using UnityEngine;
 
@@ -41,8 +42,8 @@ namespace Unity.Pipeline.Editor.Commands.Scripts
             {
                 error =
                     $"Type '{name}' was not found in any loaded assembly. " +
-                    "If you just created this script it is not compiled yet: run 'recompile', poll " +
-                    "'recompile_status' until it reports completed/up_to_date, then retry attach_script. " +
+                    $"If you just created this script it is not compiled yet: run '{CommandNames.ScriptRecompile}', poll " +
+                    $"'{CommandNames.ScriptRecompileStatus}' until it reports completed/up_to_date, then retry {CommandNames.ScriptAttach}. " +
                     "If it should already exist, check the class name (and namespace) and that the file compiled without errors.";
                 return false;
             }
@@ -83,8 +84,8 @@ namespace Unity.Pipeline.Editor.Commands.Scripts
             if (scriptClass == null)
             {
                 error =
-                    $"Script '{script.name}' has no compiled class. It is likely not compiled yet: run 'recompile', " +
-                    "poll 'recompile_status', then retry.";
+                    $"Script '{script.name}' has no compiled class. It is likely not compiled yet: run '{CommandNames.ScriptRecompile}', " +
+                    $"poll '{CommandNames.ScriptRecompileStatus}', then retry.";
                 return false;
             }
 

@@ -100,11 +100,27 @@ namespace Unity.Pipeline.Editor
                     {
                         config.Save();
                         loadedWriteTimeUtc = EditorPipelineConfig.GetSettingsFileWriteTimeUtc();
+
+                        // Reconcile Application.runInBackground against the edit just saved
+                        // (CLI-1432) — most relevantly, toggling "Ensure editor runs in background
+                        // in PlayMode" while already in Play mode. Reconciles IN PLACE against this
+                        // page's own `config` instance (never a second, independently-loaded one,
+                        // which would race the external-change detection above), and refreshes
+                        // loadedWriteTimeUtc again when it saves further — otherwise the next
+                        // repaint would see the file's write time move past what this page recorded
+                        // and mistake its own write for an external one, reloading and discarding
+                        // whatever the user is mid-editing.
+                        if (PipelineServerStartup.ReconcileRunInBackground(config, EditorApplication.isPlaying, out _))
+                        {
+                            config.Save();
+                            loadedWriteTimeUtc = EditorPipelineConfig.GetSettingsFileWriteTimeUtc();
+                        }
                     }
                 },
                 keywords = new HashSet<string>(new[]
                 {
-                    "Pipeline", "Editor", "Server", "Port", "Watchdog", "Code Reload", "CLI", "Telemetry"
+                    "Pipeline", "Editor", "Server", "Port", "Watchdog", "Method Reload", "CLI", "Telemetry",
+                    "Run In Background", "Play Mode"
                 })
             };
         }

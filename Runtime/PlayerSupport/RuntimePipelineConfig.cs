@@ -16,19 +16,10 @@ namespace Unity.Pipeline.Config
     /// </summary>
     public class RuntimePipelineConfig : ScriptableObject
     {
-        /// <summary>Master switch. The server only starts when true. Off by default for safety.</summary>
-        [Tooltip("Enable Pipeline HTTP server in Player builds. SECURITY WARNING: Only enable in development/QA builds, never production without proper security measures.")]
-        public bool enableInBuilds = false;
-
         /// <summary>Listen port. 0 auto-assigns from 7900-7999.</summary>
         [Header("Server")]
         [Tooltip("HTTP port for Pipeline server. Use 0 for auto-assignment from range 7900-7999.")]
         public int port = 0;
-
-        /// <summary>Per-request timeout, in milliseconds.</summary>
-        [Tooltip("Request timeout in milliseconds. Higher values allow longer-running commands.")]
-        [Range(1000, 60000)]
-        public int requestTimeoutMs = 30000;
 
         /// <summary>Log remote requests for auditing.</summary>
         [Header("Runtime Behavior")]
@@ -43,6 +34,12 @@ namespace Unity.Pipeline.Config
         [Tooltip("Maximum work items the dispatcher processes per frame to maintain performance.")]
         [Range(1, 50)]
         public int maxWorkItemsPerFrame = 10;
+
+        /// <summary>Format of the authored settings file; every Save writes the current one.</summary>
+        internal const int CurrentSettingsVersion = 2;
+
+        [SerializeField, HideInInspector]
+        internal int settingsVersion = CurrentSettingsVersion;
 
         // Plain int field (not [Range]) so the Inspector shows a text field rather than an
         // unusable 0-65535 slider; the bound is still enforced here, same pattern as
@@ -324,7 +321,7 @@ namespace Unity.Pipeline.Config
 
         private static string s_AbsoluteSettingsPath;
 
-        private static string GetAbsoluteSettingsPath()
+        internal static string GetAbsoluteSettingsPath()
         {
             // Application.dataPath is ".../Assets"; ProjectSettings is a sibling directory. Both are
             // fixed for the lifetime of the process, so the combined path is built once and reused.
@@ -346,9 +343,6 @@ namespace Unity.Pipeline.Config
         /// <returns>The validation result.</returns>
         public ValidationResult Validate()
         {
-            if (!enableInBuilds)
-                return ValidationResult.Success("Runtime Pipeline disabled");
-
             // Port validation
             if (port != 0 && (port < 7900 || port > 7999))
             {

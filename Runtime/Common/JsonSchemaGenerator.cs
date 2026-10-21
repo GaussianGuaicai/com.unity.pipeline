@@ -34,7 +34,7 @@ namespace Unity.Pipeline.Commands
             {
                 ["$schema"] = "http://json-schema.org/draft-07/schema#",
                 ["type"] = "object",
-                ["title"] = command.Name,
+                ["title"] = command.FullName,
                 ["description"] = command.Description,
                 ["properties"] = GenerateParameterProperties(command.Parameters),
                 ["required"] = new JArray(command.Parameters.Where(p => p.Required).Select(p => p.Name)),

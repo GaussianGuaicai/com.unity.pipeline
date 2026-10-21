@@ -3,7 +3,7 @@
 The Editor server reports how the pipeline is used through Unity's editor analytics
 (`EditorAnalytics.SendAnalytic`). The data answers questions the package has no other way to
 answer: whether sessions are interactive or automated, which commands clients actually reach for,
-how often they fail, how long they take, and how much traffic is raw `eval` rather than a
+how often they fail, how long they take, and how much traffic is raw `script eval` rather than a
 concrete command.
 
 Three things bound what is collected:
@@ -14,7 +14,7 @@ Three things bound what is collected:
   `SendAnalytic` does nothing and no event leaves the machine. There is no separate pipeline
   switch to turn off.
 - **Nothing about a command's content is collected.** Not its parameters, not the code passed to
-  `eval`, not paths, not results.
+  `script eval`, not paths, not results.
 - **Nothing a project declared about its own commands is collected.** Only commands shipped in the
   package report their name and tags; anything a project declared itself reports
   `<customUserCommand>` and no tags — see
@@ -44,19 +44,24 @@ Sent once per command a client executes.
 
 | Field | Meaning |
 |-------|---------|
-| `commandName` | The registered command name — but only for commands that ship with the package. A project-declared command reports the literal `<customUserCommand>` instead. |
+| `commandName` | The command's full name (`group name`, e.g. `asset delete`) — but only for commands that ship with the package. A project-declared command reports the literal `<customUserCommand>` instead. |
 | `commandTags` | The command's tags, in declaration order — but only for commands that ship with the package. Empty for an untagged command, and always empty for a project-declared one. |
-| `commandSuccess` | Whether the command succeeded. False both when it threw and when it returned a result carrying its own failure — `eval`, `reload_file`, `run_script` and `run_tests` all report failure the second way. |
+| `commandSuccess` | Whether the command succeeded. False both when it threw and when it returned a result carrying its own failure — `script eval`, `script.methodreload reload`, `script run` and `test run` all report failure the second way. |
 | `commandDuration` | Milliseconds spent inside the command, excluding the wait for the one-command-at-a-time gate. |
 | `isUserDefinedCommand` | The command was declared by the project rather than shipped in the package. |
-| `isEval` | The command is a code evaluation (tagged `scripts/eval`: `eval`, `eval_file`, `run_script`). |
-| `isEvalWithExistingCommandAvailable` | Whether the evaluated snippet touches an API that a shipped command already covers — the "you did not need eval for this" signal. Same judgement `report_evals` makes, applied to one invocation: see [How the eval-coverage flag is decided](#how-the-eval-coverage-flag-is-decided). |
+| `isEval` | The command is a code evaluation: it carries the `scripts/eval` tag, as `script eval`, `script eval_file` and `script run` do. |
+| `isEvalWithExistingCommandAvailable` | Whether the evaluated snippet touches an API that a shipped command already covers — the "you did not need eval for this" signal. Same judgement `diagnostics report_evals` makes, applied to one invocation: see [How the eval-coverage flag is decided](#how-the-eval-coverage-flag-is-decided). |
+| `commandId` | The calling client's invocation id, which matches the `pipeline_command_id` on the `unity` CLI's own `command executed` event. One CLI invocation can send several commands, so several events can share an id. `0` when the caller sent none. |
+| `clientSource` | Who drove the client: `human`, `agent`, `ci` or `unknown`. Empty when the caller sent none. |
+| `clientName` | Which AI client family drove the client (`claude`, `cursor`, …), or `none`. Empty when the caller sent none. |
+
+See [Caller context](connectivity.md#caller-context) for how a client supplies these.
 
 What counts as one execution:
 
 - One event per `/api/exec` call, including a `job: true` submission — reported when the job
   actually **finishes**, not when its job handle is returned.
-- A `batch` reports one event, for `batch` itself. Its sub-operations are not reported
+- A `job batch` reports one event, for `job batch` itself. Its sub-operations are not reported
   individually.
 - A request rejected before anything ran (oversized body, malformed JSON, unknown command,
   settling host, full job queue) reports nothing: no command executed.
@@ -82,10 +87,10 @@ inventing a second opinion. Per invocation:
 2. Each fingerprint is looked up in `EvalCoverageMap.Default`, a small curated hint map from API to
    the command that would cover it.
 3. The flag is true only if a mapped command is **actually in the live catalog**. A mapping to a
-   command that does not exist yet (`AssetDatabase.Refresh` → `refresh_assets`) is a gap for
-   `report_evals` to surface, not an avoidable eval.
+   command that does not exist yet (`AssetDatabase.Refresh` → `asset.refresh`) is a gap for
+   `diagnostics report_evals` to surface, not an avoidable eval.
 
-This is deliberately the same rule as `report_evals`' `covered` list, so the two can never disagree.
+This is deliberately the same rule as `diagnostics report_evals`' `covered` list, so the two can never disagree.
 Two consequences worth knowing when reading the data:
 
 - **It is a floor, not a measure.** The map has a handful of entries and matching is on the whole
@@ -93,19 +98,19 @@ Two consequences worth knowing when reading the data:
   `UnityEditor.PlayerSettings.GetScriptingBackend(...)` and
   `PlayerSettings.GetScriptingBackend(...).ToString()` do not — they fingerprint as different paths.
   A `false` means "no mapped-and-present command matched", never "no command could cover this".
-- **`run_script` always reports `false`.** It runs a project file through a named entry point rather
+- **`script run` always reports `false`.** It runs a project file through a named entry point rather
   than a snippet, and the fingerprinter parses script-kind bodies, so it is not fingerprinted.
-  `eval` (inline body) and `eval_file` (body read back from its file) are judged.
+  `script eval` (inline body) and `script eval_file` (body read back from its file) are judged.
 
 ## What is and is not collected
 
-A command's name and tags are text the project's own authors wrote, so either can name an
+A command's name (its group and name) and tags are text the project's own authors wrote, so either can name an
 unannounced feature or an internal system. Tags are constrained in shape
 (`^[a-z0-9_]+(/[a-z0-9_]+)*$`) and shipped commands must use the documented taxonomy, but nothing
 holds a project to it, so a tag carries a project-chosen word exactly as a name does.
 
 So both are withheld. `commandName` and `commandTags` describe only commands that ship in the
-package (`Unity.Pipeline`, `Unity.Pipeline.Editor`); every other `[CliCommand]` reports the literal
+package (`Unity.Pipeline`, `Unity.Pipeline.Editor`); every other `[CliGroupCommand]` reports the literal
 `<customUserCommand>` and an empty tag array. The remaining fields — success, duration, `isEval` —
 are facts about the execution, not about what the project called it, so they are reported for every
 command.
@@ -118,14 +123,16 @@ Command **arguments** are never collected. Neither is anything a command reads o
 
 ## Adding post-command work
 
-Analytics is one consumer of a single seam rather than a special case. When a command finishes,
-`BasePipelineServer.OnCommandDone` receives a `CommandExecutionInfo` describing both the raw
-transaction and the execution. It runs on the HTTP thread, so `EditorPipelineServer` splits by what
-each consumer needs: the transaction log is appended there directly (thread-safe file I/O by
-design), and anything needing Unity APIs is handed to the server dispatcher with
-`Dispatcher.Post`, which runs it in `OnCommandDoneMainThread` on the next main-thread pump.
+Analytics is one consumer of a single seam rather than a special case. When a command that ran
+ends, synchronous or a detached job, the executor's `OnCommandEnded` receives a
+`CommandExecutionInfo` describing the execution. It runs on whatever thread the command ended on, so
+`EditorCommandExecutor` hands it to the server dispatcher with `Dispatcher.Post`, which runs it in
+`ReportOnMainThread` on the next main-thread pump. The raw transaction goes to the HTTP transport
+instead: `BasePipelineServer.OnCommandDone` receives it on the HTTP thread, and
+`EditorPipelineServer` appends it to the transaction log there (thread-safe file I/O by design).
 
-New post-command work goes in one of those two, depending on which thread it needs. `Post` is the
+New post-command work goes in `ReportOnMainThread` when it needs Unity APIs, in `OnCommandEnded`
+when it doesn't, and in `OnCommandDone` only when it is about the HTTP transaction. `Post` is the
 general fire-and-forget counterpart to `Dispatcher.Invoke`: it returns immediately instead of
 parking the request thread until the next pump, and swallows-and-logs failures because there is no
 caller left to throw to. Work still queued when the server stops is dropped, so a report can be
@@ -135,4 +142,4 @@ lost in the frame the Editor quits or reloads its domain.
 
 - [Creating commands](creating-commands.md) — where a command's name and tags come from.
 - [Connectivity](connectivity.md) — the port and CORS settings the session event reports.
-- [Code reload](code-reload.md) — the watcher whose state the session event reports.
+- [Method reload](method-reload.md) — the watcher whose state the session event reports.

@@ -5,7 +5,7 @@ namespace Unity.Pipeline.Config
 {
     /// <summary>
     /// Build-only, generated companion to <see cref="RuntimePipelineConfig"/>: holds the absolute,
-    /// machine-specific code-reload roots baked in by PipelineRuntimeBuildProcessor. Created fresh
+    /// machine-specific method-reload roots baked in by PipelineRuntimeBuildProcessor. Created fresh
     /// before each build and deleted immediately after — never checked into source control, since
     /// its contents are meaningless outside the machine that produced them. Absent outside of a
     /// real build (e.g. Editor Play Mode without ever having built) is not an error;
@@ -20,7 +20,7 @@ namespace Unity.Pipeline.Config
         public List<string> allowedReloadRoots = new List<string>();
 
         /// <summary>Public half of the project's push-signing key (from Library/Pipeline/signing.key).
-        /// A player build rejects every code-reload push not signed by the matching private key; empty
+        /// A player build rejects every method-reload push not signed by the matching private key; empty
         /// means reject all pushes (strict policy — there is deliberately no unsigned fallback).</summary>
         public string pushPublicKey = "";
 

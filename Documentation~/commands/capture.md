@@ -2,7 +2,7 @@
 
 Commands that render a camera, the Scene View, or a UI Toolkit element to a PNG and return it base64-encoded so an agent can "see" the editor (or a running player) without a display.
 
-### `capture_game_view`
+### `capture game_view`
 Render the game view to a PNG. Returns it inline as base64, unless `save_path` is set — then the result is **path-only** (no base64) so agent tool results stay small; pass `include_inline_image=true` to get both.
 
 `source` selects what is captured. `screen` (default) reads the game view's own render target, so the PNG matches what the Game window shows: at its true pixel resolution, independent of OS display scaling, and with the on-screen color tone preserved. In Play Mode that includes **Screen Space - Overlay UI** (HUDs, menus, damage numbers on overlay canvases); in Edit Mode the capture works the same way and simply contains no overlay UI, because none exists until runtime. It fails only when there is no game view render target to read — open a Game view window, or use `source=camera`.
@@ -23,8 +23,8 @@ Parameter interactions: `include_inline_image` is only meaningful together with 
 
 **Returns:** `CaptureResult`
 
-### `capture_scene_view`
-Render the active Scene View to a PNG. Same result contract and parameter interactions as `capture_game_view`: inline base64, or path-only when `save_path` is set (opt back in with `include_inline_image=true`; `max_resolution` has no effect when `save_path` is set without it).
+### `capture scene_view`
+Render the active Scene View to a PNG. Same result contract and parameter interactions as `capture game_view`: inline base64, or path-only when `save_path` is set (opt back in with `include_inline_image=true`; `max_resolution` has no effect when `save_path` is set without it).
 
 | Parameter | Required | Default | Description |
 |-----------|----------|---------|-------------|
@@ -36,7 +36,7 @@ Render the active Scene View to a PNG. Same result contract and parameter intera
 
 **Returns:** `CaptureResult`
 
-### `capture_editor_element`
+### `capture editor_element`
 Capture a UI Toolkit VisualElement (by selector) from an EditorWindow to a PNG; returns path + base64.
 
 | Parameter | Required | Default | Description |
@@ -48,7 +48,7 @@ Capture a UI Toolkit VisualElement (by selector) from an EditorWindow to a PNG; 
 **Returns:** `CaptureElementResponse`
 **Notes:** `MainThreadRequired = true`. Unity 6000.7+ only.
 
-### `capture_runtime_element`
+### `capture runtime_element`
 Capture a UI Toolkit VisualElement (by selector) from a live runtime panel (UIDocument or PanelRenderer) to a PNG; returns path + base64.
 
 | Parameter | Required | Default | Description |
@@ -58,6 +58,6 @@ Capture a UI Toolkit VisualElement (by selector) from a live runtime panel (UIDo
 | `output` | no | `–` | Output PNG path (absolute, or relative to Application.persistentDataPath). Defaults to a timestamped file under Application.persistentDataPath. |
 
 **Returns:** `CaptureElementResponse`
-**Notes:** `MainThreadRequired = true`, `RuntimeOnly`. Unity 6000.7+ only.
+**Notes:** `MainThreadRequired = true`, tagged `runtime`. Unity 6000.7+ only.
 
 See [Creating commands](../creating-commands.md) and [Connectivity](../connectivity.md).

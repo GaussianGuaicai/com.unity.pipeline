@@ -1,6 +1,6 @@
 {
     "name": "Unity.Pipeline.Attributes",
-    "rootNamespace": "Unity.Pipeline.CodeReload",
+    "rootNamespace": "Unity.Pipeline.MethodReload",
     "references": [],
     "includePlatforms": [],
     "excludePlatforms": [],

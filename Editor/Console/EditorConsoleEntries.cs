@@ -33,12 +33,12 @@ namespace Unity.Pipeline.Editor.Console
 
         static readonly MethodInfo k_StartGettingEntries;
         static readonly MethodInfo k_EndGettingEntries;
+        static readonly MethodInfo k_GetCountsByType;
         static readonly MethodInfo k_GetEntryInternal;
         static readonly MethodInfo k_GetFilteringText;
         static readonly MethodInfo k_SetFilteringText;
         static readonly MethodInfo k_GetConsoleFlags;
         static readonly MethodInfo k_SetConsoleFlags;
-        static readonly MethodInfo k_GetCountsByType;
         static readonly Type k_LogEntryType;
         static readonly FieldInfo k_MessageField;
         static readonly FieldInfo k_ModeField;
@@ -68,10 +68,10 @@ namespace Unity.Pipeline.Editor.Console
 
             k_StartGettingEntries = logEntries.GetMethod("StartGettingEntries", statics);
             k_EndGettingEntries = logEntries.GetMethod("EndGettingEntries", statics);
+            k_GetCountsByType = logEntries.GetMethod("GetCountsByType", statics);
             k_GetEntryInternal = logEntries.GetMethod("GetEntryInternal", statics);
             k_GetFilteringText = logEntries.GetMethod("GetFilteringText", statics);
             k_SetFilteringText = logEntries.GetMethod("SetFilteringText", statics);
-            k_GetCountsByType = logEntries.GetMethod("GetCountsByType", statics);
 
             var consoleFlags = logEntries.GetProperty("consoleFlags", statics);
             k_GetConsoleFlags = consoleFlags?.GetGetMethod(true);

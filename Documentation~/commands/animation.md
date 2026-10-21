@@ -4,7 +4,7 @@ Author animation assets: AnimationClips (and their float curves), AnimatorContro
 
 ## AnimationClips
 
-### `create_animation_clip`
+### `animation.clip create`
 Create an empty .anim AnimationClip asset under the authoring root, with an optional frame rate and loop flag.
 
 | Parameter | Required | Default | Description |
@@ -17,7 +17,7 @@ Create an empty .anim AnimationClip asset under the authoring root, with an opti
 
 **Returns:** `AuthoringResult`
 
-### `set_animation_curve`
+### `animation.clip set_curve`
 Add or replace a single float curve binding on an AnimationClip (via AnimationUtility.SetEditorCurve). Replacing an existing binding overwrites it rather than duplicating.
 
 | Parameter | Required | Default | Description |
@@ -31,7 +31,7 @@ Add or replace a single float curve binding on an AnimationClip (via AnimationUt
 
 **Returns:** `SetAnimationCurveResult`
 
-### `get_animation_clip`
+### `animation.clip get`
 Read an AnimationClip's metadata and all float curve bindings (optionally with keyframes).
 
 | Parameter | Required | Default | Description |
@@ -41,7 +41,7 @@ Read an AnimationClip's metadata and all float curve bindings (optionally with k
 
 **Returns:** `AnimationClipInfo`
 
-### `remove_animation_curve`
+### `animation.clip remove_curve`
 Remove a float curve binding from an AnimationClip (SetEditorCurve(clip, binding, null)). Destructive: requires confirm=true.
 
 | Parameter | Required | Default | Description |
@@ -57,7 +57,7 @@ Remove a float curve binding from an AnimationClip (SetEditorCurve(clip, binding
 
 ## AnimatorControllers
 
-### `create_animator_controller`
+### `animation.animator create_controller`
 Create an .controller AnimatorController asset (with a default Base Layer) under the authoring root.
 
 | Parameter | Required | Default | Description |
@@ -68,7 +68,7 @@ Create an .controller AnimatorController asset (with a default Base Layer) under
 
 **Returns:** `AuthoringResult`
 
-### `add_animator_parameter`
+### `animation.animator add_parameter`
 Add a parameter (Float | Int | Bool | Trigger) to an AnimatorController. A duplicate name returns code 'duplicate_parameter'.
 
 | Parameter | Required | Default | Description |
@@ -81,7 +81,7 @@ Add a parameter (Float | Int | Bool | Trigger) to an AnimatorController. A dupli
 
 **Returns:** `object`
 
-### `add_animator_layer`
+### `animation.animator add_layer`
 Add a layer to an AnimatorController.
 
 | Parameter | Required | Default | Description |
@@ -94,7 +94,7 @@ Add a layer to an AnimatorController.
 
 **Returns:** `object`
 
-### `add_animator_state`
+### `animation.animator add_state`
 Add a state to a layer, optionally with a motion (AnimationClip or BlendTree) and as the layer default. A layer name with no match returns code 'layer_not_found'.
 
 | Parameter | Required | Default | Description |
@@ -109,7 +109,7 @@ Add a state to a layer, optionally with a motion (AnimationClip or BlendTree) an
 
 **Returns:** `object`
 
-### `add_animator_transition`
+### `animation.animator add_transition`
 Add a transition between two states (or from AnyState/Entry, to Exit) on a layer, with optional conditions. Validates that the states exist and each condition's parameter exists and its mode matches the parameter type.
 
 | Parameter | Required | Default | Description |
@@ -127,7 +127,7 @@ Add a transition between two states (or from AnyState/Entry, to Exit) on a layer
 
 **Returns:** `object`
 
-### `get_animator_controller`
+### `animation.animator get_controller`
 Read an AnimatorController's full structure: parameters, layers, states (with motion / default), and transitions (with conditions).
 
 | Parameter | Required | Default | Description |
@@ -140,7 +140,7 @@ Read an AnimatorController's full structure: parameters, layers, states (with mo
 
 The Timeline commands require the `com.unity.timeline` package.
 
-### `create_timeline`
+### `animation.timeline create`
 Create a .playable TimelineAsset under the authoring root (optional frame rate).
 
 | Parameter | Required | Default | Description |
@@ -152,7 +152,7 @@ Create a .playable TimelineAsset under the authoring root (optional frame rate).
 
 **Returns:** `object`
 
-### `add_timeline_track`
+### `animation.timeline add_track`
 Add a track (Animation | Audio | Activation | Control | Playable | Signal | Marker) to a TimelineAsset, optionally nested under a parent group/track.
 
 | Parameter | Required | Default | Description |
@@ -165,7 +165,7 @@ Add a track (Animation | Audio | Activation | Control | Playable | Signal | Mark
 
 **Returns:** `object`
 
-### `add_timeline_clip`
+### `animation.timeline add_clip`
 Add a clip to a named track on a TimelineAsset. For Animation tracks pass an AnimationClip asset; for Audio tracks an AudioClip.
 
 | Parameter | Required | Default | Description |
@@ -179,7 +179,7 @@ Add a clip to a named track on a TimelineAsset. For Animation tracks pass an Ani
 
 **Returns:** `object`
 
-### `get_timeline`
+### `animation.timeline get`
 Read a TimelineAsset's structure: frame rate, duration, and its tracks with their clips.
 
 | Parameter | Required | Default | Description |

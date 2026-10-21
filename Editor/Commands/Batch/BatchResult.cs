@@ -35,7 +35,7 @@ namespace Unity.Pipeline.Editor.Commands.Batch
 
         /// <summary>
         /// Batch-level abort reason for stops not attributable to a single op's failure:
-        /// "batch time budget exceeded" (the cooperative <c>time_budget_ms</c> ran out between ops)
+        /// "batch timeout about to run out" (the cooperative <c>timeout</c> was about to run out between ops)
         /// or "batch canceled" (cooperative job cancellation). Null otherwise.
         /// </summary>
         [JsonProperty("error", NullValueHandling = NullValueHandling.Ignore)]

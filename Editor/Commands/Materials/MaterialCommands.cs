@@ -31,10 +31,12 @@ namespace Unity.Pipeline.Editor.Commands.Materials
     /// </summary>
     static class MaterialCommands
     {
-        [CliCommand("get_material_properties",
+        const string Group = "material";
+
+        [CliGroupCommand(Group,
             "Read a material's shader, render queue, enabled keywords, and all shader properties with their current values (Color as [r,g,b,a], Vector as [x,y,z,w], Texture as an object reference).",
             Tags = new[] { "materials" })]
-        public static MaterialPropertiesResult GetMaterialProperties(
+        public static MaterialPropertiesResult GetProperties(
             [CliArg("material", "Reference to the .mat asset (or a loaded material) to read (path / guid / globalId / instanceId).", Required = true)] ObjectRef material)
         {
             var mat = ResolveMaterial(material, out var assetPath);
@@ -89,10 +91,10 @@ namespace Unity.Pipeline.Editor.Commands.Materials
             return result;
         }
 
-        [CliCommand("set_material_properties",
+        [CliGroupCommand(Group,
             "Set shader properties on a material (Float/Range/Int=number; Color=[r,g,b,a] or \"#RRGGBBAA\" hex; Vector=[x,y,z,w]; Texture=an object reference or null to clear), optionally reassign the shader, set the render queue, and toggle keywords. Unknown names / type mismatches are reported in unknown[].",
             Tags = new[] { "materials" })]
-        public static SetMaterialPropertiesResult SetMaterialProperties(
+        public static SetMaterialPropertiesResult SetProperties(
             [CliArg("material", "Reference to the .mat asset (or a loaded material) to edit (path / guid / globalId / instanceId).", Required = true)] ObjectRef material,
             [CliArg("shader", "Reassign the material's shader by name (e.g. \"Standard\", \"Universal Render Pipeline/Lit\", or a Shader Graph shader name). Applied before properties so new property names resolve against the new shader.")] string shader = null,
             [CliArg("properties", "JSON object of shader property name -> value. Names must include the leading underscore (e.g. _BaseColor). Float/Range/Int=number; Color=[r,g,b,a] or hex string; Vector=[x,y,z,w]; Texture=an object reference {guid/path} or null.")] JObject properties = null,
@@ -113,7 +115,7 @@ namespace Unity.Pipeline.Editor.Commands.Materials
                 newShader = Shader.Find(shader);
                 if (newShader == null)
                     throw new ShaderNotFoundException(
-                        $"Shader '{shader}' not found. Shader.Find only resolves shaders that are compiled/included in the build (or referenced by a material/scene). Use list_shaders to discover valid names.");
+                        $"Shader '{shader}' not found. Shader.Find only resolves shaders that are compiled/included in the build (or referenced by a material/scene). Use {CommandNames.MaterialListShaders} to discover valid names.");
             }
 
             var result = new SetMaterialPropertiesResult();

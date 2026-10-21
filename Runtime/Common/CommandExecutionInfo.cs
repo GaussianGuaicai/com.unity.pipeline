@@ -1,19 +1,20 @@
-using Newtonsoft.Json.Linq;
+using System.Collections.Generic;
 using Unity.Pipeline.Commands;
+using Unity.Pipeline.Models;
 
 namespace Unity.Pipeline
 {
     /// <summary>
-    /// Everything known about one finished <c>/api/exec</c> interaction, handed to
-    /// <see cref="BasePipelineServer.OnCommandDone"/>.
+    /// Either one finished <c>/api/exec</c> transaction, handed to
+    /// <see cref="BasePipelineServer.OnCommandDone"/>, or one command that ran, which the
+    /// executor reports once it ends. Both carry the caller context the request sent.
     ///
-    /// The transaction half and the execution half are independent, because the two are not the
-    /// same set: a request can produce a transaction without executing anything (rejected for
+    /// The transaction half and the execution half are reported apart, because the two are not
+    /// the same set: a request can produce a transaction without executing anything (rejected for
     /// size, malformed JSON, unknown command, busy host, job queue full), and a detached job
-    /// executes long after its own response was sent, producing no transaction at all. Consumers
-    /// read the half they care about and skip the ones that lack it.
+    /// executes long after its own response was sent. Consumers read the half they care about.
     /// </summary>
-    public readonly struct CommandExecutionInfo
+    internal readonly struct CommandExecutionInfo
     {
         /// <summary>
         /// Raw request JSON, or null when there is no transaction to report — a detached job
@@ -40,11 +41,11 @@ namespace Unity.Pipeline
         /// it. Never serialized anywhere: it is in-memory only, for the moment between the command
         /// finishing and the post-command work running.
         /// </summary>
-        public JObject Parameters { get; }
+        public IReadOnlyDictionary<string, object> Parameters { get; }
 
         /// <summary>
         /// Whether the command reported success. False when it threw AND when it returned a
-        /// response carrying its own failure (eval, code reload and test runs all do the latter).
+        /// response carrying its own failure (eval, method reload and test runs all do the latter).
         /// Meaningless when <see cref="Command"/> is null.
         /// </summary>
         public bool Success { get; }
@@ -55,6 +56,15 @@ namespace Unity.Pipeline
         /// </summary>
         public long DurationMs { get; }
 
+        /// <summary>The caller's invocation id from the request, or 0 when it sent none.</summary>
+        internal long CommandId { get; }
+
+        /// <summary>The caller's actor from the request (human, agent, ...), or null.</summary>
+        internal string ClientSource { get; }
+
+        /// <summary>The caller's AI client family from the request, or null.</summary>
+        internal string ClientName { get; }
+
         /// <summary>Create an info describing one finished interaction.</summary>
         /// <param name="requestJson">Raw request JSON, or null when there is no transaction.</param>
         /// <param name="responseJson">Raw response JSON, or null alongside a null request.</param>
@@ -63,7 +73,14 @@ namespace Unity.Pipeline
         /// <param name="durationMs">Milliseconds spent inside the command.</param>
         /// <param name="parameters">The parameters the command was invoked with, or null.</param>
         public CommandExecutionInfo(string requestJson, string responseJson, CommandInfo command,
-            bool success, long durationMs, JObject parameters = null)
+            bool success, long durationMs, IReadOnlyDictionary<string, object> parameters = null)
+            : this(requestJson, responseJson, command, success, durationMs, parameters, 0, null, null)
+        {
+        }
+
+        CommandExecutionInfo(string requestJson, string responseJson, CommandInfo command, bool success,
+            long durationMs, IReadOnlyDictionary<string, object> parameters, long commandId, string clientSource,
+            string clientName)
         {
             RequestJson = requestJson;
             ResponseJson = responseJson;
@@ -71,21 +88,38 @@ namespace Unity.Pipeline
             Success = success;
             DurationMs = durationMs;
             Parameters = parameters;
+            CommandId = commandId;
+            ClientSource = Bounded(clientSource);
+            ClientName = Bounded(clientName);
         }
 
         /// <summary>
-        /// A detached job that just finished: an execution with no transaction, since the client
-        /// already received its job handle.
+        /// One finished <c>/api/exec</c> transaction, with the caller context its request carried
+        /// and no execution: the executor reports the command, if one ran. A null request carries
+        /// no caller context.
         /// </summary>
-        /// <param name="command">The command the job ran.</param>
-        /// <param name="success">Whether the command reported success.</param>
-        /// <param name="durationMs">Milliseconds spent inside the command.</param>
-        /// <param name="parameters">The parameters the job ran the command with.</param>
-        /// <returns>An info carrying the execution and no transaction.</returns>
-        public static CommandExecutionInfo ForDetachedJob(CommandInfo command, bool success, long durationMs,
-            JObject parameters = null)
+        internal static CommandExecutionInfo ForTransaction(CommandExecutionRequest request, string requestJson,
+            string responseJson)
         {
-            return new CommandExecutionInfo(null, null, command, success, durationMs, parameters);
+            return new CommandExecutionInfo(requestJson, responseJson, null, false, 0, null,
+                request?.CommandId ?? 0, request?.ClientSource, request?.ClientName);
         }
+
+        /// <summary>
+        /// A command that ran for <paramref name="request"/>, once it ended: an execution with no
+        /// transaction, with the arguments it was bound to and the request's caller context.
+        /// </summary>
+        internal static CommandExecutionInfo ForExecution(CommandRequest request, CommandInfo command,
+            IReadOnlyDictionary<string, object> parameters, bool success, long durationMs)
+        {
+            var requester = request?.Requester ?? default;
+            return new CommandExecutionInfo(null, null, command, success, durationMs, parameters,
+                requester.InvocationId ?? 0, requester.Source, requester.Name);
+        }
+
+        const int MaxClientValueLength = 64;
+
+        // Any loopback caller can write these, and they end up as analytics columns.
+        static string Bounded(string value) => value != null && value.Length <= MaxClientValueLength ? value : null;
     }
 }

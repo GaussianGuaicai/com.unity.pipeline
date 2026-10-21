@@ -1,3 +1,3 @@
 # Asset Commands
 
-`AssetCommands.cs` owns asset lifecycle commands; related files handle imports and folders. Preserve authoring-root validation, dry-run behavior, and overwrite confirmation. Unity 2022.3 uses `PhysicMaterial`; use the versioned alias when referencing Unity 6's `PhysicsMaterial` type.
+`AssetCommands.cs` owns asset lifecycle operations. Preserve authoring-root checks, overwrite confirmation, dry-run validation, and both PhysicsMaterial/PhysicMaterial input spellings. Unity 2022.3 uses the PhysicMaterial type; keep the persisted .physicMaterial extension on all versions.

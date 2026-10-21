@@ -1,34 +1,34 @@
 # Wait commands
 
-Server-side condition waiting (AUTHAPI-25). `wait_for` waits until a runtime/editor member condition holds — evaluated on the Editor's per-frame loop — and can act in the **same frame** the condition first becomes true (e.g. screenshot the moment a match-end screen appears). It replaces the dominant agent anti-pattern of client-side polling loops: read a value via `eval`, sleep in the client, repeat. That loop is token-expensive and slow, and its client round-trips can miss short-lived states entirely (a 2-second screen is easy to miss at ~1–2 s per poll). A server-side condition is a cheap per-frame delegate that can act atomically the frame it fires.
+Server-side condition waiting (AUTHAPI-25). `job wait` waits until a runtime/editor member condition holds — evaluated on the Editor's per-frame loop — and can act in the **same frame** the condition first becomes true (e.g. screenshot the moment a match-end screen appears). It replaces the dominant agent anti-pattern of client-side polling loops: read a value via `script eval`, sleep in the client, repeat. That loop is token-expensive and slow, and its client round-trips can miss short-lived states entirely (a 2-second screen is easy to miss at ~1–2 s per poll). A server-side condition is a cheap per-frame delegate that can act atomically the frame it fires.
 
 ## Sync vs async: pick the right mode first
 
-`/api/exec` executes **one command at a time** — a synchronous `wait_for` holds that queue for its entire duration. The Editor itself never freezes (each poll is marshaled onto the main thread between sleeps), but **every other command queues behind the wait until it resolves**. That includes any command whose effect your condition is waiting for: if the condition needs a mutation you haven't issued yet, the mutation can never run, and the wait self-deadlocks until its timeout.
+`/api/exec` executes **one command at a time** — a synchronous `job wait` holds that queue for its entire duration. The Editor itself never freezes (each poll is marshaled onto the main thread between sleeps), but **every other command queues behind the wait until it resolves**. That includes any command whose effect your condition is waiting for: if the condition needs a mutation you haven't issued yet, the mutation can never run, and the wait self-deadlocks until its timeout.
 
 Use a **synchronous** wait only when BOTH hold:
 
 - the wait is short — comfortably under your client's HTTP timeout (typically **< 30 s**), and
 - the condition does **not** depend on any command you still need to issue (it will be satisfied by something already in motion: play-mode gameplay, a running bake, a timer, ...).
 
-For **everything else**, pass `async=true`: you get a `waitId` back immediately, other commands keep executing, and you poll `wait_status` (and cancel with `wait_cancel`). This is the default choice for long waits and for any "issue command, then wait for its effect" flow.
+For **everything else**, pass `async=true`: you get a `waitId` back immediately, other commands keep executing, and you poll `job wait_status` (and cancel with `job wait_cancel`). This is the default choice for long waits and for any "issue command, then wait for its effect" flow.
 
 A synchronous wait submitted as a detached job (`POST /api/exec` with `"job": true`) remains cancelable: `POST /api/job/cancel` interrupts the sleep loop and resolves the wait as `canceled`.
 
-> Member resolution, coercion, and the read-only security policy are intended to be shared with the invoke/query surface (AUTHAPI-16). Until that shared resolver lands, `wait_for` ships a self-contained resolver with the same rules that the two will converge on. Type and member-chain resolution is cached per wait — only the live target instance (an `ObjectRef` target or a `findType` instance) is re-resolved each poll.
+> Member resolution, coercion, and the read-only security policy are intended to be shared with the invoke/query surface (AUTHAPI-16). Until that shared resolver lands, `job wait` ships a self-contained resolver with the same rules that the two will converge on. Type and member-chain resolution is cached per wait — only the live target instance (an `ObjectRef` target or a `findType` instance) is re-resolved each poll.
 
-### `wait_for`
+### `job wait`
 Wait until a member condition holds, then optionally act in the same frame.
 
 | Parameter | Required | Default | Description |
 |-----------|----------|---------|-------------|
 | `condition` | yes | `–` | The condition object (see below). |
-| `timeout_s` | no | `30` | Maximum seconds to wait (clamped to 0–600; NaN/Infinity are rejected). |
+| `timeout` | no | `30` | Maximum seconds to wait (clamped to 0–600). A synchronous wait reports `timedOut` slightly before it, so the reply arrives first. |
 | `poll_interval_ms` | no | `100` | How often to re-check (clamped to 16–5000 ms; NaN/Infinity are rejected). The sleep never exceeds the remaining budget, so a large interval cannot stretch a short timeout. |
 | `on_met` | no | `–` | Follow-up run in the same frame the condition first holds: `{ capture: { view, source, save_path, width, height, include_image }, pause }`. `capture.source` (game view only): `camera` (default) renders a camera and **misses Screen Space - Overlay UI**; `screen` captures the composited game view including overlay canvases (HUDs), Play Mode only. |
 | `return_history` | no | `false` | Include the observed `{ value, elapsedMs }` samples. A ring buffer keeps the **last 200** samples, so the tail near the transition is retained (the interesting part), not the first 200 identical observations. |
 | `tolerate_missing` | no | `false` | Treat resolution failures (type/member/instance not found) as condition-not-met and retry until timeout, instead of failing fast. Enables "wait until X exists" — e.g. waiting for a spawned object via `findType`. On timeout the last resolution error is included. |
-| `async` | no | `false` | Return a `waitId` immediately and evaluate in the background; poll `wait_status`, cancel with `wait_cancel`. **Use for long waits and whenever the condition depends on a command you still need to issue.** |
+| `async` | no | `false` | Return a `waitId` immediately and evaluate in the background; poll `job wait_status`, cancel with `job wait_cancel`. **Use for long waits and whenever the condition depends on a command you still need to issue.** |
 
 **The `condition` object**
 
@@ -65,16 +65,16 @@ Wait until a member condition holds, then optionally act in the same frame.
 - If the main thread stalls past the per-poll marshal budget (~60 s: a huge import, a modal bake), the poll is counted as **missed** and the wait keeps going until its own budget expires — a stall does not turn the wait into a generic error.
 - The sync result is well under 2 KB without `history`.
 
-### `wait_status`
-Get the status/result of an async wait (`wait_for` with `async=true`).
+### `job wait_status`
+Get the status/result of an async wait (`job wait` with `async=true`).
 
 | Parameter | Required | Default | Description |
 |-----------|----------|---------|-------------|
-| `wait_id` | yes | `–` | The id returned by `wait_for` when `async=true`. |
+| `wait_id` | yes | `–` | The id returned by `job wait` when `async=true`. |
 
-**Returns:** `WaitResult` (`state:"not_found"` if the id is unknown — async waits do not survive a domain reload; completed waits are retained up to a bounded count and pruned oldest-first the next time a `wait_for` is submitted, so a session that never submits another wait keeps its last results queryable).
+**Returns:** `WaitResult` (`state:"not_found"` if the id is unknown — async waits do not survive a domain reload; completed waits are retained up to a bounded count and pruned oldest-first the next time a `job wait` is submitted, so a session that never submits another wait keeps its last results queryable).
 
-### `wait_cancel`
+### `job wait_cancel`
 Cancel an async wait.
 
 | Parameter | Required | Default | Description |
@@ -85,36 +85,36 @@ Cancel an async wait.
 
 ## Migration: replace a client polling loop with one call
 
-Before — an agent screenshots a match-end screen by polling with `eval` (dozens of round-trips, and the 2-second screen is easy to miss):
+Before — an agent screenshots a match-end screen by polling with `script eval` (dozens of round-trips, and the 2-second screen is easy to miss):
 
 ```
 # ~60 client round-trips, each ~1–2s:
 loop:
-  state = eval "MatchManager.Instance.State"     # read
+  state = script eval "MatchManager.Instance.State"     # read
   if state == "Ended": break
   sleep 1                                          # client-side sleep
-capture_game_view --source screen --save_path Screenshots/victory.png
+capture game_view --source screen --save_path Screenshots/victory.png
 ```
 
 After — one **async** wait that captures atomically in the frame the condition first holds, while other commands stay available (the match may take minutes, and you may still need to issue commands that drive it):
 
 ```
 # 1. Arm the wait; returns { waitId } immediately:
-wait_for --condition '{"member":"MatchManager.Instance.State","op":"equals","value":"Ended"}' \
-         --timeout_s 300 \
+job wait --condition '{"member":"MatchManager.Instance.State","op":"equals","value":"Ended"}' \
+         --timeout 300 \
          --on_met '{"capture":{"view":"game","source":"screen","save_path":"Screenshots/victory.png"}}' \
          --async true
 
 # 2. Keep working: start the match, drive gameplay, run other commands...
 
 # 3. Collect the result (poll until state != "pending"):
-wait_status --wait_id <waitId>
+job wait_status --wait_id <waitId>
 ```
 
 Only use the synchronous form when the wait is short and self-contained — e.g. play mode is already running and the state flips within a few seconds:
 
 ```
-wait_for --condition '{"member":"MatchManager.Instance.State","op":"equals","value":"Ended"}' --timeout_s 10
+job wait --condition '{"member":"MatchManager.Instance.State","op":"equals","value":"Ended"}' --timeout 10
 ```
 
 ## Waiting for something to exist (spawn waits)
@@ -122,15 +122,15 @@ wait_for --condition '{"member":"MatchManager.Instance.State","op":"equals","val
 By default the first failed resolution fails the wait (`state:"failed"`) — that catches typos fast. To wait for an object or member that does not exist *yet*, pass `tolerate_missing:true`:
 
 ```
-wait_for --condition '{"findType":"MyGame.BossController","member":"IsActivated","op":"equals","value":true}' \
-         --tolerate_missing true --timeout_s 120 --async true
+job wait --condition '{"findType":"MyGame.BossController","member":"IsActivated","op":"equals","value":true}' \
+         --tolerate_missing true --timeout 120 --async true
 ```
 
 Resolution failures are then treated as condition-not-met and retried every poll until the object appears (or the wait times out, with the last resolution error attached).
 
 ## Interruption and lifecycle
 
-- Concurrent waits are capped (8); a further submission is rejected with a structured error telling you to `wait_cancel` one or let one finish.
+- Concurrent waits are capped (8); a further submission is rejected with a structured error telling you to `job wait_cancel` one or let one finish.
 - A **domain reload** (`beforeAssemblyReload`) or **exiting play mode** resolves every active wait to `state:"interrupted"` rather than hanging or leaking. **Entering play mode does not interrupt**: with domain reload disabled ("Enter Play Mode Options"), a wait armed in edit mode survives into play mode — the natural way to arm a capture before pressing play. (With domain reload enabled, the reload interrupts it anyway.)
 - `on_met.pause` pauses play mode on the frame the condition holds (no-op outside play mode).
 - If the server is stopping while a synchronous wait is pending, the wait resolves as `interrupted` ("server stopping") instead of evaluating against a shutting-down editor.
@@ -155,15 +155,15 @@ Resolution failures are then treated as condition-not-met and retried every poll
 - A bare type name matching several loaded types binds deterministically (lowest full name) and
   surfaces a `note` — use the fully-qualified name to disambiguate.
 
-## Interaction with `batch`
+## Interaction with `job batch`
 
-`wait_for` is rejected inside a `batch` (`not_batchable`): the batch holds the main thread for its
+`job wait` is rejected inside a `job batch` (`not_batchable`): the batch holds the main thread for its
 whole turn, so the editor state a condition watches cannot change while the wait polls — it would
-just burn its timeout. Run an async `wait_for` before or after the batch and poll `wait_status`
-(both `wait_status` and `wait_cancel` are quick reads and stay batchable).
+just burn its timeout. Run an async `job wait` before or after the batch and poll `job wait_status`
+(both `job wait_status` and `job wait_cancel` are quick reads and stay batchable).
 
 ## Interaction with the startup settle gate
 
-`wait_for` is a background command (`MainThreadRequired=false`), so it is **exempt from the settling busy-gate** (AUTHAPI-35): it is accepted even while the Editor is still importing/compiling after a cold start. A wait polling during that window observes a half-ready editor — types may not be loaded and objects may not exist yet. Combine with `tolerate_missing:true` for a deliberate wait-until-ready pattern, or gate on `/api/status` reporting `ready` first if you want fully settled reads.
+`job wait` is a background command (`MainThreadRequired=false`), so it is **exempt from the settling busy-gate** (AUTHAPI-35): it is accepted even while the Editor is still importing/compiling after a cold start. A wait polling during that window observes a half-ready editor — types may not be loaded and objects may not exist yet. Combine with `tolerate_missing:true` for a deliberate wait-until-ready pattern, or gate on `/api/status` reporting `ready` first if you want fully settled reads.
 
 See [Creating commands](../creating-commands.md) and [Connectivity](../connectivity.md).

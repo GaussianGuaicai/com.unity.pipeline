@@ -2,35 +2,47 @@
 
 Commands to control Editor play mode, focus, and menus, and to observe the Editor's state, console, and performance.
 
-### `editor_play`
+### `editor.playmode start`
 Enter Unity Editor play mode.
 
 No parameters.
 
 **Returns:** `string`
+**Notes:** An Editor driven from a terminal is usually unfocused. Without `Application.runInBackground`, its player loop stops at the first frame while `editor status` still reports `"playing"`. `editor.playmode start` no longer changes `Application.runInBackground` itself — use [`editor.playmode set_run_in_background`](#editorplaymode-set_run_in_background) or the "Ensure editor runs in background in PlayMode" project setting instead.
 
-### `editor_stop`
+### `editor.playmode set_run_in_background`
+Override the project's Run In Background Player Setting so the Play-mode player loop keeps running while the Editor is unfocused.
+
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `enable` | no | `true` | Turn the override on (`true`), recording the project's own value so it can be restored later — or stop the override and restore the project's own value (`false`), unless the "Ensure editor runs in background in PlayMode" setting is still forcing it on right now. |
+
+**Returns:** `string`
+**Notes:** The override persists until reverted. Its record lives in the same `ProjectSettings/Packages/com.unity.pipeline/EditorPipelineConfig.json` file as the rest of the editor server's settings. If you turn Run In Background off yourself while the override is active, your value wins and the override ends; run the command again to bring it back. An Editor restart reloads the project's own value, which reads the same way, so an override from the command does not survive a restart. It stacks with, and survives independently of, the "Ensure editor runs in background in PlayMode" project setting (Project Settings > Pipeline > Editor): either one alone is enough to force Run In Background on, and it comes back off only once neither still calls for it. In the Editor, Run In Background is the project's Player Settings value — a build always uses the project's own value regardless of either override, so neither can leak into a shipped build.
+
+### `editor.playmode stop`
 Exit Unity Editor play mode.
 
 No parameters.
 
 **Returns:** `string`
 
-### `editor_pause`
+### `editor.playmode pause`
 Toggle pause state of Unity Editor play mode (calling it again while paused resumes play mode).
 
 No parameters.
 
 **Returns:** `string`
 
-### `editor_status`
+### `editor status`
 Get detailed Unity Editor status and state information.
 
 No parameters.
 
 **Returns:** `StatusResponse`
+**Notes:** In Play mode the response also carries `frameCount` (`Time.frameCount`) and `playerLoopTicking` (whether the frame count advanced in the last second, `false` while paused). Both keys are absent in Edit Mode. The response always carries `runInBackground` (`Application.runInBackground`, the setting; `playerLoopTicking` is whether frames actually advance). `/api/status` carries the same three keys in Play mode only; see [Play mode and the player loop](../connectivity.md#play-mode-and-the-player-loop).
 
-### `editor_focus`
+### `editor focus`
 Bring the Unity Editor window to the foreground.
 
 No parameters.
@@ -38,7 +50,7 @@ No parameters.
 **Returns:** `string`
 **Notes:** `MainThreadRequired = true`.
 
-### `menu`
+### `editor invoke_menu`
 Execute an Editor menu item by path, or list available items when no path is given.
 
 | Parameter | Required | Default | Description |
@@ -48,7 +60,7 @@ Execute an Editor menu item by path, or list available items when no path is giv
 **Returns:** `MenuResponse`
 **Notes:** `MainThreadRequired = true`.
 
-### `screenshot`
+### `capture screenshot`
 Capture the Scene or Game view as a PNG and return its file path.
 
 | Parameter | Required | Default | Description |
@@ -61,7 +73,7 @@ Capture the Scene or Game view as a PNG and return its file path.
 **Returns:** `ScreenshotResponse`
 **Notes:** `MainThreadRequired = true`.
 
-### `set_autotick`
+### `editor set_auto_tick`
 Keep the editor ticking while unfocused by forcing EditorApplication.SignalTick at a throttled rate.
 
 | Parameter | Required | Default | Description |
@@ -75,15 +87,15 @@ Keep the editor ticking while unfocused by forcing EditorApplication.SignalTick 
 
 Use `persist=false` for a change you only want in effect until the next unrelated recompile — e.g. a short profiling run at `interval_ms=0` (pegs a CPU core) or a one-off test/CI script — so it can't outlive its purpose and silently burn CPU for the rest of the session. Leave `persist` at its default `true` for a setting you want to remain in effect across recompiles, such as the normal always-on 16ms tick.
 
-### `get_performance_stats`
+### `diagnostics get_performance`
 Read render, memory, and frame-timing stats (structured, read-only).
 
 No parameters.
 
 **Returns:** `PerformanceStats`
 
-### `audit`
-Run a Project Auditor static-analysis scan. Returns immediately; poll `audit_status` until status is `completed`, then read the CSV.
+### `diagnostics run_audit`
+Run a Project Auditor static-analysis scan. Returns immediately; poll `diagnostics audit_status` until status is `completed`, then read the CSV.
 
 | Parameter | Required | Default | Description |
 |-----------|----------|---------|-------------|
@@ -93,30 +105,30 @@ Run a Project Auditor static-analysis scan. Returns immediately; poll `audit_sta
 **Returns:** `object` — `{ status, scanId, csvPath }` on start, or `{ status: "unavailable" | "error" | "busy", message }`.
 **Notes:** Requires Project Auditor in the Editor. Only one scan runs at a time (a second call returns `busy`). Not cancellable: stop polling to abandon a scan.
 
-### `audit_status`
+### `diagnostics audit_status`
 Get the status of the last audit: `idle` | `scanning` | `completed` | `failed` | `interrupted` | `unavailable`.
 
 No parameters.
 
 **Returns:** `AuditStatus` (JSON) — `issueCount` and `csvPath` are populated when `completed`; `error` when `failed`; `message` when `unavailable`.
-**Notes:** `MainThreadRequired = false`, so it answers while a scan holds the main thread (Code analysis compiles assemblies). `interrupted` means a domain reload killed an in-flight scan — re-run `audit`.
+**Notes:** `MainThreadRequired = false`, so it answers while a scan holds the main thread (Code analysis compiles assemblies). `interrupted` means a domain reload killed an in-flight scan — re-run `diagnostics run_audit`.
 
 #### Project Auditor prerequisites
 
-`audit` needs both Project Auditor **and** its rules:
+`diagnostics run_audit` needs both Project Auditor **and** its rules:
 
-- **Project Auditor absent** — `audit` returns `unavailable` immediately.
+- **Project Auditor absent** — `diagnostics run_audit` returns `unavailable` immediately.
 - **Rules absent** — when Project Auditor ships as a built-in editor module, its rules (descriptors,
   API/obsolete databases, Roslyn analyzers) come from the separate `com.unity.project-auditor-rules`
   package. Without it Project Auditor registers no analysis modules and cannot analyze anything, so
-  `audit` returns `scanning` and the first `audit_status` poll reports `unavailable` with a message
+  `diagnostics run_audit` returns `scanning` and the first `diagnostics audit_status` poll reports `unavailable` with a message
   naming the package to install. It never reports an empty `completed` scan, which would read as a
   clean project.
 
 The CSV columns are `Category, Severity, Areas, Description, RelativePath, Line, DescriptorId, Recommendation`;
 only diagnostics (things to fix) are emitted, not raw inventory rows.
 
-### `report_evals`
+### `diagnostics report_evals`
 Aggregate the local eval-usage telemetry into a ranked report: API fingerprint frequency, one-liner percentage, error rate, and command-coverage suggestions (read-only). See [Eval usage telemetry](#eval-usage-telemetry) below.
 
 | Parameter | Required | Default | Description |
@@ -128,16 +140,16 @@ Aggregate the local eval-usage telemetry into a ranked report: API fingerprint f
 
 ## Eval usage telemetry
 
-The `eval`/`eval_file` commands are the workhorse of autonomous agent sessions, but they are opaque: raw C# through the protocol, unauditable, and hard to displace with typed commands without knowing what agents actually run. This telemetry closes that loop by recording, **locally**, what each eval does — so the [eval-displacement epic (AUTHAPI-24)](https://jira.unity3d.com/browse/AUTHAPI-24) can be triaged from data instead of anecdotes.
+The `script eval` and `script eval_file` commands are the workhorse of autonomous agent sessions, but they are opaque: raw C# through the protocol, unauditable, and hard to displace with typed commands without knowing what agents actually run. This telemetry closes that loop by recording, **locally**, what each eval does — so the [eval-displacement epic (AUTHAPI-24)](https://jira.unity3d.com/browse/AUTHAPI-24) can be triaged from data instead of anecdotes.
 
 ### What is recorded, and where
 
-Every `eval`/`eval_file` invocation appends one JSON object (one line, JSONL) to `<project>/Library/Pipeline/eval-usage.jsonl`:
+Every `script eval` or `script eval_file` invocation appends one JSON object (one line, JSONL) to `<project>/Library/Pipeline/eval-usage.jsonl`:
 
 | Field | Meaning |
 |-------|---------|
 | `time` | ISO-8601 UTC timestamp. |
-| `command` | `eval` or `eval_file`. |
+| `command` | The command that ran: `script eval` or `script eval_file`. |
 | `success` / `error` | Whether it succeeded; short error category on failure. |
 | `payloadLength` / `lineCount` | Size/shape of the eval body. |
 | `executionTimeMs` | How long it took. |
@@ -147,7 +159,7 @@ Every `eval`/`eval_file` invocation appends one JSON object (one line, JSONL) to
 
 **Local-first, privacy-first, editor-only.** Nothing is transmitted off the machine, and nothing is recorded outside the Editor: player builds — including development players, where eval itself is available — never write telemetry (recording compiles to a no-op there). The fingerprint is derived from the C# syntax tree, so the log captures *which APIs* agents reach for without capturing *what data* they operate on. Conditional-access chains (`a?.B.C`) are fingerprinted with `?.` normalised to `.` so they rank with their unconditional form. The fingerprint deliberately undercounts a few forms (arguments nested inside a chain's receiver call, bare object creations) — see the `EvalUsageFingerprinter` class doc for the full blind-spot list before treating absence as proof of non-use.
 
-**Zero eval latency.** Recording is fire-and-forget: when an eval completes, the source and outcome plus the current settings are snapshotted, and the parse → fingerprint → append runs on a background thread from that snapshot — the eval response is never delayed by telemetry. The JSONL is bounded by a size cap and rotates to `eval-usage.old.jsonl`; the rotated file is merged back into `report_evals`, so retained history is bounded to roughly 2× the cap.
+**Zero eval latency.** Recording is fire-and-forget: when an eval completes, the source and outcome plus the current settings are snapshotted, and the parse → fingerprint → append runs on a background thread from that snapshot — the eval response is never delayed by telemetry. The JSONL is bounded by a size cap and rotates to `eval-usage.old.jsonl`; the rotated file is merged back into `diagnostics report_evals`, so retained history is bounded to roughly 2× the cap.
 
 ### Settings
 
@@ -158,24 +170,24 @@ Configured in **Project Settings > Pipeline > Editor**. Edits apply live, and th
 
 ### The feedback loop: report → backlog triage
 
-Run `report_evals` to aggregate the log into an `EvalUsageReport`:
+Run `diagnostics report_evals` to aggregate the log into an `EvalUsageReport`:
 
 - **Ranked fingerprints** with counts — what agents actually eval, most-used first.
 - **One-liner percentage** and **error rate** — the shape of eval usage (the evidence base for AUTHAPI-24 is that ~80% of eval calls are one-liners).
 - **Coverage suggestions** — each fingerprint is cross-referenced against the live command catalog:
-  - `covered`: patterns already served by an existing command (e.g. `PlayerSettings.SetScriptingBackend` → `set_player_settings`) — these are habit, and should move off eval.
+  - `covered`: patterns already served by an existing command (e.g. `PlayerSettings.SetScriptingBackend` → `settings.player set`) — these are habit, and should move off eval.
   - `topUncovered`: the highest-frequency patterns with no covering command (e.g. `AssetDatabase.Refresh` → proposed `refresh_assets`) — these are the next typed commands to build ([AUTHAPI-17](https://jira.unity3d.com/browse/AUTHAPI-17)).
 
-This turns backlog triage into a lookup: "12× `AssetDatabase.Refresh`, no command → build it; 60× state-read loops → `wait_for`". Re-run across sessions to demonstrate eval's shrinking share as typed commands land.
+This turns backlog triage into a lookup: "12× `AssetDatabase.Refresh`, no command → build it; 60× state-read loops → `job wait`". Re-run across sessions to demonstrate eval's shrinking share as typed commands land.
 
-### `get_authoring_root`
+### `authoring get_root`
 Get the base folder (under Assets/) that bare authoring paths resolve against.
 
 No parameters.
 
 **Returns:** `object`
 
-### `set_authoring_root`
+### `authoring set_root`
 Set the base folder (under Assets/) that bare authoring paths resolve against and are confined to. Use 'Assets' for full project access.
 
 | Parameter | Required | Default | Description |

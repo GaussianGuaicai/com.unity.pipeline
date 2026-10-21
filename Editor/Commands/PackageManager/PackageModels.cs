@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Newtonsoft.Json;
+using Unity.Pipeline.Commands;
 
 namespace Unity.Pipeline.Editor.Commands.PackageManager
 {
@@ -162,7 +163,7 @@ namespace Unity.Pipeline.Editor.Commands.PackageManager
                 Status = "in_progress",
                 Applied = true,
                 Plan = plan,
-                Message = $"{operation} started. Poll package_status until status is 'completed' or 'failed'."
+                Message = $"{operation} started. Poll {CommandNames.PackageStatus} until status is 'completed' or 'failed'."
             };
 
         public static PackageMutationResponse Busy(string operation) =>
@@ -171,7 +172,7 @@ namespace Unity.Pipeline.Editor.Commands.PackageManager
                 Success = false,
                 Operation = operation,
                 Status = "busy",
-                Message = "Another package operation is in progress. Poll package_status, then retry."
+                Message = "Another package operation is in progress. Poll " + CommandNames.PackageStatus + ", then retry."
             };
 
         public static PackageMutationResponse DryRunPreview(string operation, string argument, string plan, string message) =>
