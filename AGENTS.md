@@ -12,6 +12,8 @@ The package supports Unity 2022.3 LTS and newer. Keep Unity 6 APIs behind the ex
 
 The Input System is optional. Runtime input commands must continue returning a structured unavailable result when `ENABLE_INPUT_SYSTEM` is absent. Input System-specific tests live in `Tests/Editor/InputSystem/` and are activated by the `PIPELINE_INPUT_SYSTEM` version define; do not add unconditional `Unity.InputSystem` references to core assemblies.
 
+After upstream syncs, retain the Unity 2022.3 minimum in `package.json` and serializedVersion 2 platform-list metadata for bundled compiler DLLs. Editor analytics and console APIs need older-version adapters; verify a live `script eval` as well as compilation because missing plugin imports can break both.
+
 ## Testing
 
 Run a compile-only compatibility check with Unity 2022.3:
