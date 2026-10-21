@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 using Unity.Pipeline.Commands;
 using Unity.Pipeline.Editor.Commands;
 using Unity.Pipeline.Models;
@@ -17,309 +18,285 @@ namespace Unity.Pipeline.Editor
 #endif
     class EditorPipelineServer : BasePipelineServer
     {
-        private InstanceDescriptor m_InstanceDescriptor;
+        /// <summary>What the player-loop sampler last saw of the Play session (CLI-1432).</summary>
+        internal readonly struct PlayerLoopState
+        {
+            public readonly bool Playing;
+            public readonly int FrameCount;
+            public readonly bool Ticking;
+            /// <summary>Application.runInBackground as last sampled; meaningful in any mode.</summary>
+            public readonly bool RunInBackground;
+
+            public PlayerLoopState(bool playing, int frameCount, bool ticking, bool runInBackground)
+            {
+                Playing = playing;
+                FrameCount = frameCount;
+                Ticking = ticking;
+                RunInBackground = runInBackground;
+            }
+        }
+
+        // Read at construction, on the main thread, because locating the file needs the Package Manager.
+        private readonly IReadOnlyDictionary<string, string> m_ObsoleteCommandNames = ObsoleteCommandNamesFile.Load();
+
+        /// <inheritdoc/>
+        protected override IReadOnlyDictionary<string, string> ObsoleteCommandNames => m_ObsoleteCommandNames;
 
         /// <summary>
-        /// Guards mutate-then-write of m_InstanceDescriptor: /api/status and /api/editor_status
-        /// both reach UpdateHeartBeat concurrently now, and InstanceDescriptor.WriteToProjectRoot's
-        /// own lock only covers the write, not the field mutations feeding it.
+        /// Whether this instance incremented <see cref="s_PlayerLoopSamplerRefs"/> in
+        /// <see cref="ServerStarted"/>, so <see cref="ServerStopped"/> decrements at most once per
+        /// instance even if Stop() is somehow called without a matching successful Start().
         /// </summary>
-        private readonly object m_HeartbeatLock = new object();
-
-        /// <summary>
-        /// One-way settle latch (AUTHAPI-35). On a cold project import the server starts (and
-        /// writes its descriptor) while the Editor is still importing assets / compiling scripts,
-        /// so early main-thread commands land in a not-quite-ready Editor and fail opaquely. The
-        /// latch stays false until the Editor is first seen idle after startup, and is scoped to
-        /// the EDITOR SESSION via <see cref="SettledSessionKey"/>: once any server instance has
-        /// seen the Editor idle, every later instance (domain-reload restart, test server) starts
-        /// settled — a server coming up mid-session while a compile/import happens to be in
-        /// flight (script-creating test fixtures, recompile loops) must NOT re-arm the gate.
-        /// Volatile: set on the main thread, read from HTTP request threads.
-        /// </summary>
-        private volatile bool m_Settled;
-        private bool m_SettleTickSubscribed;
-
-        /// <summary>
-        /// SessionState marker: the Editor has been seen idle at least once this session, i.e.
-        /// the post-startup settle window is over for the whole session. SessionState survives
-        /// domain reloads and dies with the Editor process — exactly the settle window's scope.
-        /// Read/written on the main thread only (Start and the update tick); request threads
-        /// only read the volatile <see cref="m_Settled"/> snapshot.
-        /// </summary>
-        private const string SettledSessionKey = "Unity.Pipeline.EditorSessionSettled";
-
-        /// <summary>
-        /// Commands that must stay servable while the Editor is settling: editor_status is the
-        /// status surface callers poll to observe the busy/settling state itself.
-        /// Background (MainThreadRequired = false) commands are always exempt and don't need
-        /// listing here.
-        /// </summary>
-        private static readonly HashSet<string> CommandsServiceableWhileSettling = new HashSet<string> { "editor_status" };
-
-        /// <summary>
-        /// editor_status's fields as of the instant a dialog was about to be shown — see
-        /// <see cref="SnapshotStatusForDialogGate"/>. Once the dialog actually blocks the main
-        /// thread, editor_status can no longer run for real (unlike the settle case above, where
-        /// the thread is merely busy, not stuck inside a native message loop), so the dialog gate
-        /// serves this snapshot instead. Nothing it describes (compiling/domain reload/play mode)
-        /// can change while the thread that would update it is stuck, so it stays correct for the
-        /// whole blocked window. Null until the first dialog of the session is about to be shown.
-        /// </summary>
-        private StatusResponse m_LastStatusBeforeDialog;
+        private bool m_CountsTowardPlayerLoopSampler;
 
         /// <summary>When true, every command transaction is written to the project transaction log.</summary>
         public bool LogRequestsResponses { get; set; }
 
         /// <summary>
         /// Whether /api/status's ordinary (non-settling, non-dialog-blocked) case should report
-        /// "ready" rather than "error". Defaults to whether the instance descriptor was actually
-        /// created; a <see cref="WritesDescriptor"/>-false test double that is genuinely running
-        /// can override this instead of faking a descriptor just to exercise that branch.
+        /// "ready" rather than "error": whether the endpoint is registered. Overridable for test servers
+        /// that don't advertise.
         /// </summary>
-        protected virtual bool HasInstanceDescriptor => m_InstanceDescriptor != null;
+        protected virtual bool IsAdvertised => IsEndpointRegistered;
 
-        /// <summary>UTC time this server instance started listening.</summary>
-        public override DateTime StartedAt => m_InstanceDescriptor == null ? new DateTime() : m_InstanceDescriptor.StartedAt;
+        /// <summary>This server's executor, with the Editor's rules (see <see cref="CreateExecutor"/>).</summary>
+        internal EditorCommandExecutor EditorExecutor => (EditorCommandExecutor)Executor;
+
+        /// <summary>The Editor's executor, over this server's modal-dialog state and dispatcher.</summary>
+        internal override DefaultCommandExecutor CreateExecutor(ICommandRegistry registry, ICommandQueue queue)
+        {
+            return new EditorCommandExecutor(registry, queue, Dialogs, Dispatcher);
+        }
 
         /// <summary>
-        /// Whether the Editor has been seen idle (not importing, not compiling) at least once
-        /// this editor session. Until then the server is "settling": main-thread commands are
-        /// rejected with a retryable busy signal instead of executing into a half-ready Editor.
-        /// Virtual so tests can pin the unsettled state.
+        /// Arm the post-startup settle latch, and join the Editor-global player-loop sampler
+        /// (see <see cref="s_PlayerLoopSamplerRefs"/>).
         /// </summary>
-        protected virtual bool IsSettled => m_Settled;
-
-        /// <summary>
-        /// Whether this Editor session has already completed its settle window (the SessionState
-        /// marker any settling server sets on first idle). Main thread only. Exposed protected so
-        /// tests can assert it as a precondition before probing the latch's immediate-settle path.
-        /// </summary>
-        protected static bool IsSessionSettled => SessionState.GetBool(SettledSessionKey, false);
-
-        /// <summary>Arm the post-startup settle latch.</summary>
         protected override void ServerStarted()
         {
-            InitializeSettleLatch();
+            EditorExecutor.ArmSettleLatch();
+
+            m_CountsTowardPlayerLoopSampler = true;
+            if (s_PlayerLoopSamplerRefs++ == 0)
+                EditorApplication.update += SamplePlayerLoop;
         }
 
         /// <summary>
-        /// Whether the Editor was launched with -automated. A Unity console warning for this fact
-        /// is unactionable (nobody watches the console in an agent-driven workflow) and, worse, was
-        /// logged once per constructed server instance — the isolated test servers built per test
-        /// (see TestEditorPipelineServer) spammed it dozens of times per suite run. The fact is
-        /// instead surfaced as structured data on the instance descriptor (see
-        /// <see cref="CreateInstanceDescriptor"/>) — the one thing every client reads before it can
-        /// connect at all (UUM-149977).
+        /// Unsubscribe the settle-tick handler, and leave the Editor-global player-loop sampler
+        /// (see <see cref="s_PlayerLoopSamplerRefs"/>) — unsubscribing and recording a stale-safe
+        /// "not playing" reading once the last server instance has stopped.
         /// </summary>
-        internal static bool DetectAutomatedMode(string[] commandLineArgs)
-        {
-            foreach (var arg in commandLineArgs)
-            {
-                if (arg == "-automated")
-                    return true;
-            }
-            return false;
-        }
-
-        /// <summary>Unsubscribe the settle-tick handler.</summary>
         protected override void ServerStopped()
         {
-            UnsubscribeSettleTick();
-        }
+            EditorExecutor.DisarmSettleLatch();
 
-        /// <summary>
-        /// Arm or immediately release the settle latch. Start() runs on the main thread, so the
-        /// Editor state and SessionState are readable directly. A server starts settled when the
-        /// session has already settled once (mid-session restarts after domain reloads, test
-        /// servers started while a test's own compile/import is in flight) or when the Editor is
-        /// idle right now — zero behavior change in both cases. Only a server started before the
-        /// session's first idle moment (cold import: [InitializeOnLoad] runs inside the startup
-        /// AssetDatabase refresh) arms the gate, and settles on the first update tick that sees
-        /// the Editor idle.
-        /// </summary>
-        private void InitializeSettleLatch()
-        {
-            if (SessionState.GetBool(SettledSessionKey, false)
-                || (!EditorApplication.isCompiling && !EditorApplication.isUpdating))
+            if (!m_CountsTowardPlayerLoopSampler)
+                return;
+
+            m_CountsTowardPlayerLoopSampler = false;
+            if (s_PlayerLoopSamplerRefs > 0)
+                s_PlayerLoopSamplerRefs--;
+
+            if (s_PlayerLoopSamplerRefs == 0)
             {
-                MarkSettled();
-                return;
+                EditorApplication.update -= SamplePlayerLoop;
+                RecordPlayerLoop(false, false, 0, PlayerLoopNowMs());
             }
-
-            m_SettleTickSubscribed = true;
-            EditorApplication.update += SettleTick;
         }
 
-        private void SettleTick()
-        {
-            if (EditorApplication.isCompiling || EditorApplication.isUpdating)
-                return;
+        // Player-loop sampling, for editor status and /api/status (CLI-1432). "Playing" alone is not
+        // evidence: an unfocused Editor without runInBackground stays in Play mode with
+        // Time.frameCount stuck.
+        //
+        // Sampled from EditorApplication.update because Time.frameCount is main-thread only and
+        // /api/status is answered on the listener thread; every read goes through a lock for the same
+        // reason. A stalled main thread stops the sampling, so the last advance ages out and the
+        // reading turns false on its own. Elapsed time comes from a monotonic clock, so a system clock
+        // set backwards cannot keep a stopped loop reading as ticking.
+        //
+        // The state is static because Play mode is Editor-global and several server instances (the
+        // live server plus test servers) can exist at once. s_PlayerLoopSamplerRefs counts the running
+        // instances, so the update subscription starts with the first and ends with the last
+        // (ServerStarted / ServerStopped). The count and the subscription share one lifetime, like
+        // the watchdog's armed flag and its subscription: whatever a reload keeps or wipes, it keeps
+        // or wipes both.
 
-            MarkSettled();
-            UnsubscribeSettleTick();
+        /// <summary>How recently the frame count must have moved for the loop to count as ticking.</summary>
+        internal const long PlayerLoopTickingWindowMs = 1000;
+
+        private static readonly object s_PlayerLoopLock = new object();
+        private static bool s_PlayerLoopPlaying;
+        private static bool s_PlayerLoopPaused;
+        private static int s_PlayerLoopFrameCount;
+        // Monotonic time of the last observed frame advance. Unset until the session has advanced
+        // once, so a loop frozen from its first frame never reads as ticking.
+        private static bool s_PlayerLoopHasAdvanced;
+        private static long s_PlayerLoopLastAdvanceMs;
+        // Application.runInBackground is main-thread only too; sampled with the rest so the listener
+        // thread (/api/status) and the dialog fallback can report it.
+        private static bool s_PlayerLoopRunInBackground;
+
+        /// <summary>How many running server instances currently need the player loop sampled.</summary>
+        private static int s_PlayerLoopSamplerRefs;
+
+        /// <summary>Record the live Editor state. Call on the main thread.</summary>
+        internal static void SamplePlayerLoop()
+        {
+            RecordPlayerLoop(EditorApplication.isPlaying, EditorApplication.isPaused, Time.frameCount, PlayerLoopNowMs(),
+                Application.runInBackground);
+        }
+
+        /// <summary>Record one observation. Split from <see cref="SamplePlayerLoop"/> so tests can drive it.</summary>
+        internal static void RecordPlayerLoop(bool playing, bool paused, int frameCount, long nowMs,
+            bool runInBackground = false)
+        {
+            lock (s_PlayerLoopLock)
+            {
+                s_PlayerLoopRunInBackground = runInBackground;
+
+                if (!playing)
+                {
+                    s_PlayerLoopPlaying = false;
+                    s_PlayerLoopPaused = false;
+                    s_PlayerLoopHasAdvanced = false;
+                    return;
+                }
+
+                if (!s_PlayerLoopPlaying)
+                {
+                    // First sample of a session: a baseline, not an advance.
+                    s_PlayerLoopPlaying = true;
+                    s_PlayerLoopFrameCount = frameCount;
+                    s_PlayerLoopHasAdvanced = false;
+                }
+                else if (frameCount != s_PlayerLoopFrameCount)
+                {
+                    s_PlayerLoopFrameCount = frameCount;
+                    s_PlayerLoopHasAdvanced = true;
+                    s_PlayerLoopLastAdvanceMs = nowMs;
+                }
+
+                s_PlayerLoopPaused = paused;
+            }
+        }
+
+        /// <summary>Milliseconds on a monotonic clock; only differences are meaningful.</summary>
+        // Scaled in double: timestamp * 1000 overflows a long after ~106 days on a nanosecond clock.
+        // Fully qualified rather than `using System.Diagnostics;`: this file also uses
+        // UnityEngine.Debug, and the two namespaces both declare a `Debug` type.
+        internal static long PlayerLoopNowMs() =>
+            (long)(System.Diagnostics.Stopwatch.GetTimestamp() * (1000.0 / System.Diagnostics.Stopwatch.Frequency));
+
+        /// <summary>The current reading. Safe from any thread.</summary>
+        internal static PlayerLoopState ReadPlayerLoop() => ReadPlayerLoop(PlayerLoopNowMs());
+
+        internal static PlayerLoopState ReadPlayerLoop(long nowMs)
+        {
+            lock (s_PlayerLoopLock)
+            {
+                if (!s_PlayerLoopPlaying)
+                    return new PlayerLoopState(false, 0, false, s_PlayerLoopRunInBackground);
+
+                var ticking = !s_PlayerLoopPaused
+                    && s_PlayerLoopHasAdvanced
+                    && nowMs - s_PlayerLoopLastAdvanceMs <= PlayerLoopTickingWindowMs;
+                return new PlayerLoopState(true, s_PlayerLoopFrameCount, ticking, s_PlayerLoopRunInBackground);
+            }
         }
 
         /// <summary>
-        /// Release this instance's latch and mark the whole session settled (main thread only).
+        /// Writes the transaction log, on the HTTP thread: its append is thread-safe file I/O by
+        /// design (see <see cref="PipelineTransactionLog"/>). The executor reports the commands
+        /// that ran to analytics.
         /// </summary>
-        private void MarkSettled()
+        internal override void OnCommandDone(in CommandExecutionInfo info)
         {
-            m_Settled = true;
-            SessionState.SetBool(SettledSessionKey, true);
-        }
-
-        private void UnsubscribeSettleTick()
-        {
-            if (!m_SettleTickSubscribed)
-                return;
-
-            m_SettleTickSubscribed = false;
-            EditorApplication.update -= SettleTick;
+            if (LogRequestsResponses && info.RequestJson != null)
+                PipelineTransactionLog.Append(info.RequestJson, info.ResponseJson);
         }
 
         /// <summary>
-        /// Busy gate (see <see cref="BasePipelineServer.GetBusyReason"/>): while settling, reject
-        /// main-thread commands with a retryable busy signal — during the post-start import/compile
-        /// window they would otherwise execute into a half-ready Editor and fail with an opaque
-        /// null-data envelope (AUTHAPI-35). Background commands (status polling: recompile_status,
-        /// package_status, console, ...) and editor_status stay servable so callers can observe
-        /// progress. Reads only the volatile latch — safe on the request thread.
+        /// The Editor's state as of the instant a dialog was about to be shown — see
+        /// <see cref="SnapshotStatusForDialogGate"/>. Once the dialog actually blocks the main
+        /// thread, editor_status can no longer run for real (unlike the settle case, where the
+        /// thread is merely busy, not stuck inside a native message loop), so its refusal is
+        /// answered from this snapshot instead. Nothing it describes (compiling/domain reload/play
+        /// mode) can change while the thread that would update it is stuck, so it stays correct for
+        /// the whole blocked window. Null until the first dialog of the session is about to be shown.
         /// </summary>
-        /// <param name="command">The command about to be dispatched.</param>
-        /// <returns>A busy reason while settling, or null once the Editor has been seen idle.</returns>
-        protected override string GetBusyReason(CommandInfo command)
+        private StatusResponse m_LastStatusBeforeDialog;
+
+        /// <summary>
+        /// Reads the Editor's state on the main thread, waiting for it as long as a command's
+        /// default timeout. Not queued behind the commands: it only reads. Holds no thread while it
+        /// waits, since clients may poll many times while the main thread is blocked.
+        /// </summary>
+        internal override Task<StatusResponse> GetEditorStatus()
         {
-            if (IsSettled)
-                return null;
+            return Dispatcher.InvokeWithoutBlockingAsync(EditorStatusCommand.Status, PipelineTimeout.DefaultTimeout);
+        }
 
-            if (!command.MainThreadRequired || CommandsServiceableWhileSettling.Contains(command.Name))
-                return null;
-
-            return "The Editor is still settling after startup (importing assets / compiling scripts), " +
-                   "so main-thread commands are not serviceable yet. Retry shortly, or poll /api/status until it reports 'ready'.";
+        /// <summary>The asynchronous test run's status file, read on the HTTP thread.</summary>
+        internal override object GetTestStatus()
+        {
+            return TestCommands.Status();
         }
 
         /// <summary>
         /// Called by EditorDialogStateMirror right before a dialog blocks the main thread (while
-        /// it's still free to read live Editor state) — captures editor_status's fields for
-        /// <see cref="TryGetDialogBlockedFallback"/> to serve while the dialog is open.
+        /// it's still free to read live Editor state) — captures the Editor's state for
+        /// <see cref="TryAnswerRefusal"/> to serve while the dialog is open.
         /// </summary>
         internal void SnapshotStatusForDialogGate()
         {
-            m_LastStatusBeforeDialog = EditorStatusCommand.GetEditorStatus();
+            m_LastStatusBeforeDialog = EditorStatusCommand.Status();
         }
 
         /// <summary>
-        /// editor_status is the one MainThreadRequired command the dialog gate doesn't hard-fail:
-        /// it can't run for real (see <see cref="m_LastStatusBeforeDialog"/>'s doc), but its answer
-        /// is a snapshot taken the instant before the block started, which stays accurate for the
-        /// whole window. No snapshot exists only if a dialog opened before this server ever saw one
-        /// coming (should not happen in practice — EditorDialogStateMirror snapshots on every
-        /// dialogWillShow), in which case this falls back to the normal 503.
+        /// editor_status is the one main-thread command whose refusal by a dialog isn't answered
+        /// with the busy envelope: it can't run for real (see <see cref="m_LastStatusBeforeDialog"/>'s
+        /// doc), but its answer is a snapshot taken the instant before the block started, which
+        /// stays accurate for the whole window. No snapshot exists only if a dialog opened before
+        /// this server ever saw one coming (should not happen in practice —
+        /// EditorDialogStateMirror snapshots on every dialogWillShow), in which case the refusal
+        /// gets the normal 503.
         /// </summary>
-        internal override object TryGetDialogBlockedFallback(CommandInfo command, DialogInfo blockingDialog)
+        internal override bool TryAnswerRefusal(CommandUnavailableException refusal, out object answer)
         {
-            if (command.Name != "editor_status" || m_LastStatusBeforeDialog == null)
-                return null;
+            answer = null;
+            var snapshot = m_LastStatusBeforeDialog;
+            if (refusal.Command != CommandNames.EditorStatus
+                || refusal.Reason != CommandUnavailableReason.BlockedByDialog
+                || refusal.Dialogs.Count == 0
+                || snapshot == null)
+                return false;
 
-            return new StatusResponse
+            // Not from the snapshot: the player loop is the one thing that does change here — it
+            // stops — and the sampler's reading (runInBackground included, since
+            // Application.runInBackground is off-limits on this thread) ages to "not ticking" on its own while blocked.
+            var playerLoop = ReadPlayerLoop();
+
+            answer = new StatusResponse
             {
                 Status = "blocked_by_dialog",
-                Compiling = m_LastStatusBeforeDialog.Compiling,
-                DomainReloadInProgress = m_LastStatusBeforeDialog.DomainReloadInProgress,
-                PlayMode = m_LastStatusBeforeDialog.PlayMode,
+                Compiling = snapshot.Compiling,
+                DomainReloadInProgress = snapshot.DomainReloadInProgress,
+                PlayMode = snapshot.PlayMode,
+                FrameCount = playerLoop.Playing ? playerLoop.FrameCount : (int?)null,
+                PlayerLoopTicking = playerLoop.Playing ? playerLoop.Ticking : (bool?)null,
+                RunInBackground = playerLoop.RunInBackground,
                 LastHeartbeat = DateTime.UtcNow,
-                ProjectPath = m_LastStatusBeforeDialog.ProjectPath,
-                UnityVersion = m_LastStatusBeforeDialog.UnityVersion,
-                Dialog = BuildDialogPayload(blockingDialog)
+                ProjectPath = snapshot.ProjectPath,
+                UnityVersion = snapshot.UnityVersion,
+                Dialog = BuildDialogPayload(refusal.Dialogs[0])
             };
-        }
-
-        /// <summary>
-        /// Post-command work, on the HTTP thread.
-        ///
-        /// The transaction log runs here directly rather than crossing to the main thread with the
-        /// analytics: its append is thread-safe file I/O by design (see
-        /// <see cref="PipelineTransactionLog"/>), and driving it from the editor update loop would
-        /// put a read-modify-write of the log on every frame that served a command. An info with no
-        /// request JSON is a detached job reporting its real result, which was never part of a
-        /// transaction.
-        /// </summary>
-        protected override void OnCommandDone(in CommandExecutionInfo info)
-        {
-            if (LogRequestsResponses && info.RequestJson != null)
-                PipelineTransactionLog.Append(info.RequestJson, info.ResponseJson);
-
-            // Requests rejected before anything ran carry no command, and nothing on the main-thread
-            // side has anything to say about them.
-            if (info.Command == null)
-                return;
-
-            // Copied out of the `in` parameter because a lambda cannot capture one.
-            var posted = info;
-            Dispatcher.Post(() => OnCommandDoneMainThread(posted));
-        }
-
-        /// <summary>
-        /// Post-command work that needs the main thread, run on the next dispatcher pump. Analytics
-        /// lives here, and so does anything else added later that has to touch Unity APIs once a
-        /// command is done. Virtual so a test server can opt out wholesale.
-        /// </summary>
-        protected virtual void OnCommandDoneMainThread(in CommandExecutionInfo info)
-        {
-            PipelineAnalytics.RecordCommandExecuted(info);
-        }
-
-        /// <summary>Write the shared instance descriptor file so clients can discover this server.</summary>
-        protected override void CreateInstanceDescriptor()
-        {
-            // Create and write instance descriptor for CLI discovery
-            var automated = DetectAutomatedMode(System.Environment.GetCommandLineArgs());
-            m_InstanceDescriptor = InstanceDescriptor.CreateCurrent(Port, automated);
-            InstanceDescriptor.WriteToProjectRoot(m_InstanceDescriptor);
-        }
-
-        /// <summary>Remove the shared instance descriptor file on shutdown.</summary>
-        protected override void DeleteInstanceDescriptor()
-        {
-            // Clean up instance descriptor file
-            if (m_InstanceDescriptor != null)
-            {
-                InstanceDescriptor.RemoveFromProjectRoot(m_InstanceDescriptor.ProjectPath);
-            }
-            m_InstanceDescriptor = null;
-        }
-
-        /// <summary>Refresh the descriptor's heartbeat timestamp and current token.</summary>
-        protected override void UpdateHeartBeat()
-        {
-            // Update heartbeat in instance descriptor
-            if (m_InstanceDescriptor == null)
-                return;
-
-            lock (m_HeartbeatLock)
-            {
-                // Keep the port file's token current for discovery only — GetToken() validates the
-                // live token, so this just catches up to a rotation on the next heartbeat.
-                m_InstanceDescriptor.EvalToken = SecurityTokenManager.GetOrCreateToken();
-                m_InstanceDescriptor.LastHeartbeat = DateTime.UtcNow;
-                try
-                {
-                    InstanceDescriptor.WriteToProjectRoot(m_InstanceDescriptor);
-                }
-                catch (Exception ex)
-                {
-                    Debug.LogWarning($"Failed to update instance descriptor: {ex.Message}");
-                }
-            }
+            return true;
         }
 
         /// <summary>Build the Editor-specific status/heartbeat payload for /api/status, including the settle state.</summary>
         /// <returns>The status payload.</returns>
         protected override object GetServerStatus()
         {
-            UpdateHeartBeat();
             // "blocked_by_dialog" is checked first: a modal dialog blocks the main thread
             // regardless of settle state, and is the more actionable fact for a caller — settling
             // resolves on its own, a dialog needs a human. Read off DialogStateTracker's lock, same
@@ -329,8 +306,8 @@ namespace Unity.Pipeline.Editor
             // Editor is actually serviceable (AUTHAPI-35).
             var openDialogs = Dialogs.CurrentlyOpen;
             string status = openDialogs.Count > 0 ? "blocked_by_dialog"
-                : !IsSettled ? "settling"
-                : (HasInstanceDescriptor ? "ready" : "error");
+                : !EditorExecutor.IsSettled ? "settling"
+                : (IsAdvertised ? "ready" : "error");
 
             // Keep the common case's shape unchanged (no "dialog" key at all) rather than
             // always emitting "dialog": null — this is a widely-polled endpoint, not worth
@@ -338,21 +315,18 @@ namespace Unity.Pipeline.Editor
             // Gated on status itself, not openDialogs.Count, so a dialog that opens during the
             // settle window doesn't attach a "dialog" key to a "settling" response (StatusResponse's
             // dialog field is documented as present only when status is "blocked_by_dialog").
-            if (status == "blocked_by_dialog")
+            // lastHeartbeat below is the response time; see StatusResponse.LastHeartbeat.
+            // The player-loop keys follow the same rule: present only in Play mode (CLI-1432).
+            var playerLoop = ReadPlayerLoop();
+            return new ServerStatusResponse
             {
-                return new
-                {
-                    status,
-                    lastHeartbeat = m_InstanceDescriptor?.LastHeartbeat,
-                    capabilities = Capabilities,
-                    dialog = BasePipelineServer.BuildDialogPayload(openDialogs[0])
-                };
-            }
-            return new
-            {
-                status,
-                lastHeartbeat = m_InstanceDescriptor?.LastHeartbeat,
-                capabilities = Capabilities
+                Status = status,
+                LastHeartbeat = DateTime.UtcNow,
+                Capabilities = EditorCapabilities,
+                FrameCount = playerLoop.Playing ? playerLoop.FrameCount : (int?)null,
+                PlayerLoopTicking = playerLoop.Playing ? playerLoop.Ticking : (bool?)null,
+                RunInBackground = playerLoop.Playing ? playerLoop.RunInBackground : (bool?)null,
+                Dialog = status == "blocked_by_dialog" ? BasePipelineServer.BuildDialogPayload(openDialogs[0]) : null
             };
         }
 

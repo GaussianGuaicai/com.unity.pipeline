@@ -30,7 +30,9 @@ namespace Unity.Pipeline.Runtime.Commands
     /// </summary>
     static class RuntimeInputCommand
     {
-        [CliCommand("simulate_key", "Simulate a keyboard key event (Input System). Drives the running app.",
+        const string Group = "runtime";
+
+        [CliGroupCommand(Group, "Simulate a keyboard key event (Input System). Drives the running app.",
             MainThreadRequired = true,
             Tags = new[] { "runtime/input" })]
         public static InputSimulationResponse SimulateKey(
@@ -40,10 +42,10 @@ namespace Unity.Pipeline.Runtime.Commands
 #if ENABLE_INPUT_SYSTEM
             var keyboard = Keyboard.current;
             if (keyboard == null)
-                return InputSimulationResponse.Fail("simulate_key", "No keyboard device is present.");
+                return InputSimulationResponse.Fail(CommandNames.RuntimeSimulateKey, "No keyboard device is present.");
 
             if (!Enum.TryParse<Key>(key, ignoreCase: true, out var parsedKey) || parsedKey == Key.None)
-                return InputSimulationResponse.Fail("simulate_key", $"Unknown key '{key}'. Use an Input System Key name (e.g. Space, W, Enter).");
+                return InputSimulationResponse.Fail(CommandNames.RuntimeSimulateKey, $"Unknown key '{key}'. Use an Input System Key name (e.g. Space, W, Enter).");
 
             var control = keyboard[parsedKey];
             var act = Normalize(action);
@@ -60,18 +62,18 @@ namespace Unity.Pipeline.Runtime.Commands
                     QueueButton(control, false);
                     break;
                 default:
-                    return InputSimulationResponse.Fail("simulate_key", $"Unknown action '{action}'. Use down | up | press.");
+                    return InputSimulationResponse.Fail(CommandNames.RuntimeSimulateKey, $"Unknown action '{action}'. Use down | up | press.");
             }
 
             // Flush queued events so the effect is observable synchronously to the caller.
             InputSystem.Update();
-            return InputSimulationResponse.Ok("simulate_key", $"key={parsedKey} action={act}");
+            return InputSimulationResponse.Ok(CommandNames.RuntimeSimulateKey, $"key={parsedKey} action={act}");
 #else
-            return InputSimulationResponse.Unavailable("simulate_key");
+            return InputSimulationResponse.Unavailable(CommandNames.RuntimeSimulateKey);
 #endif
         }
 
-        [CliCommand("simulate_pointer", "Simulate a mouse/pointer event at screen coordinates (Input System).",
+        [CliGroupCommand(Group, "Simulate a mouse/pointer event at screen coordinates (Input System).",
             MainThreadRequired = true,
             Tags = new[] { "runtime/input" })]
         public static InputSimulationResponse SimulatePointer(
@@ -83,7 +85,7 @@ namespace Unity.Pipeline.Runtime.Commands
 #if ENABLE_INPUT_SYSTEM
             var mouse = Mouse.current;
             if (mouse == null)
-                return InputSimulationResponse.Fail("simulate_pointer", "No mouse/pointer device is present.");
+                return InputSimulationResponse.Fail(CommandNames.RuntimeSimulatePointer, "No mouse/pointer device is present.");
 
             var position = new Vector2(x, y);
             var act = Normalize(action);
@@ -95,7 +97,7 @@ namespace Unity.Pipeline.Runtime.Commands
                 case "right": btn = mouse.rightButton; break;
                 case "middle": btn = mouse.middleButton; break;
                 default:
-                    return InputSimulationResponse.Fail("simulate_pointer", $"Unknown button '{button}'. Use left | right | middle.");
+                    return InputSimulationResponse.Fail(CommandNames.RuntimeSimulatePointer, $"Unknown button '{button}'. Use left | right | middle.");
             }
 
             switch (act)
@@ -114,13 +116,13 @@ namespace Unity.Pipeline.Runtime.Commands
                     QueuePointer(mouse, position, btn, false);
                     break;
                 default:
-                    return InputSimulationResponse.Fail("simulate_pointer", $"Unknown action '{action}'. Use move | down | up | click.");
+                    return InputSimulationResponse.Fail(CommandNames.RuntimeSimulatePointer, $"Unknown action '{action}'. Use move | down | up | click.");
             }
 
             InputSystem.Update();
-            return InputSimulationResponse.Ok("simulate_pointer", $"pos=({x},{y}) action={act} button={Normalize(button)}");
+            return InputSimulationResponse.Ok(CommandNames.RuntimeSimulatePointer, $"pos=({x},{y}) action={act} button={Normalize(button)}");
 #else
-            return InputSimulationResponse.Unavailable("simulate_pointer");
+            return InputSimulationResponse.Unavailable(CommandNames.RuntimeSimulatePointer);
 #endif
         }
 

@@ -4,6 +4,64 @@ All notable changes to this package will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0-exp.1] - 2026-09-22
+
+### Added
+
+- [AUTHAPI-82] A `list_build_platforms` command that lists the platforms a Build Profile can target.
+- [AUTHAPI-82] A `create_build_profile` command that creates a Build Profile asset for a platform.
+- [AUTHAPI-82] An `edit_build_profile` command that changes a Build Profile's scene list and scripting defines.
+- [AUTHAPI-84] Added new analytics data allowing cross reference between CLI events and Pipeline events.
+- [CLI-1432] `editor_set_run_in_background` keeps the game running while the Editor is unfocused; builds keep the project's own setting.
+- [CLI-1432] An "Ensure editor runs in background in PlayMode" setting under Project Settings > Pipeline > Editor.
+- [CLI-1432] `editor_status` and `/api/status` report Run In Background and whether the player loop is advancing while in Play mode.
+- [AUTHAPI-48] `/api/commands` can filter, group and index commands by group.
+- [AUTHAPI-75] The instance descriptor lists every way to connect to the instance.
+- [AUTHAPI-77] Every command accepts `--verbose` and `--omit-nulls` on the command line, shaping its result as the `verbose` and `omitNulls` request flags do.
+- [AUTHAPI-48] `[CliCommand(group, name, description)]` and `[CliGroupCommand(group, description)]` declare a command in a group.
+
+### Changed
+
+- AUTHAPI-81 simplify how a user can link with Pipeline for a Build. A single options available in the Project Settings take care of enabling pipeline for Dev build or for Release build.
+- Code Reload is now Method Reload. Attributes, namespaces, doc updated.
+- [AUTHAPI-48] Commands are grouped: run them as `unity command <group> <name>`; the old names no longer work.
+- [AUTHAPI-48] The first argument of `[CliCommand]` is now the command's group, and the name comes from the method.
+- [AUTHAPI-48] `CommandRegistry.RegisterCommand` takes the group and the name first.
+- [AUTHAPI-48] When two commands share a name, the package's own command is kept and the other is refused.
+- [AUTHAPI-75] The instance descriptor refreshes its heartbeat every 15 seconds and is replaced in one step, so it is never read half-written.
+- [AUTHAPI-75] In Play Mode, the runtime server is listed in the Editor's descriptor instead of writing its own file.
+- [AUTHAPI-58] Ensure timeouts are per command and that any command supporting timeout properly uses the --timeout switch to allow timeout overrides.
+- Moved the unity-pipeline agent skill out of the package to the repository root.
+- [AUTHAPI-77] The editor_status and test-status endpoints no longer wait for the running command to finish; editor_status gives up after 60 seconds if the main thread stays blocked.
+- [AUTHAPI-77] The limit of 100 waiting or running commands now counts synchronous `/api/exec` requests as well as jobs, and a request over it returns 429.
+- [AUTHAPI-77] A detached job with a missing or invalid argument is refused when it is submitted, instead of failing after it starts.
+- [AUTHAPI-48] A bare command name runs the `global` command of that name, including one named like a group.
+
+### Deprecated
+
+- [AUTHAPI-48] `[CliCommand(name, description)]` registers the command in the `global` group; it still runs by its name alone.
+
+### Removed
+
+- [AUTHAPI-48] `CliCommand.RuntimeOnly`; tag the command `runtime` instead.
+- [AUTHAPI-77] The `GetBusyReason` and `OnCommandDone` hooks of `BasePipelineServer`, and the `CommandExecutionInfo` type they reported with.
+- [AUTHAPI-77] `/api/exec` replies no longer include `dialogsDuringExecution`; `/api/dialog` and `/api/status` still report open dialogs.
+
+### Fixed
+
+- `create_asset` and `find_assets` resolve short type names such as "Material" correctly on Unity 7.
+- [UUM-154017] An unknown command name suggests the closest match, or the commands starting with it, instead of listing every registered command.
+- [UUM-154657] Allow browser connection from localhost.
+- Paths starting with "assets/" or "packages/" in any casing are treated as project paths instead of being nested under the authoring root.
+- [UUM-154806] Entering Play Mode no longer logs errors when the Test Framework assembly cannot be loaded.
+- Add proper guidance if an old naming convention command is invoked.
+- [AUTHAPI-106] Update license agreement.
+- [SCP-2254] Unity pipeline package no longer fails the build when including development version of it into runtime builds when building development player with the release managed code variant. It will now only be included in debug, checked or instrumented managed code variants.
+
+### Security
+
+- The server refuses requests whose Host header is not its own 127.0.0.1 address, blocking DNS rebinding from a web page.
+
 ## [0.8.0-exp.1] - 2026-09-22
 
 ### Added

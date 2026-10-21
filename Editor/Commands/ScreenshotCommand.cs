@@ -22,11 +22,13 @@ namespace Unity.Pipeline.Editor.Commands
     /// </summary>
     static class ScreenshotCommand
     {
+        const string Group = "capture";
+
         const int k_DefaultWidth = 1920;
         const int k_DefaultHeight = 1080;
 
-        [CliCommand("screenshot", "Capture the Scene or Game view as a PNG and return its file path", MainThreadRequired = true, Tags = new[] { "capture" })]
-        public static ScreenshotResponse CaptureScreenshot(
+        [CliGroupCommand(Group, "Capture the Scene or Game view as a PNG and return its file path", MainThreadRequired = true, Tags = new[] { "capture" })]
+        public static ScreenshotResponse Screenshot(
             [CliArg("view", "Which view to capture: 'game' (default) or 'scene'")] string view = "game",
             [CliArg("output", "Output PNG path (absolute, or relative to the project root). Defaults to a timestamped file under <project>/Temp/pipeline-screenshots/.")] string output = "",
             [CliArg("width", "Output width in pixels. 0 (default) uses the view camera's current width.")] int width = 0,

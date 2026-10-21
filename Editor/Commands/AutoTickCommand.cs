@@ -27,6 +27,8 @@ namespace Unity.Pipeline.Editor.Commands
 #endif
     static class AutoTickCommand
     {
+        const string Group = "editor";
+
         // Default interval when nothing else applies (fresh editor session, no prior SetAutoTick call).
         internal const int DefaultIntervalMs = 16;
 
@@ -43,7 +45,7 @@ namespace Unity.Pipeline.Editor.Commands
         internal static bool IsEnabled => s_Enabled;
         internal static long CurrentIntervalMs => s_IntervalMs;
 
-        [CliCommand("set_autotick", "Keep the editor ticking while unfocused by forcing EditorApplication.SignalTick at a throttled rate", MainThreadRequired = true, Tags = new[] { "editor" })]
+        [CliGroupCommand(Group, "Keep the editor ticking while unfocused by forcing EditorApplication.SignalTick at a throttled rate", MainThreadRequired = true, Tags = new[] { "editor" })]
         public static string SetAutoTick(
             [CliArg("enable", "Enable (true) or disable (false) auto-tick mode")] bool enable = true,
             [CliArg("interval_ms", "Minimum milliseconds between forced ticks. 0 = every update (max rate, pegs a CPU core). Default 16 (~60Hz).")] int intervalMs = DefaultIntervalMs,

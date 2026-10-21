@@ -27,8 +27,12 @@ namespace Unity.Pipeline.Editor.Commands.Batch
         [JsonProperty("id")]
         public string Id { get; set; }
 
-        /// <summary>Name of the registered command to run (any command except the excluded list).</summary>
-        [CliArg("command", "Name of the registered command to run.", Required = true)]
+        /// <summary>
+        /// The registered command to run (any command except the excluded list), written as
+        /// <c>group name</c> (<c>gameobject create</c>). A single token is read as the one-word spelling of a
+        /// full name, the same way a raw request does.
+        /// </summary>
+        [CliArg("command", "The command to run, written as \"<group> <name>\" (e.g. \"gameobject create\").", Required = true)]
         [JsonProperty("command")]
         public string Command { get; set; }
 

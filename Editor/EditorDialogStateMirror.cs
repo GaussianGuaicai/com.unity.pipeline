@@ -7,7 +7,7 @@ namespace Unity.Pipeline.Editor
 {
     /// <summary>
     /// Mirrors UnityEditor.EditorDialogEvents into the live pipeline server's DialogStateTracker,
-    /// so GET /api/dialog, dialogsDuringExecution, and the dialog busy-gate all observe modal
+    /// so GET /api/dialog, /api/status and the dialog busy-gate all observe modal
     /// dialogs with no per-command instrumentation (see the trunk-side design doc). Ambient
     /// dialogs are a live-editor-wide concept, not per-test-server — targets the live server
     /// explicitly, the same way EditorProgressMirror does, so a test server's DialogStateTracker

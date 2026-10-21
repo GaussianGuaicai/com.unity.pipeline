@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Unity.Pipeline;
+using Unity.Pipeline.Commands;
 using UnityEditor;
 using UnityEngine;
 
@@ -30,7 +31,7 @@ namespace Unity.Pipeline.Editor.Commands
         public bool IsAsync;
         public bool TolerateMissing;
         public double PollIntervalMs;
-        public double TimeoutMs;
+        public TimeSpan Timeout;
         public DateTime StartedAt;
 
         /// <summary>Guards mutable state below; read from the request/background thread, mutated on the main thread.</summary>
@@ -99,14 +100,17 @@ namespace Unity.Pipeline.Editor.Commands
         }
 
         /// <summary>Milliseconds since the wait started, frozen at the terminal transition.</summary>
-        public long ElapsedMs
+        public long ElapsedMs => (long)Elapsed.TotalMilliseconds;
+
+        /// <summary>Time since the wait started, frozen at the terminal transition.</summary>
+        public TimeSpan Elapsed
         {
             get
             {
                 lock (Gate)
                 {
                     var end = m_TerminalAtUtc ?? DateTime.UtcNow;
-                    return (long)(end - StartedAt).TotalMilliseconds;
+                    return end - StartedAt;
                 }
             }
         }
@@ -387,14 +391,14 @@ namespace Unity.Pipeline.Editor.Commands
     /// interrupt: with domain reload disabled a wait survives into play mode; with reload enabled,
     /// <c>beforeAssemblyReload</c> interrupts it anyway.
     ///
-    /// PROCESS-WIDE by design — deliberately unlike <see cref="PipelineJobRegistry"/>, which is
+    /// PROCESS-WIDE by design — deliberately unlike a server's detached jobs, which are
     /// per-server so one server's command results never cross into another. A wait has no
     /// per-server state to isolate: it observes process-global editor state, is polled by the
     /// single <c>EditorApplication.update</c> pump, and is interrupted by process-level events
     /// (domain reload, play-mode exit). Ids are GUIDs, so waits from different servers cannot
     /// collide, and <see cref="MaxConcurrentWaits"/> intentionally bounds the shared update pump
     /// rather than acting as a per-server quota. If true per-server isolation ever becomes a
-    /// requirement, scope this like JobRegistry at that point.
+    /// requirement, scope this like the server's jobs at that point.
     ///
     /// In-memory: a domain reload discards pending waits the same way it discards every other
     /// static — a poller then gets a clear "not found / does not survive domain reloads" result.
@@ -423,7 +427,7 @@ namespace Unity.Pipeline.Editor.Commands
                 var active = s_Jobs.Values.Count(j => !j.IsTerminal);
                 if (active >= MaxConcurrentWaits)
                 {
-                    error = $"Too many concurrent waits: {active} active (max {MaxConcurrentWaits}). Cancel one with wait_cancel or wait for one to complete.";
+                    error = $"Too many concurrent waits: {active} active (max {MaxConcurrentWaits}). Cancel one with {CommandNames.JobWaitCancel} or wait for one to complete.";
                     return false;
                 }
 
@@ -496,7 +500,7 @@ namespace Unity.Pipeline.Editor.Commands
             {
                 foreach (var job in pending)
                 {
-                    if (job.ElapsedMs >= job.TimeoutMs)
+                    if (job.Elapsed >= job.Timeout)
                     {
                         // Final look, unconditionally — full parity with the sync loop, which polls
                         // before every deadline check. A condition that flipped true between the

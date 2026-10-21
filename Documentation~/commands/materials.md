@@ -4,7 +4,7 @@ Read and edit material shader properties, and discover/introspect shaders so an 
 
 ## Materials
 
-### `get_material_properties`
+### `material get_properties`
 Read a material's shader, render queue, enabled keywords, and all shader properties with their current values (Color as [r,g,b,a], Vector as [x,y,z,w], Texture as an object reference).
 
 | Parameter | Required | Default | Description |
@@ -13,7 +13,7 @@ Read a material's shader, render queue, enabled keywords, and all shader propert
 
 **Returns:** `MaterialPropertiesResult`
 
-### `set_material_properties`
+### `material set_properties`
 Set shader properties on a material (Float/Range/Int=number; Color=[r,g,b,a] or "#RRGGBBAA" hex; Vector=[x,y,z,w]; Texture=an object reference or null to clear), optionally reassign the shader, set the render queue, and toggle keywords. Unknown names / type mismatches are reported in `unknown[]`.
 
 | Parameter | Required | Default | Description |
@@ -31,8 +31,8 @@ Set shader properties on a material (Float/Range/Int=number; Color=[r,g,b,a] or 
 
 ## Shaders
 
-### `list_shaders`
-Discover available shaders so an agent can pick a valid name for set_material_properties / create_asset. Returns `[{ name, assetPath, isBuiltin, isSupported }]` — `assetPath` is omitted for built-in shaders in the default lean reply (pass `verbose: true` on the request for an explicit `assetPath: null`); use `isBuiltin` to classify.
+### `material list_shaders`
+Discover available shaders so an agent can pick a valid name for `material set_properties` / `asset create`. Returns `[{ name, assetPath, isBuiltin, isSupported }]` — `assetPath` is omitted for built-in shaders in the default lean reply (pass `verbose: true` on the request for an explicit `assetPath: null`); use `isBuiltin` to classify.
 
 | Parameter | Required | Default | Description |
 |-----------|----------|---------|-------------|
@@ -42,7 +42,7 @@ Discover available shaders so an agent can pick a valid name for set_material_pr
 
 **Returns:** `object` (list of `ShaderInfo`)
 
-### `get_shader_properties`
+### `material get_shader_properties`
 Introspect a shader's declared property list (name, description, type Color|Vector|Float|Range|TexEnv|Int, range, textureDimension, flags). Provide `shader` (by name) OR `material` (read the shader off that material).
 
 | Parameter | Required | Default | Description |

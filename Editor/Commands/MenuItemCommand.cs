@@ -42,8 +42,10 @@ namespace Unity.Pipeline.Editor.Commands
 #endif
     static class MenuItemCommand
     {
-        [CliCommand("menu", "Execute an Editor menu item by path, or list available items when no path is given", MainThreadRequired = true, Tags = new[] { "editor" })]
-        public static MenuResponse ExecuteMenu(
+        const string Group = "editor";
+
+        [CliGroupCommand(Group, "Execute an Editor menu item by path, or list available items when no path is given", MainThreadRequired = true, Tags = new[] { "editor" })]
+        public static MenuResponse InvokeMenu(
             [CliArg("path", "Menu item path to execute, e.g. \"Assets/Reimport All\". Omit to list available menu items.")] string path = "")
         {
             // No path → discovery mode: return the available menu items instead of executing.

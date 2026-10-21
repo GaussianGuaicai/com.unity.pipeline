@@ -13,12 +13,12 @@ namespace Unity.Pipeline.Models
     class CommandExecutionRequest
     {
         /// <summary>
-        /// Name of the command to execute.
-        /// Must match a registered [CliCommand] name.
+        /// The command to execute, by its full name (<c>group name</c>, or just the name for a
+        /// command without a group). The one-word spelling (<c>group.name</c>) is accepted too.
         ///
-        /// Optional, because <see cref="Argv"/> and <see cref="CommandLine"/> carry the name in
-        /// their first token instead; the server assigns it here before anything downstream reads
-        /// it. Exactly one of the three forms may be present - <see cref="Validate"/> enforces
+        /// Optional, because <see cref="Argv"/> and <see cref="CommandLine"/> name the command in
+        /// their leading tokens instead; the server assigns the resolved full name here before anything
+        /// downstream reads it. Exactly one of the three forms may be present - <see cref="Validate"/> enforces
         /// that.
         /// </summary>
         [JsonProperty("command")]
@@ -34,7 +34,8 @@ namespace Unity.Pipeline.Models
         public string CommandLine { get; set; }
 
         /// <summary>
-        /// Pre-split tokens, first of which is the command name. Preferred over
+        /// Pre-split tokens, led by the command: <c>group name</c>, or its one-word spelling as one token. A
+        /// group alone asks for its listing. Preferred over
         /// <see cref="CommandLine"/> by any caller that already has argv — on POSIX a CLI never
         /// holds the original command STRING, so making it re-quote tokens for the server to
         /// re-split would be a lossy round-trip across two independently-versioned quoting
@@ -59,8 +60,8 @@ namespace Unity.Pipeline.Models
         public JObject Parameters { get; set; }
 
         /// <summary>
-        /// Optional timeout for command execution in milliseconds.
-        /// Default: 60000 (60 seconds)
+        /// Optional timeout for command execution in milliseconds. When omitted, the command's own
+        /// default applies (see <see cref="PipelineTimeout"/>).
         /// </summary>
         [JsonProperty("timeout")]
         public int? Timeout { get; set; }
@@ -93,6 +94,24 @@ namespace Unity.Pipeline.Models
         /// </summary>
         [JsonProperty("job")]
         public bool Job { get; set; }
+
+        /// <summary>
+        /// Caller-generated id of the client invocation that sent this request, reported on the
+        /// command-executed analytics event so it can be joined with the client's own event.
+        /// </summary>
+        [JsonProperty("commandId")]
+        [JsonConverter(typeof(LenientAnalyticDataConverter))]
+        public long? CommandId { get; set; }
+
+        /// <summary>Who drove the client: <c>human</c>, <c>agent</c>, <c>ci</c> or <c>unknown</c>.</summary>
+        [JsonProperty("clientSource")]
+        [JsonConverter(typeof(LenientAnalyticDataConverter))]
+        public string ClientSource { get; set; }
+
+        /// <summary>Which AI client family drove the client, e.g. <c>claude</c>, or <c>none</c>.</summary>
+        [JsonProperty("clientName")]
+        [JsonConverter(typeof(LenientAnalyticDataConverter))]
+        public string ClientName { get; set; }
 
         /// <summary>
         /// Create a new command execution request.
@@ -173,12 +192,12 @@ namespace Unity.Pipeline.Models
                 if (Argv != null)
                 {
                     if (Argv.Count == 0)
-                        return "'argv' must contain at least the command name";
+                        return "'argv' must contain at least the command or its group";
                     for (var i = 0; i < Argv.Count; i++)
                         if (Argv[i] == null)
                             return "'argv' must not contain null elements";
                     if (string.IsNullOrWhiteSpace(Argv[0]))
-                        return "'argv' must start with the command name";
+                        return "'argv' must start with the command or its group";
                 }
                 else if (string.IsNullOrWhiteSpace(CommandLine))
                 {

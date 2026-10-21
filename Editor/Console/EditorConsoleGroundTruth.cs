@@ -49,10 +49,8 @@ namespace Unity.Pipeline.Editor.Console
             EditorApplication.update -= Sample;
             EditorApplication.update += Sample;
 
-#if UNITY_6000_0_OR_NEWER
             ConsoleWindowUtility.consoleLogsChanged -= OnConsoleLogsChanged;
             ConsoleWindowUtility.consoleLogsChanged += OnConsoleLogsChanged;
-#endif
 
             AssemblyReloadEvents.afterAssemblyReload -= OnAfterAssemblyReload;
             AssemblyReloadEvents.afterAssemblyReload += OnAfterAssemblyReload;
@@ -69,12 +67,7 @@ namespace Unity.Pipeline.Editor.Console
             if (!s_Seeded)
                 TrySeed();
 
-#if UNITY_6000_0_OR_NEWER
             ConsoleWindowUtility.GetConsoleLogCounts(out var errors, out var warnings, out var logs);
-#else
-            if (!EditorConsoleEntries.TryGetCounts(out var errors, out var warnings, out var logs))
-                return;
-#endif
             var total = errors + warnings + logs;
             var seq = ConsoleLogCapture.Buffer.LastSeq;
 

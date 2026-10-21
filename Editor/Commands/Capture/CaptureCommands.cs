@@ -26,10 +26,12 @@ namespace Unity.Pipeline.Editor.Commands.Capture
     /// </summary>
     static class CaptureCommands
     {
+        const string Group = "capture";
+
         private const int MaxDimension = 4096;
 
-        [CliCommand("capture_game_view", "Capture the game view as a PNG. source=screen (default) captures what the Game window shows, incl. Screen Space - Overlay UI; source=camera renders a single camera instead and misses overlay UI. Returns it inline as base64, unless save_path is set (path-only result; pass include_inline_image=true to get both).", Tags = new[] { "capture" })]
-        public static CaptureResult CaptureGameView(
+        [CliGroupCommand(Group, "Capture the game view as a PNG. source=screen (default) captures what the Game window shows, incl. Screen Space - Overlay UI; source=camera renders a single camera instead and misses overlay UI. Returns it inline as base64, unless save_path is set (path-only result; pass include_inline_image=true to get both).", Tags = new[] { "capture" })]
+        public static CaptureResult GameView(
             [CliArg("width", "Output width in px (default 1280; capped 4096).")] int width = 1280,
             [CliArg("height", "Output height in px (default 720; capped 4096).")] int height = 720,
             [CliArg("camera", "Optional camera name (source=camera only); defaults to Camera.main, else the first enabled camera.")] string camera = null,
@@ -70,8 +72,8 @@ namespace Unity.Pipeline.Editor.Commands.Capture
             }
         }
 
-        [CliCommand("capture_scene_view", "Render the active Scene View to a PNG. Returns it inline as base64, unless save_path is set (path-only result; pass include_inline_image=true to get both).", Tags = new[] { "capture" })]
-        public static CaptureResult CaptureSceneView(
+        [CliGroupCommand(Group, "Render the active Scene View to a PNG. Returns it inline as base64, unless save_path is set (path-only result; pass include_inline_image=true to get both).", Tags = new[] { "capture" })]
+        public static CaptureResult SceneView(
             [CliArg("width", "Output width in px (default 1280; capped 4096).")] int width = 1280,
             [CliArg("height", "Output height in px (default 720; capped 4096).")] int height = 720,
             [CliArg("save_path", "Optional project-relative path to write the PNG (e.g. Screenshots/foo.png). When set, the result omits the inline base64 image unless include_inline_image=true.")] string savePath = null,
@@ -80,7 +82,7 @@ namespace Unity.Pipeline.Editor.Commands.Capture
         {
             GuardHasGpu();
 
-            var sv = SceneView.lastActiveSceneView;
+            var sv = UnityEditor.SceneView.lastActiveSceneView;
             if (sv == null || sv.camera == null)
                 throw new ArgumentException("No active Scene View to capture.");
 

@@ -25,10 +25,10 @@ namespace Unity.Pipeline.Compilation
         /// thread before invoking this; compilation + execution run synchronously here.
         /// </summary>
         /// <param name="code">The C# expression/statement(s) to evaluate.</param>
-        /// <param name="timeoutMs">Timeout for compilation, in milliseconds.</param>
+        /// <param name="timeout">Timeout for compilation.</param>
         /// <param name="stopwatch">Running stopwatch used to report execution time in the response.</param>
         /// <returns>The evaluation result.</returns>
-        public static EvalResponse CompileAndExecuteOnMainThread(string code, int timeoutMs, System.Diagnostics.Stopwatch stopwatch)
+        public static EvalResponse CompileAndExecuteOnMainThread(string code, TimeSpan timeout, System.Diagnostics.Stopwatch stopwatch)
         {
             if (stopwatch == null)
             {
@@ -38,7 +38,7 @@ namespace Unity.Pipeline.Compilation
             try
             {
                 // Compile on current thread
-                var compilationResult = CompileCodeToAssembly(code, timeoutMs, stopwatch);
+                var compilationResult = CompileCodeToAssembly(code, timeout, stopwatch);
 
                 if (!compilationResult.Success)
                 {
@@ -84,7 +84,7 @@ namespace Unity.Pipeline.Compilation
         /// Compile C# code to assembly using shared RoslynCompilationService.
         /// Thread-safe and can run on background thread.
         /// </summary>
-        private static CompilationResult CompileCodeToAssembly(string userCode, int timeoutMs, System.Diagnostics.Stopwatch stopwatch)
+        private static CompilationResult CompileCodeToAssembly(string userCode, TimeSpan timeout, System.Diagnostics.Stopwatch stopwatch)
         {
             var id = Guid.NewGuid().ToString("N").Substring(0, 8);
 
@@ -321,10 +321,10 @@ namespace PipelineEvaluation
         /// Desktop development builds only (Windows/Mac/Linux).
         /// </summary>
         /// <param name="code">Unused on this build.</param>
-        /// <param name="timeoutMs">Unused on this build.</param>
+        /// <param name="timeout">Unused on this build.</param>
         /// <param name="stopwatch">Unused on this build.</param>
         /// <returns>A failure result explaining runtime compilation isn't supported on this build.</returns>
-        public static EvalResponse CompileAndExecuteOnMainThread(string code, int timeoutMs, System.Diagnostics.Stopwatch stopwatch)
+        public static EvalResponse CompileAndExecuteOnMainThread(string code, TimeSpan timeout, System.Diagnostics.Stopwatch stopwatch)
         {
             return EvalResponse.EvalFailure(
                 "Platform Not Supported",

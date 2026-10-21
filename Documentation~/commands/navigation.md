@@ -2,14 +2,14 @@
 
 Commands to read and drive the Editor selection, and to run Unity Search queries. All commands are read-only or non-destructive and run on the main thread.
 
-### `get_selection`
+### `gameobject get_selection`
 Read the current Editor selection as structured object identities.
 
 No parameters.
 
 **Returns:** `SelectionResult`
 
-### `set_selection`
+### `gameobject set_selection`
 Set the Editor selection to the given assets/scene objects.
 
 | Parameter | Required | Default | Description |
@@ -19,7 +19,7 @@ Set the Editor selection to the given assets/scene objects.
 
 **Returns:** `SelectionResult`
 
-### `search`
+### `editor search`
 Run a Unity Search query and return structured results.
 
 | Parameter | Required | Default | Description |

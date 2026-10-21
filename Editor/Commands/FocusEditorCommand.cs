@@ -23,6 +23,8 @@ namespace Unity.Pipeline.Editor.Commands
 #endif
     static class FocusEditorCommand
     {
+        const string Group = "editor";
+
         const BindingFlags k_All = BindingFlags.Static | BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
 
         static Type s_ContainerWindowType;
@@ -31,8 +33,8 @@ namespace Unity.Pipeline.Editor.Commands
         static MethodInfo s_GuiViewFocus;
         static bool s_Resolved;
 
-        [CliCommand("editor_focus", "Bring the Unity Editor window to the foreground", MainThreadRequired = true, Tags = new[] { "editor" })]
-        public static string FocusEditor()
+        [CliGroupCommand(Group, "Bring the Unity Editor window to the foreground", MainThreadRequired = true, Tags = new[] { "editor" })]
+        public static string Focus()
         {
             if (!ResolveReflection(out var error))
                 return error;

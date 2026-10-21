@@ -23,13 +23,15 @@ namespace Unity.Pipeline.Editor.Commands.GameObjects
     /// </summary>
     static class ComponentCommands
     {
+        const string Group = "component";
+
         /// <summary>
         /// Add a component (resolved by type name) to a GameObject. Registered with
         /// <see cref="Undo.AddComponent{T}(GameObject)"/> via the non-generic overload so the addition
         /// is reversible. Returns the new component's identity so its properties can be set next.
         /// </summary>
-        [CliCommand("add_component", "Add a component (by type name) to a GameObject.", Tags = new[] { "gameobjects/components" })]
-        public static AuthoringResult AddComponent(
+        [CliGroupCommand(Group, "Add a component (by type name) to a GameObject.", Tags = new[] { "gameobjects/components" })]
+        public static AuthoringResult Add(
             [CliArg("target", "Handle of the GameObject.", Required = true)] ObjectRef target,
             [CliArg("type", "Component type name (e.g. 'Rigidbody' or 'UnityEngine.Camera').", Required = true)] string type)
         {
@@ -55,10 +57,10 @@ namespace Unity.Pipeline.Editor.Commands.GameObjects
         /// <see cref="ObjectRef"/> resolving to a Component), or by GameObject handle plus a type name.
         /// Uses <see cref="Undo.DestroyObjectImmediate"/> so the removal is reversible.
         /// </summary>
-        [CliCommand("remove_component",
+        [CliGroupCommand(Group,
             "Remove a component from a GameObject. Provide either a component handle (target) or a GameObject handle (target) plus a type name.",
             Tags = new[] { "gameobjects/components" })]
-        public static AuthoringResult RemoveComponent(
+        public static AuthoringResult Remove(
             [CliArg("target", "Handle of the component to remove, OR of the GameObject when 'type' is given.", Required = true)] ObjectRef target,
             [CliArg("type", "Component type name to remove from the target GameObject (omit when 'target' already points at a component).")] string type = null)
         {
@@ -80,10 +82,10 @@ namespace Unity.Pipeline.Editor.Commands.GameObjects
         /// surface (skipping the script reference) and converts each property with
         /// <see cref="SerializedPropertyConverter.Read"/>.
         /// </summary>
-        [CliCommand("get_component_properties",
+        [CliGroupCommand(Group,
             "Get a component's serialized properties as a JSON map. Address the component by handle, or by GameObject handle + type.",
             Tags = new[] { "gameobjects/components" })]
-        public static ComponentPropertiesResult GetComponentProperties(
+        public static ComponentPropertiesResult GetProperties(
             [CliArg("target", "Handle of the component, OR of the GameObject when 'type' is given.", Required = true)] ObjectRef target,
             [CliArg("type", "Component type name on the target GameObject (omit when 'target' is a component handle).")] string type = null)
         {
@@ -124,10 +126,10 @@ namespace Unity.Pipeline.Editor.Commands.GameObjects
         /// <see cref="SerializedObject.ApplyModifiedProperties"/> commits + dirties as one operation.
         /// An unknown property name fails the whole batch with a clear error (no partial apply).
         /// </summary>
-        [CliCommand("set_component_properties",
+        [CliGroupCommand(Group,
             "Set serialized properties on a component (one Undo step). 'properties' maps property name -> value; object references accept an ObjectRef handle.",
             Tags = new[] { "gameobjects/components" })]
-        public static ComponentPropertiesResult SetComponentProperties(
+        public static ComponentPropertiesResult SetProperties(
             [CliArg("target", "Handle of the component, OR of the GameObject when 'type' is given.", Required = true)] ObjectRef target,
             [CliArg("properties", "Map of serialized property name to value. Vectors/colors are arrays; object refs are handle objects.", Required = true)] JObject properties,
             [CliArg("type", "Component type name on the target GameObject (omit when 'target' is a component handle).")] string type = null)
@@ -158,7 +160,7 @@ namespace Unity.Pipeline.Editor.Commands.GameObjects
             }
 
             // Re-read so the caller sees the committed values.
-            return GetComponentProperties(target, type);
+            return GetProperties(target, type);
         }
 
         #region Helpers

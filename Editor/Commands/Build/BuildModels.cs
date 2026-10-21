@@ -122,6 +122,87 @@ namespace Unity.Pipeline.Editor.Commands.Build
         [JsonProperty("isActive")] public bool IsActive { get; set; }
     }
 
+    /// <summary>
+    /// One platform a Build Profile can target, projected for <c>list_build_platforms</c> (AUTHAPI-82).
+    /// Platforms are not one-to-one with <c>BuildTarget</c>: Meta Quest, Android XR and Android all report
+    /// <c>BuildTarget.Android</c>, with the first two flagged <see cref="IsDerived"/>. Pass <see cref="Id"/>
+    /// (or an exact <see cref="DisplayName"/>) to <c>create_build_profile</c> to select one unambiguously.
+    /// </summary>
+    [Serializable]
+    class BuildPlatformInfo
+    {
+        /// <summary>Display name as the Build Profile window shows it, e.g. "Meta Quest".</summary>
+        [JsonProperty("displayName")] public string DisplayName { get; set; }
+
+        /// <summary>Platform GUID, e.g. "80657fe557de4d17822398b3a01b8c9e" for Meta Quest.</summary>
+        [JsonProperty("id")] public string Id { get; set; }
+
+        /// <summary>The underlying <c>BuildTarget</c> name (best-effort; may be empty if unreadable).</summary>
+        [JsonProperty("buildTarget")] public string BuildTarget { get; set; }
+
+        /// <summary>"Player" | "Server" for standalone desktop platforms; "Default" elsewhere.</summary>
+        [JsonProperty("subtarget")] public string Subtarget { get; set; }
+
+        /// <summary>Whether the platform's build support module is installed in this editor.</summary>
+        [JsonProperty("isInstalled")] public bool IsInstalled { get; set; }
+
+        /// <summary>Whether this platform is derived from a base platform (e.g. Meta Quest from Android).</summary>
+        [JsonProperty("isDerived")] public bool IsDerived { get; set; }
+    }
+
+    /// <summary>
+    /// Result of <c>create_build_profile</c> (AUTHAPI-82). A dry run reports the <see cref="AssetPath"/> and
+    /// <see cref="Platform"/> it validated without writing anything, so <see cref="Profile"/> is only present
+    /// once the asset exists.
+    /// </summary>
+    [Serializable]
+    class CreateBuildProfileResult
+    {
+        [JsonProperty("success")] public bool Success { get; set; }
+        [JsonProperty("dryRun")] public bool DryRun { get; set; }
+
+        /// <summary>Project-relative path the profile was (or would be) created at.</summary>
+        [JsonProperty("assetPath")] public string AssetPath { get; set; }
+
+        /// <summary>The resolved target platform.</summary>
+        [JsonProperty("platform")] public BuildPlatformInfo Platform { get; set; }
+
+        /// <summary>The created profile asset; omitted on a dry run.</summary>
+        [JsonProperty("profile", NullValueHandling = NullValueHandling.Ignore)] public BuildProfileInfo Profile { get; set; }
+
+        /// <summary>Whether the new profile was made the active Build Profile.</summary>
+        [JsonProperty("activated")] public bool Activated { get; set; }
+
+        [JsonProperty("message")] public string Message { get; set; }
+    }
+
+    /// <summary>
+    /// Result of <c>edit_build_profile</c> (AUTHAPI-82), shaped like <see cref="SetBuildSettingsResult"/>:
+    /// the settings that changed (<see cref="Applied"/>, new values) versus the supplied settings already at
+    /// the requested value (<see cref="Skipped"/>, current values). A dry run reports the same
+    /// <see cref="Applied"/> set it <em>would</em> write, without changing anything.
+    /// </summary>
+    [Serializable]
+    class EditBuildProfileResult
+    {
+        [JsonProperty("success")] public bool Success { get; set; }
+        [JsonProperty("dryRun")] public bool DryRun { get; set; }
+
+        /// <summary>Project-relative path of the edited profile.</summary>
+        [JsonProperty("assetPath")] public string AssetPath { get; set; }
+
+        /// <summary>The profile after the edit (before it, on a dry run).</summary>
+        [JsonProperty("profile")] public BuildProfileInfo Profile { get; set; }
+
+        /// <summary>Setting name → new value, for each setting that changed (or would change on a dry run).</summary>
+        [JsonProperty("applied")] public Dictionary<string, object> Applied { get; set; } = new Dictionary<string, object>();
+
+        /// <summary>Setting name → current value, for supplied settings that already matched (no-ops).</summary>
+        [JsonProperty("skipped")] public Dictionary<string, object> Skipped { get; set; } = new Dictionary<string, object>();
+
+        [JsonProperty("message")] public string Message { get; set; }
+    }
+
     /// <summary>One output file produced by the build (a row of <c>BuildReport.GetFiles()</c>).</summary>
     [Serializable]
     class BuildFileEntry

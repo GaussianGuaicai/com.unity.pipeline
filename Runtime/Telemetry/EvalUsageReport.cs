@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using Newtonsoft.Json;
+using Unity.Pipeline.Commands;
 
 namespace Unity.Pipeline.Telemetry
 {
@@ -123,8 +124,8 @@ namespace Unity.Pipeline.Telemetry
         public static readonly IReadOnlyDictionary<string, string> Default = new Dictionary<string, string>
         {
             // The habit case: a command already exists, so these should stop using eval.
-            { "PlayerSettings.SetScriptingBackend", "set_player_settings" },
-            { "PlayerSettings.GetScriptingBackend", "get_player_settings" },
+            { "PlayerSettings.SetScriptingBackend", CommandNames.SettingsPlayerSet },
+            { "PlayerSettings.GetScriptingBackend", CommandNames.SettingsPlayerGet },
             // Known gaps from the WizardDuelVR evidence: no command yet (feeds AUTHAPI-17).
             // NOTE: save_all is NOT a cover for AssetDatabase.SaveAssets — it saves open scenes
             // (EditorSceneManager.SaveOpenScenes + AssetDatabase.Refresh) and never persists dirty

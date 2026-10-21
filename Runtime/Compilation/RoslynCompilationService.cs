@@ -20,7 +20,7 @@ using UnityEngine;
 namespace Unity.Pipeline.Compilation
 {
     /// <summary>
-    /// Shared Roslyn compilation service for both code evaluation and code reload systems.
+    /// Shared Roslyn compilation service for both code evaluation and method reload systems.
     /// Eliminates code duplication by providing common compilation infrastructure.
     /// Compile on the main thread; CompileAsync is the off-thread entry point (see Compile).
     /// </summary>
@@ -76,7 +76,7 @@ namespace Unity.Pipeline.Compilation
                 // only (see the property doc): the interpreter executes the result by reflection,
                 // which reaches non-public members. Unity's Mono JIT-enforces accessibility on
                 // Assembly.Load'd IL and ignores IgnoresAccessChecksTo too (verified on Mono 6.13) —
-                // see CodeReloadInPlaceTests.ReloadFileInPlace_PrivateFieldAccess_FailsValidationUpFront.
+                // see MethodReloadInPlaceTests.ReloadFileInPlace_PrivateFieldAccess_FailsValidationUpFront.
                 if (request.AllowNonPublicMemberAccess)
                     options = WithIgnoreAccessibility(options.WithMetadataImportOptions(MetadataImportOptions.All));
 
@@ -249,7 +249,7 @@ namespace Unity.Pipeline.Compilation
                 }
                 catch (Exception ex)
                 {
-                    Debug.LogWarning($"Pipeline: could not resolve IgnoreAccessibility binder flag; code-reload " +
+                    Debug.LogWarning($"Pipeline: could not resolve IgnoreAccessibility binder flag; method-reload " +
                         $"overrides touching non-public members may fail to compile. {ex.Message}");
                 }
             }
@@ -300,7 +300,7 @@ namespace Unity.Pipeline.Compilation
                     "Unity.Pipeline"
                 };
 
-                // Add any additional prefixes (e.g., for code reload: "UnityPipeline.Microsoft.CodeAnalysis")
+                // Add any additional prefixes (e.g., for method reload: "UnityPipeline.Microsoft.CodeAnalysis")
                 if (additionalPrefixes != null)
                 {
                     allowedPrefixes.AddRange(additionalPrefixes);
@@ -349,7 +349,7 @@ namespace Unity.Pipeline.Compilation
                     Id = diagnostic.Id
                 };
 
-                // #line directives (code reload maps rewritten bodies back to the user's file) give
+                // #line directives (method reload maps rewritten bodies back to the user's file) give
                 // the user a location they can open; the raw line text shows what was compiled.
                 var mapped = diagnostic.Location.GetMappedLineSpan();
                 if (mapped.HasMappedPath)
@@ -475,7 +475,7 @@ namespace Unity.Pipeline.Compilation
 
         /// <summary>
         /// Additional assembly prefixes to include in metadata references.
-        /// Useful for code reload scenarios that need "UnityPipeline.Microsoft.CodeAnalysis" etc.
+        /// Useful for method reload scenarios that need "UnityPipeline.Microsoft.CodeAnalysis" etc.
         /// </summary>
         public string[] AdditionalAssemblyPrefixes { get; set; }
 

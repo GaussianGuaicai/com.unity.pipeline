@@ -30,11 +30,13 @@ namespace Unity.Pipeline.Editor.Commands.Animation
     /// </summary>
     static class AnimationClipCommands
     {
-        [CliCommand("create_animation_clip",
+        const string Group = "animation.clip";
+
+        [CliGroupCommand(Group,
             "Create an empty .anim AnimationClip asset under the authoring root, with an optional frame rate and loop flag.",
             MainThreadRequired = true,
             Tags = new[] { "animation/clip" })]
-        public static AuthoringResult CreateAnimationClip(
+        public static AuthoringResult Create(
             [CliArg("path", "Asset path ending in .anim, relative to the authoring root. The Assets/ prefix is optional.", Required = true)] string path,
             [CliArg("frameRate", "Sampling frame rate of the clip (default 60).")] float frameRate = 60f,
             [CliArg("loop", "If true, set the clip's loop-time flag in its AnimationClipSettings (default false).")] bool loop = false,
@@ -82,12 +84,12 @@ namespace Unity.Pipeline.Editor.Commands.Animation
             return result;
         }
 
-        [CliCommand("set_animation_curve",
+        [CliGroupCommand(Group,
             "Add or replace a single float curve binding on an AnimationClip (via AnimationUtility.SetEditorCurve). " +
             "Replacing an existing binding overwrites it rather than duplicating.",
             MainThreadRequired = true,
             Tags = new[] { "animation/clip" })]
-        public static SetAnimationCurveResult SetAnimationCurve(
+        public static SetAnimationCurveResult SetCurve(
             [CliArg("clip", "Reference to the AnimationClip to edit (path / guid / globalId).", Required = true)] ObjectRef clip,
             [CliArg("path", "GameObject path relative to the animated root the property lives on. Empty string (default) targets the root.")] string path = "",
             [CliArg("type", "Component type the property lives on, e.g. \"Transform\", \"UnityEngine.Light\". Resolved via the component TypeResolver.", Required = true)] string type = null,
@@ -131,11 +133,11 @@ namespace Unity.Pipeline.Editor.Commands.Animation
             return result;
         }
 
-        [CliCommand("get_animation_clip",
+        [CliGroupCommand(Group,
             "Read an AnimationClip's metadata and all float curve bindings (optionally with keyframes).",
             MainThreadRequired = true,
             Tags = new[] { "animation/clip" })]
-        public static AnimationClipInfo GetAnimationClip(
+        public static AnimationClipInfo Get(
             [CliArg("clip", "Reference to the AnimationClip to read (path / guid / globalId).", Required = true)] ObjectRef clip,
             [CliArg("includeKeys", "If true, include each binding's keyframes (default false).")] bool includeKeys = false)
         {
@@ -184,11 +186,11 @@ namespace Unity.Pipeline.Editor.Commands.Animation
             return info;
         }
 
-        [CliCommand("remove_animation_curve",
+        [CliGroupCommand(Group,
             "Remove a float curve binding from an AnimationClip (SetEditorCurve(clip, binding, null)). Destructive: requires confirm=true.",
             MainThreadRequired = true,
             Tags = new[] { "animation/clip" })]
-        public static SetAnimationCurveResult RemoveAnimationCurve(
+        public static SetAnimationCurveResult RemoveCurve(
             [CliArg("clip", "Reference to the AnimationClip to edit (path / guid / globalId).", Required = true)] ObjectRef clip,
             [CliArg("path", "GameObject path relative to the animated root the binding lives on. Empty string (default) targets the root.")] string path = "",
             [CliArg("type", "Component type of the binding to remove, e.g. \"Transform\". Resolved via the component TypeResolver.", Required = true)] string type = null,

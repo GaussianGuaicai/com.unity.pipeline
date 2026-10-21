@@ -160,7 +160,7 @@ namespace Unity.Pipeline
 #endif
         }
 
-        /// <summary>Load a compiled assembly from raw bytes (used by the code-reload/eval compilers).</summary>
+        /// <summary>Load a compiled assembly from raw bytes (used by the method-reload/eval compilers).</summary>
         /// <param name="bytes">The assembly image.</param>
         /// <param name="pdb">The matching portable PDB, if any.</param>
         /// <returns>The loaded assembly.</returns>

@@ -18,7 +18,9 @@ namespace Unity.Pipeline.Runtime.Commands
     /// </summary>
     static class EvalTelemetryCommand
     {
-        [CliCommand("report_evals",
+        const string Group = "diagnostics";
+
+        [CliGroupCommand(Group,
             "Aggregate local eval-usage telemetry into a ranked report: API fingerprint frequency, one-liner percentage, error rate, and command-coverage suggestions.",
             MainThreadRequired = false,
             Tags = new[] { "observability/eval_usage" })]
@@ -34,8 +36,7 @@ namespace Unity.Pipeline.Runtime.Commands
 
             // Cross-reference against the live catalog. Discovery is already warm (the server queried
             // it to route this very request), so this reads the cache and touches no main-thread API.
-            var availableCommands = new HashSet<string>(
-                CommandRegistry.DiscoverCommands().Select(c => c.Name));
+            var availableCommands = new HashSet<string>(CommandRegistry.DiscoverCommands().Select(c => c.FullName));
 
             return EvalUsageAggregator.Build(records, availableCommands, topUncoveredLimit: top, fingerprintLimit: top);
         }

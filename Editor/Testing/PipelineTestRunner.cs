@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Unity.Pipeline.Commands;
 using UnityEditor;
 using UnityEditor.TestTools.TestRunner.Api;
 using UnityEngine;
@@ -23,8 +24,10 @@ namespace Unity.Pipeline.Editor.Testing
 #endif
     static class PipelineTestRunner
     {
-        private const string TestRequestFile = "Temp/pipeline_test_request.json";
-        private const string TestStatusFile = "Temp/pipeline_test_status.json";
+        // Consts are inlined at compile time, so PipelineTestReloader can read them without
+        // loading this class (whose fields need UnityEditor.TestRunner to resolve).
+        internal const string TestRequestFile = "Temp/pipeline_test_request.json";
+        internal const string TestStatusFile = "Temp/pipeline_test_status.json";
 
         private static TestRunnerApi m_ActiveApi;
         private static TestResultCollector m_ActiveCollector;
@@ -37,7 +40,7 @@ namespace Unity.Pipeline.Editor.Testing
         /// <param name="filterType">"testname", "assembly", or "category".</param>
         /// <param name="includeExplicit">Whether to include tests/fixtures marked [Explicit].</param>
         /// <param name="asyncMode">Run asynchronously, returning immediately with a status path to poll.</param>
-        /// <param name="timeoutSeconds">Timeout for synchronous execution.</param>
+        /// <param name="timeout">Timeout for synchronous execution.</param>
         /// <returns>The test execution response.</returns>
         public static async Task<TestExecutionResponse> ExecuteTestsAsync(
             string mode,
@@ -45,7 +48,7 @@ namespace Unity.Pipeline.Editor.Testing
             string filterType,
             bool includeExplicit,
             bool asyncMode,
-            int timeoutSeconds)
+            TimeSpan timeout)
         {
             try
             {
@@ -69,11 +72,11 @@ namespace Unity.Pipeline.Editor.Testing
                 if (parsedMode.IsAll)
                 {
                     // Handle "all" mode by running both editor and playmode tests
-                    return await ExecuteAllModesAsync(filter, normalizedFilterType, includeExplicit, asyncMode, timeoutSeconds);
+                    return await ExecuteAllModesAsync(filter, normalizedFilterType, includeExplicit, asyncMode, timeout);
                 }
                 else if (asyncMode)
                 {
-                    return await ExecuteAsyncMode(parsedMode.TestMode, filter, normalizedFilterType, includeExplicit, timeoutSeconds);
+                    return await ExecuteAsyncMode(parsedMode.TestMode, filter, normalizedFilterType, includeExplicit, timeout);
                 }
                 else if (parsedMode.TestMode == TestMode.PlayMode)
                 {
@@ -82,12 +85,12 @@ namespace Unity.Pipeline.Editor.Testing
                     // with guidance instead of hanging until the connection resets.
                     return CreateErrorResponse(
                         "PlayMode tests cannot run synchronously over HTTP: entering play mode triggers a " +
-                        "domain reload that drops the request. Re-run asynchronously (run_tests --mode " +
-                        "playmode --async_tests) and poll the test_status command for results.");
+                        $"domain reload that drops the request. Re-run asynchronously ({CommandNames.TestRun} --mode " +
+                        $"playmode --async_tests) and poll the {CommandNames.TestStatus} command for results.");
                 }
                 else
                 {
-                    return await ExecuteSyncMode(parsedMode.TestMode, filter, normalizedFilterType, includeExplicit, timeoutSeconds);
+                    return await ExecuteSyncMode(parsedMode.TestMode, filter, normalizedFilterType, includeExplicit, timeout);
                 }
             }
             catch (Exception ex)
@@ -105,7 +108,7 @@ namespace Unity.Pipeline.Editor.Testing
             string filterType,
             bool includeExplicit,
             bool asyncMode,
-            int timeoutSeconds)
+            TimeSpan timeout)
         {
             if (asyncMode)
             {
@@ -119,7 +122,7 @@ namespace Unity.Pipeline.Editor.Testing
                 // EditMode runs synchronously over HTTP (no domain reload), so its results are
                 // returned in this response.
                 Debug.Log("[PipelineTestRunner] Running editor tests (all mode)...");
-                var editorResponse = await ExecuteSyncMode(TestMode.EditMode, filter, filterType, includeExplicit, timeoutSeconds);
+                var editorResponse = await ExecuteSyncMode(TestMode.EditMode, filter, filterType, includeExplicit, timeout);
 
                 if (!editorResponse.Success)
                 {
@@ -130,7 +133,7 @@ namespace Unity.Pipeline.Editor.Testing
                 // reload that drops the request), so start it asynchronously and hand back a
                 // StatusPath. The caller polls the test_status command for the playmode results.
                 Debug.Log("[PipelineTestRunner] Starting playmode tests asynchronously (all mode)...");
-                var playmodeStart = await ExecuteAsyncMode(TestMode.PlayMode, filter, filterType, includeExplicit, timeoutSeconds);
+                var playmodeStart = await ExecuteAsyncMode(TestMode.PlayMode, filter, filterType, includeExplicit, timeout);
 
                 if (!playmodeStart.Success)
                 {
@@ -142,7 +145,7 @@ namespace Unity.Pipeline.Editor.Testing
                 return new TestExecutionResponse
                 {
                     Success = true,
-                    Command = "run_tests",
+                    Command = CommandNames.TestRun,
                     Duration = Math.Round(duration, 2),
                     Mode = "All",
                     FilterApplied = string.IsNullOrEmpty(filter) ? null : $"{filterType}: {filter}",
@@ -152,7 +155,7 @@ namespace Unity.Pipeline.Editor.Testing
                     Result = "playmode_running",
                     StatusPath = playmodeStart.StatusPath,
                     Message = $"EditMode complete: {editorResponse.Summary.Passed}/{editorResponse.Summary.Total} passed. " +
-                              "PlayMode tests started asynchronously — poll the test_status command for their results.",
+                              $"PlayMode tests started asynchronously — poll the {CommandNames.TestStatus} command for their results.",
                     ExecutedAt = DateTime.UtcNow
                 };
             }
@@ -171,7 +174,7 @@ namespace Unity.Pipeline.Editor.Testing
             string filter,
             string filterType,
             bool includeExplicit,
-            int timeoutSeconds)
+            TimeSpan timeout)
         {
             var startTime = DateTime.UtcNow;
             var api = ScriptableObject.CreateInstance<TestRunnerApi>();
@@ -181,7 +184,7 @@ namespace Unity.Pipeline.Editor.Testing
             m_ActiveCollector = collector;
 
             // Set up timeout cancellation
-            using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds)))
+            using (var cts = new CancellationTokenSource(PipelineTimeout.StopBefore(timeout)))
             {
                 cts.Token.Register(() =>
                 {
@@ -206,16 +209,17 @@ namespace Unity.Pipeline.Editor.Testing
                         File.WriteAllText(TestRequestFile, JsonConvert.SerializeObject(request));
                     }
 
-                    // Execute tests and wait for completion
+                    // Execute tests and wait for completion, or for the timeout: an invalidated
+                    // collector never reports the run finished, so the timeout ends the wait.
                     var completionTask = ExecuteTestsInternal(api, collector, testMode, filter, filterType, includeExplicit);
-                    var resultAdaptor = await completionTask;
+                    var resultAdaptor = await AwaitUnlessCanceled(completionTask, cts.Token);
 
                     // Build response
                     var duration = (DateTime.UtcNow - startTime).TotalSeconds;
                     var response = new TestExecutionResponse
                     {
                         Success = true,
-                        Command = "run_tests",
+                        Command = CommandNames.TestRun,
                         Duration = Math.Round(duration, 2),
                         Mode = testMode.ToString(),
                         FilterApplied = string.IsNullOrEmpty(filter) ? null : $"{filterType}: {filter}",
@@ -239,7 +243,7 @@ namespace Unity.Pipeline.Editor.Testing
                 }
                 catch (OperationCanceledException)
                 {
-                    return CreateErrorResponse("Test execution timed out");
+                    return CreateErrorResponse($"Test execution timed out ({PipelineTimeout.Describe(timeout)} timeout)");
                 }
                 catch (Exception ex)
                 {
@@ -264,7 +268,7 @@ namespace Unity.Pipeline.Editor.Testing
             string filter,
             string filterType,
             bool includeExplicit,
-            int timeoutSeconds)
+            TimeSpan timeout)
         {
             try
             {
@@ -293,7 +297,7 @@ namespace Unity.Pipeline.Editor.Testing
                 return Task.FromResult(new TestExecutionResponse
                 {
                     Success = true,
-                    Command = "run_tests",
+                    Command = CommandNames.TestRun,
                     Result = "running",
                     StatusPath = TestStatusFile,
                     Mode = testMode.ToString(),
@@ -307,6 +311,21 @@ namespace Unity.Pipeline.Editor.Testing
                 Debug.LogError($"[PipelineTestRunner] Async setup error: {ex.Message}");
                 return Task.FromResult(CreateErrorResponse($"Failed to start async test execution: {ex.Message}"));
             }
+        }
+
+        /// <summary>
+        /// Awaits <paramref name="task"/>, or throws <see cref="OperationCanceledException"/> as soon
+        /// as <paramref name="token"/> fires, whichever comes first.
+        /// </summary>
+        internal static async Task<T> AwaitUnlessCanceled<T>(Task<T> task, CancellationToken token)
+        {
+            var canceled = new TaskCompletionSource<bool>();
+            using (token.Register(() => canceled.TrySetResult(true)))
+            {
+                if (await Task.WhenAny(task, canceled.Task) != task)
+                    throw new OperationCanceledException(token);
+            }
+            return await task;
         }
 
         /// <summary>
@@ -474,19 +493,8 @@ namespace Unity.Pipeline.Editor.Testing
             }
         }
 
-        /// <summary>
-        /// Called after domain reload to resume pending tests
-        /// </summary>
-        [InitializeOnLoad]
-        public static class TestReloader
-        {
-            static TestReloader()
-            {
-                EditorApplication.delayCall += CheckForPendingTests;
-            }
-        }
-
-        /// <summary>Resume any test run that was in flight before a domain reload dropped it.</summary>
+        /// <summary>Resume any test run that was in flight before a domain reload dropped it.
+        /// Invoked by <see cref="PipelineTestReloader"/>, which checks the request files first.</summary>
         public static void CheckForPendingTests()
         {
             if (!File.Exists(TestRequestFile)) return;
@@ -674,7 +682,7 @@ namespace Unity.Pipeline.Editor.Testing
             return new TestExecutionResponse
             {
                 Success = false,
-                Command = "run_tests",
+                Command = CommandNames.TestRun,
                 Error = message,
                 Results = new List<TestResult>(),
                 Summary = new TestSummary(),
@@ -702,7 +710,7 @@ namespace Unity.Pipeline.Editor.Testing
             {
                 var server = PipelineServerStartup.Server;
                 var root = Path.GetDirectoryName(Application.dataPath);
-                var descriptor = Unity.Pipeline.Models.InstanceDescriptor.ReadFromProjectRoot(root);
+                var descriptor = Unity.Pipeline.Models.EditorInstanceDescriptor.ReadFromProjectRoot(root);
 
                 var disrupted = server == null
                                 || !server.IsRunning

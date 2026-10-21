@@ -13,30 +13,32 @@ namespace Unity.Pipeline.Runtime.Commands
     /// </summary>
     static class CodeEvalCommand
     {
-        [CliCommand("eval", "Evaluate C# code dynamically using Roslyn compiler", MainThreadRequired = true, Tags = new[] { "scripts/eval" })]
-        public static EvalResponse EvaluateCode(
+        const string Group = "script";
+
+        [CliGroupCommand(Group, "Evaluate C# code dynamically using Roslyn compiler", MainThreadRequired = true, Tags = new[] { "scripts/eval" })]
+        public static EvalResponse Eval(
             [CliArg("code", "C# code to evaluate", Required = true)] string code,
-            [CliArg("timeout", "Timeout in milliseconds")] int timeout = 5000)
+            [CliArg("timeout", "Timeout in seconds")] double timeoutInSeconds = 30)
         {
             if (string.IsNullOrWhiteSpace(code))
-                return RejectedEval("eval", code, "Code parameter is required and cannot be empty");
+                return RejectedEval(CommandNames.ScriptEval, code, "Code parameter is required and cannot be empty");
 
-            return EvaluateSource(code, timeout, "eval");
+            return EvaluateSource(code, PipelineTimeout.FromSeconds(timeoutInSeconds), CommandNames.ScriptEval);
         }
 
-        [CliCommand("eval_file", "Evaluate C# code read from a .cs file on disk", MainThreadRequired = true, Tags = new[] { "scripts/eval" })]
-        public static EvalResponse EvaluateFile(
+        [CliGroupCommand(Group, "Evaluate C# code read from a .cs file on disk", MainThreadRequired = true, Tags = new[] { "scripts/eval" })]
+        public static EvalResponse EvalFile(
             [CliArg("file", "Path to a .cs file to evaluate", Required = true)] string file,
-            [CliArg("timeout", "Timeout in milliseconds")] int timeout = 5000)
+            [CliArg("timeout", "Timeout in seconds")] double timeoutInSeconds = 30)
         {
             if (string.IsNullOrWhiteSpace(file))
-                return RejectedEval("eval_file", null, "File parameter is required and cannot be empty");
+                return RejectedEval(CommandNames.ScriptEvalFile, null, "File parameter is required and cannot be empty");
 
             if (!file.EndsWith(".cs", StringComparison.OrdinalIgnoreCase))
-                return RejectedEval("eval_file", null, "File must have a .cs extension");
+                return RejectedEval(CommandNames.ScriptEvalFile, null, "File must have a .cs extension");
 
             if (!System.IO.File.Exists(file))
-                return RejectedEval("eval_file", null, $"File not found: {file}");
+                return RejectedEval(CommandNames.ScriptEvalFile, null, $"File not found: {file}");
 
             string code;
             try
@@ -45,13 +47,13 @@ namespace Unity.Pipeline.Runtime.Commands
             }
             catch (Exception ex)
             {
-                return RejectedEval("eval_file", null, $"Failed to read file: {ex.Message}");
+                return RejectedEval(CommandNames.ScriptEvalFile, null, $"Failed to read file: {ex.Message}");
             }
 
             if (string.IsNullOrWhiteSpace(code))
-                return RejectedEval("eval_file", code, $"File is empty: {file}");
+                return RejectedEval(CommandNames.ScriptEvalFile, code, $"File is empty: {file}");
 
-            return EvaluateSource(code, timeout, "eval_file");
+            return EvaluateSource(code, PipelineTimeout.FromSeconds(timeoutInSeconds), CommandNames.ScriptEvalFile);
         }
 
         /// <summary>
@@ -77,53 +79,35 @@ namespace Unity.Pipeline.Runtime.Commands
             return EvalResponse.EvalFailure("Bad Request", errorDetails);
         }
 
-        /// <summary>Upper bound on a single eval's timeout — 24 hours (CLI-335; was 30s).</summary>
-        private const int MaxTimeoutMs = 86_400_000;
-
         /// <summary>
         /// Shared evaluation path: compiles and executes the given C# source and returns the
         /// response. Both the <c>eval</c> and <c>eval_file</c> commands funnel their resolved
         /// source string into here. Each invocation is recorded to local eval-usage telemetry
         /// (AUTHAPI-29) on a best-effort basis before returning.
         /// </summary>
-        private static EvalResponse EvaluateSource(string code, int timeout, string commandName)
+        private static EvalResponse EvaluateSource(string code, TimeSpan timeout, string commandName)
         {
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
             EvalResponse response;
 
             try
             {
-                // Validate timeout
-                // Cap raised from 30000ms (CLI-335): long evals are now legitimate — clients
-                // set custom timeouts or run detached jobs and reattach. 24h bounds abuse.
-                // (Supersedes the interim 300000ms raise from UUM-148641.)
-                if (timeout <= 0 || timeout > MaxTimeoutMs)
+                // Execute compilation and evaluation. We're already on the main thread
+                // (MainThreadRequired = true), so call the synchronous path directly.
+                var result = EvalCodeCompiler.CompileAndExecuteOnMainThread(code, timeout, null);
+
+                stopwatch.Stop();
+
+                // Update execution time
+                if (result != null)
                 {
-                    stopwatch.Stop();
-                    response = EvalResponse.EvalFailure(
-                        "Bad Request",
-                        $"Timeout must be between 1ms and {MaxTimeoutMs}ms",
-                        stopwatch.ElapsedMilliseconds);
+                    result.ExecutionTimeMs = stopwatch.ElapsedMilliseconds;
                 }
-                else
-                {
-                    // Execute compilation and evaluation. We're already on the main thread
-                    // (MainThreadRequired = true), so call the synchronous path directly.
-                    var result = EvalCodeCompiler.CompileAndExecuteOnMainThread(code, timeout, null);
 
-                    stopwatch.Stop();
-
-                    // Update execution time
-                    if (result != null)
-                    {
-                        result.ExecutionTimeMs = stopwatch.ElapsedMilliseconds;
-                    }
-
-                    response = result ?? EvalResponse.EvalFailure(
-                        "Unknown Error",
-                        "Compilation returned null result",
-                        stopwatch.ElapsedMilliseconds);
-                }
+                response = result ?? EvalResponse.EvalFailure(
+                    "Unknown Error",
+                    "Compilation returned null result",
+                    stopwatch.ElapsedMilliseconds);
             }
             catch (Exception ex)
             {

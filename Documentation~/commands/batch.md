@@ -1,10 +1,10 @@
 # Batch command
 
-The `batch` command runs several existing pipeline commands in a single request, with cross-operation result references, atomic Undo, and dry-run validation. It exists to collapse the round-trips of a "create → add components → wire fields" job (otherwise 10–90 sequential calls) into one request, and to add what `eval` structurally lacks: **transactionality and rollback**, so a failure mid-way never leaves partial state on a user-owned scene.
+The `job batch` command runs several existing pipeline commands in a single request, with cross-operation result references, atomic Undo, and dry-run validation. It exists to collapse the round-trips of a "create → add components → wire fields" job (otherwise 10–90 sequential calls) into one request, and to add what `eval` structurally lacks: **transactionality and rollback**, so a failure mid-way never leaves partial state on a user-owned scene.
 
-**Scope guard:** `batch` is transactional object CRUD with references. It intentionally has **no** `invoke`/loop/conditional op types — arbitrary logic belongs in code-on-disk (`run_script`/`eval`), not in JSON. This keeps the command surface auditable and allowlistable.
+**Scope guard:** `job batch` is transactional object CRUD with references. It intentionally has **no** `invoke`/loop/conditional op types — arbitrary logic belongs in code-on-disk (`script run`/`script eval`), not in JSON. This keeps the command surface auditable and allowlistable.
 
-### `batch`
+### `job batch`
 Run multiple registered commands in one transactional request.
 
 | Parameter | Required | Default | Description |
@@ -14,7 +14,7 @@ Run multiple registered commands in one transactional request.
 | `on_error` | no | `abort` | `abort`: stop at the first failing op. `continue`: run every op, collecting per-op errors (forces `transactional=false`). |
 | `dry_run` | no | `false` | Validate command names, parameters, reference topology, and excluded/non-batchable commands without mutating anything. |
 | `result_fields` | no | – | Optional per-op result projection: a map of op id-or-index → array of result field paths to keep (context economy). |
-| `time_budget_ms` | no | `50000` | Cooperative time budget for the whole batch, in milliseconds (max 3600000). Checked before each op after the first; when exhausted, the remaining ops are skipped and a transactional batch rolls back. |
+| `timeout` | no | `60` | Timeout for the whole batch, in seconds. Checked before each op after the first; when it is about to run out, the remaining ops are skipped and a transactional batch rolls back. |
 
 **Returns:** `BatchResult` — `{ results: [{ id?, command, success, result? | error?, skipped?, resultTruncated?, revertible? }], applied, reverted, transactional, onError, error?, undoGroup?, dryRun?, valid? }`. The batch-level `error` is set only for aborts not attributable to a single op ("batch time budget exceeded", "batch canceled").
 
@@ -25,11 +25,11 @@ Run multiple registered commands in one transactional request.
 Each entry of `operations` is:
 
 ```json
-{ "id": "createHead", "command": "add_component", "params": { "target": "$root.instanceId", "type": "Rigidbody" } }
+{ "id": "createHead", "command": "component add", "params": { "target": "$root.instanceId", "type": "Rigidbody" } }
 ```
 
 - `id` (optional) — a name for referencing this op's result from a later op. Must be unique within the batch and match `^[A-Za-z_][A-Za-z0-9_-]*$` (purely numeric ids would be ambiguous with index selectors, and `.` collides with the reference path separator).
-- `command` — the registered command to run (any command except the non-batchable ones below).
+- `command` — the registered command to run, written as `<group> <name>`, such as `gameobject create` (any command except the non-batchable ones below). It is resolved the way a raw request names a command: a group followed by a name in it (see [Connectivity](../connectivity.md#how-a-raw-request-names-its-command)). A group alone is refused as not a command. Results and errors name the command as `<group> <name>` however it was written.
 - `params` — the command's parameters, same shape as `/api/exec` `parameters`. Operations are **always** `command` + `params`; the `argv`/`commandLine` raw forms are exec-only and are not accepted inside a batch operation.
 
 #### Cross-operation references
@@ -54,9 +54,9 @@ Example — create a GameObject, add a Rigidbody to it, then set the Rigidbody's
 ```json
 {
   "operations": [
-    { "command": "create_gameobject", "params": { "name": "Ball" } },
-    { "command": "add_component", "params": { "target": "$0.instanceId", "type": "Rigidbody" } },
-    { "command": "set_serialized_field", "params": { "target": "$1.instanceId", "field": "m_Mass", "value": 2.5 } }
+    { "command": "gameobject create", "params": { "name": "Ball" } },
+    { "command": "component add", "params": { "target": "$0.instanceId", "type": "Rigidbody" } },
+    { "command": "component set_field", "params": { "target": "$1.instanceId", "field": "m_Mass", "value": 2.5 } }
   ]
 }
 ```
@@ -71,19 +71,19 @@ Rollback is only real for **Undo-tracked** mutations (scene objects, components,
 
 The non-revertible set (v1 — a curated list, pending per-command `Revertible` metadata):
 
-- **Assets & files:** `create_asset`, `import_asset`, `move_asset`, `copy_asset`, `rename_asset`, `delete_asset`, `create_folder`, `set_import_settings`, `write_text_file`, `create_script`
-- **Prefab assets:** `create_prefab`, `create_prefab_variant`, `apply_prefab_overrides`, `save_prefab_contents` (scene-side prefab ops — `instantiate_prefab`, `unpack_prefab`, `revert_prefab_overrides` — are Undo-tracked and stay fully batchable)
-- **Scene persistence & build list:** `save_scene`, `save_all`, `add_scene_to_build`, `remove_scene_from_build`, `set_build_settings`
-- **Settings:** `set_audio_settings`, `set_graphics_settings`, `set_input_settings`, `set_lighting_settings`, `set_navmesh_settings`, `set_physics_settings`, `set_player_settings`, `set_quality_settings`, `set_tags_layers`, `set_time_settings`, `set_authoring_root`
-- **Animation / Timeline assets:** `create_animation_clip`, `set_animation_curve`, `remove_animation_curve`, `create_animator_controller`, `add_animator_layer`, `add_animator_parameter`, `add_animator_state`, `add_animator_transition`, `create_timeline`, `add_timeline_track`, `add_timeline_clip`
-- **Materials:** `set_material_properties` (persists the `.mat` asset to disk)
-- **Baking:** `bake_lighting`, `clear_baked_lighting`, `bake_navmesh`, `bake_navmesh_surfaces`, `clear_navmesh`, `bake_occlusion_culling`, `clear_occlusion_culling`
+- **Assets & files:** `asset create`, `asset import`, `asset move`, `asset copy`, `asset rename`, `asset delete`, `asset create_folder`, `asset set_import_settings`, `asset write_text`, `script create`
+- **Prefab assets:** `prefab create`, `prefab create_variant`, `prefab apply_overrides`, `prefab save_contents` (scene-side prefab ops — `prefab instantiate`, `prefab unpack`, `prefab revert_overrides` — are Undo-tracked and stay fully batchable)
+- **Scene persistence & build list:** `scene save`, `editor save_all`, `scene add_to_build`, `scene remove_from_build`, `build set_settings`
+- **Settings:** `settings.audio set`, `settings.graphics set`, `settings.input set`, `lighting set_settings`, `navmesh set_settings`, `settings.physics set`, `settings.player set`, `settings.quality set`, `settings.tags_layers set`, `settings.time set`, `authoring set_root`, `editor.playmode set_run_in_background`
+- **Animation / Timeline assets:** `animation.clip create`, `animation.clip set_curve`, `animation.clip remove_curve`, `animation.animator create_controller`, `animation.animator add_layer`, `animation.animator add_parameter`, `animation.animator add_state`, `animation.animator add_transition`, `animation.timeline create`, `animation.timeline add_track`, `animation.timeline add_clip`
+- **Materials:** `material set_properties` (persists the `.mat` asset to disk)
+- **Baking:** `lighting bake`, `lighting clear_bake`, `navmesh bake`, `navmesh bake_surfaces`, `navmesh clear_bake`, `occlusion bake`, `occlusion clear_bake`
 
-`open_scene` and `create_scene` are **always** rejected inside a batch (even with `transactional: false`): they clear the Editor Undo stack, which would silently destroy the batch's ability to revert anything that ran before them.
+`scene open` and `scene create` are **always** rejected inside a batch (even with `transactional: false`): they clear the Editor Undo stack, which would silently destroy the batch's ability to revert anything that ran before them.
 
 #### Timing, budget and cancellation
 
-The batch executes in a **single main-thread turn** — the Editor UI is frozen for its duration, bounded by `time_budget_ms` (frame-spanning execution is future work). The elapsed time is checked cooperatively before each op after the first; when the budget is exhausted, the remaining ops are reported `skipped: true`, the batch-level `error` is set to "batch time budget exceeded", and a transactional batch rolls back. For long batches, submit the request as a detached job (`"job": true` on `/api/exec`) and raise `time_budget_ms` — jobs also make the batch cancelable: cooperative cancellation (`POST /api/job/cancel`) is checked between ops and aborts the batch the same way ("batch canceled"). Per-op progress is reported (`op i/n: <command>`) and visible via `GET /api/progress`.
+The batch executes in a **single main-thread turn** — the Editor UI is frozen for its duration, bounded by `timeout` (frame-spanning execution is future work). The elapsed time is checked cooperatively before each op after the first; when the timeout is about to run out, the remaining ops are reported `skipped: true`, the batch-level `error` is set to "batch timeout about to run out", and a transactional batch rolls back. For long batches, submit the request as a detached job (`"job": true` on `/api/exec`), which has no timeout — jobs also make the batch cancelable: cooperative cancellation (`POST /api/job/cancel`) is checked between ops and aborts the batch the same way ("batch canceled"). Per-op progress is reported (`op i/n: <command>`) and visible via `GET /api/progress`.
 
 #### Dry run
 
@@ -93,10 +93,10 @@ The batch executes in a **single main-thread turn** — the Editor UI is frozen 
 
 The following are rejected with a structured `not_batchable` error:
 
-- **Out of scope:** `build`, `switch_build_target`, `package_*`, `editor_play`/`editor_stop`/`editor_pause`, `recompile`
-- **Arbitrary code:** `eval`, `eval_file`, `run_script`, and nested `batch`
-- **Modal-dialog hazard:** `menu` (menu items can open modal dialogs that wedge an unattended batch)
-- **Cannot make progress:** synchronous `wait_for` — the batch holds the main thread for its whole turn, so the editor state a condition watches cannot change; the wait would just burn its timeout inside the batch. Run an async `wait_for` before/after the batch instead (`wait_status`/`wait_cancel` are quick reads and stay batchable)
-- **Undo-stack wipe:** `open_scene`, `create_scene`
-- **Async commands** (`run_tests`, `list_tests`, and any command returning `Task`): they are completed by `EditorApplication.update` callbacks, which cannot fire while the batch holds the main thread — dispatching one would freeze the Editor permanently
-- **Runtime-only commands** (e.g. `set_timescale`): they belong to the Player server surface and cannot execute on the editor server
+- **Out of scope:** `build run`, `build.target switch`, every command in the `package` group, `editor.playmode start`/`editor.playmode stop`/`editor.playmode pause`, `script recompile`
+- **Arbitrary code:** `script eval`, `script eval_file`, `script run`, and nested `job batch`
+- **Modal-dialog hazard:** `editor invoke_menu` (menu items can open modal dialogs that wedge an unattended batch)
+- **Cannot make progress:** synchronous `job wait` — the batch holds the main thread for its whole turn, so the editor state a condition watches cannot change; the wait would just burn its timeout inside the batch. Run an async `job wait` before/after the batch instead (`job wait_status`/`job wait_cancel` are quick reads and stay batchable)
+- **Undo-stack wipe:** `scene open`, `scene create`
+- **Async commands** (`test run`, `test list`, and any command returning `Task`): they are completed by `EditorApplication.update` callbacks, which cannot fire while the batch holds the main thread — dispatching one would freeze the Editor permanently
+- **Runtime-only commands** (e.g. `runtime set_time_scale`): they belong to the Player server surface and cannot execute on the editor server

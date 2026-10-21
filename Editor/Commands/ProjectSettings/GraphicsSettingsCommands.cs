@@ -13,19 +13,20 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
     /// </summary>
     static class GraphicsSettingsCommands
     {
-        const string Group = "graphics";
+        const string Domain = "graphics";
+        const string Group = "settings." + Domain;
 
-        [CliCommand("get_graphics_settings", "Read GraphicsSettings (default render pipeline).", MainThreadRequired = true, Tags = new[] { "settings/graphics" })]
-        public static ProjectSettingsResponse Get() => ProjectSettingsCommand.Get(Group, Read);
+        [CliGroupCommand(Group, "Read GraphicsSettings (default render pipeline).", MainThreadRequired = true, Tags = new[] { "settings/graphics" })]
+        public static ProjectSettingsResponse Get() => ProjectSettingsCommand.Get(Domain, Read);
 
-        [CliCommand("set_graphics_settings", "Set the default render pipeline asset. Requires confirm=true; use dry_run to preview. Not undoable via Ctrl+Z.", MainThreadRequired = true, Tags = new[] { "settings/graphics" })]
+        [CliGroupCommand(Group, "Set the default render pipeline asset. Requires confirm=true; use dry_run to preview. Not undoable via Ctrl+Z.", MainThreadRequired = true, Tags = new[] { "settings/graphics" })]
         public static ProjectSettingsResponse Set(
             [CliArg("settings", "Fields to change; omitted fields are left unchanged.")] GraphicsSettingsInput settings = null,
             [CliArg("confirm", "Apply the change. Without it the call is refused.")] bool confirm = false,
             [CliArg("dry_run", "Preview the change without applying it.")] bool dryRun = false)
         {
             if (settings == null)
-                return ProjectSettingsResponse.Fail(Group, "No 'settings' object provided.");
+                return ProjectSettingsResponse.Fail(Domain, "No 'settings' object provided.");
 
             // omitted (null) = leave unchanged; an empty reference = built-in pipeline; otherwise a
             // handle to a RenderPipelineAsset resolved through the shared ObjectResolver.
@@ -36,10 +37,10 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
             if (!settings.RenderPipelineAsset.IsEmpty)
             {
                 if (!ObjectResolver.TryResolve(settings.RenderPipelineAsset, out var obj, out var resolveError))
-                    return ProjectSettingsResponse.Fail(Group, resolveError);
+                    return ProjectSettingsResponse.Fail(Domain, resolveError);
                 asset = obj as RenderPipelineAsset;
                 if (asset == null)
-                    return ProjectSettingsResponse.Fail(Group, $"'{settings.RenderPipelineAsset}' is not a RenderPipelineAsset.");
+                    return ProjectSettingsResponse.Fail(Domain, $"'{settings.RenderPipelineAsset}' is not a RenderPipelineAsset.");
             }
 
             var current = GraphicsSettings.defaultRenderPipeline;
@@ -56,12 +57,12 @@ namespace Unity.Pipeline.Editor.Commands.ProjectSettings
                 AssetDatabase.SaveAssets();
             }
 
-            return ProjectSettingsCommand.Apply(Group, confirm, dryRun, settings, () => planText, Apply, Read);
+            return ProjectSettingsCommand.Apply(Domain, confirm, dryRun, settings, () => planText, Apply, Read);
         }
 
         static ProjectSettingsResponse NoChanges()
         {
-            var response = ProjectSettingsCommand.Get(Group, Read);
+            var response = ProjectSettingsCommand.Get(Domain, Read);
             response.Message = "No changes specified; nothing to apply.";
             return response;
         }

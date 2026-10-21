@@ -35,7 +35,32 @@ namespace Unity.Pipeline.Models
         public string PlayMode { get; set; }
 
         /// <summary>
-        /// Timestamp of last heartbeat update
+        /// <c>Time.frameCount</c> as last sampled, present only in Play mode. Two reads within one
+        /// frame can match on a healthy loop, so read <see cref="PlayerLoopTicking"/> for the verdict,
+        /// or compare reads at least a second apart.
+        /// </summary>
+        [JsonProperty("frameCount", NullValueHandling = NullValueHandling.Ignore)]
+        public int? FrameCount { get; set; }
+
+        /// <summary>
+        /// Whether the frame count advanced within the last second, present only in Play mode.
+        /// False while paused, and while the player loop is frozen in an unfocused Editor.
+        /// </summary>
+        [JsonProperty("playerLoopTicking", NullValueHandling = NullValueHandling.Ignore)]
+        public bool? PlayerLoopTicking { get; set; }
+
+        /// <summary>
+        /// Whether Application.runInBackground is on, i.e. the Editor keeps running the player loop
+        /// while unfocused. Always present in editor status. This is the setting;
+        /// <see cref="PlayerLoopTicking"/> is whether frames are actually advancing, which also covers
+        /// pause and a stalled loop.
+        /// </summary>
+        [JsonProperty("runInBackground")]
+        public bool RunInBackground { get; set; }
+
+        /// <summary>
+        /// When this response was produced (UTC). Not the descriptor's <c>lastHeartbeat</c>, which is
+        /// what clients use to judge staleness.
         /// </summary>
         [JsonProperty("lastHeartbeat")]
         public DateTime LastHeartbeat { get; set; }
@@ -58,5 +83,17 @@ namespace Unity.Pipeline.Models
         /// </summary>
         [JsonProperty("dialog", NullValueHandling = NullValueHandling.Ignore)]
         public object Dialog { get; set; }
+
+        /// <summary>
+        /// Multiplayer Play Mode role of the responding instance: "main" or "clone".
+        /// </summary>
+        [JsonProperty("role")]
+        public string Role { get; set; }
+
+        /// <summary>
+        /// Human-readable name of the responding instance (e.g. "Main Editor", "Player 2").
+        /// </summary>
+        [JsonProperty("instanceName")]
+        public string InstanceName { get; set; }
     }
 }

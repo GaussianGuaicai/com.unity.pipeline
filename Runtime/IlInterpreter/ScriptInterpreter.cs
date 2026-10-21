@@ -52,12 +52,12 @@ sealed partial class ScriptInterpreter : IDisposable
         _allocator = allocator ?? MarshalFrameAllocator.Instance;
     }
 
-    // Parse the script IL; disposes any previously loaded assembly first (code reload).
+    // Parse the script IL; disposes any previously loaded assembly first (method reload).
     // Throws ScriptValidationException if any method can't be lowered — failing at Load,
     // where the user can act on it, rather than at Invoke time.
     // lenient=true keeps loading when individual methods can't be lowered (each becomes a skipped
     // stub queryable via TryGetLoweringSkip) instead of throwing for the whole assembly — see
-    // IrLowerer.LowerAll. Code reload passes true so one bad method doesn't drop a whole file's reload.
+    // IrLowerer.LowerAll. Method reload passes true so one bad method doesn't drop a whole file's reload.
     public void Load(IScript script, bool lenient = false)
     {
         _parsed?.PdbProvider?.Dispose();
@@ -131,7 +131,7 @@ sealed partial class ScriptInterpreter : IDisposable
     }
 
     // True if the loaded script defines a method with this (simple) name. Lets callers
-    // probe for an optional entry point (e.g. a code-reload override) without catching the
+    // probe for an optional entry point (e.g. a method-reload override) without catching the
     // "method not found" exception that Invoke throws.
     public bool HasMethod(string name) => _parsed != null && _parsed.ByName.ContainsKey(name);
 
@@ -143,7 +143,7 @@ sealed partial class ScriptInterpreter : IDisposable
 
     // A method that exists but was skipped at load — Lowered==null with a reason — because it
     // couldn't be lowered under lenient loading (see Load). Its call sites throw the reason if
-    // reached, so the code-reload executor skips registering just that override instead of the file.
+    // reached, so the method-reload executor skips registering just that override instead of the file.
     public bool TryGetLoweringSkip(string methodName, out string reason)
     {
         if (_parsed != null && _parsed.ByName.TryGetValue(methodName, out var m)
@@ -1797,7 +1797,7 @@ sealed partial class ScriptInterpreter : IDisposable
         {
             var pdbReader = pdbProvider.GetMetadataReader();
             // Document handle → short file name, resolved once per document. With #line directives
-            // in the compiled source (the code-reload transform emits them), documents are the USER's
+            // in the compiled source (the method-reload transform emits them), documents are the USER's
             // files, so the name makes error locations self-locating: " at line 394 (TankAI.cs)".
             var docNames = new Dictionary<DocumentHandle, string>();
             foreach (var handle in reader.MethodDefinitions)
@@ -4151,7 +4151,7 @@ sealed partial class ScriptInterpreter : IDisposable
                     case ILOpCode.Conv_r8:
                     {
                         // Honest double now that R8 slots exist (this retires the double-as-float
-                        // divergence the analyzer guarded with MS002).
+                        // divergence the analyzer guarded with MR002).
                         var (src, st) = evalStack[sp - 1];
                         if (st == SType.R8) break;
                         int dst = AllocSlot(ref frameSize, slotTypes, slotStructs, SType.R8, null);

@@ -2,7 +2,7 @@
 
 Commands for creating, importing, moving, copying, renaming, deleting and finding project assets, plus folder and text-file operations. Every agent-supplied path is funnelled through the authoring-root sandbox (it rejects `../` and out-of-project writes); destructive or overwriting operations require `confirm=true` and support `dry_run`. AssetDatabase create/move/copy/rename/delete are not part of Unity's Undo system.
 
-### `create_asset`
+### `asset create`
 Create a new ScriptableObject (or other UnityEngine.Object) asset of the given type at a path under the authoring root.
 
 | Parameter | Required | Default | Description |
@@ -16,7 +16,7 @@ Create a new ScriptableObject (or other UnityEngine.Object) asset of the given t
 **Returns:** `AuthoringResult`
 **Notes:** `confirm=true` required to overwrite an existing asset; supports `dry_run`.
 
-### `import_asset`
+### `asset import`
 Import an external file (e.g. a texture, model, audio clip) into the project by copying it to a path under the authoring root, then importing it.
 
 | Parameter | Required | Default | Description |
@@ -29,7 +29,7 @@ Import an external file (e.g. a texture, model, audio clip) into the project by 
 **Returns:** `AuthoringResult`
 **Notes:** `confirm=true` required to overwrite an existing asset; supports `dry_run`.
 
-### `move_asset`
+### `asset move`
 Move (or rename via a new path) an asset to a new location under the authoring root. Preserves the asset's GUID.
 
 | Parameter | Required | Default | Description |
@@ -41,7 +41,7 @@ Move (or rename via a new path) an asset to a new location under the authoring r
 **Returns:** `AuthoringResult`
 **Notes:** Supports `dry_run`.
 
-### `copy_asset`
+### `asset copy`
 Copy an asset to a new path under the authoring root. The copy gets a fresh GUID.
 
 | Parameter | Required | Default | Description |
@@ -54,7 +54,7 @@ Copy an asset to a new path under the authoring root. The copy gets a fresh GUID
 **Returns:** `AuthoringResult`
 **Notes:** `confirm=true` required to overwrite an existing asset; supports `dry_run`.
 
-### `rename_asset`
+### `asset rename`
 Rename an asset in place (keeps it in the same folder, keeps its GUID).
 
 | Parameter | Required | Default | Description |
@@ -66,7 +66,7 @@ Rename an asset in place (keeps it in the same folder, keeps its GUID).
 **Returns:** `AuthoringResult`
 **Notes:** Supports `dry_run`.
 
-### `delete_asset`
+### `asset delete`
 Delete an asset from the project. Destructive: requires confirm=true.
 
 | Parameter | Required | Default | Description |
@@ -78,7 +78,7 @@ Delete an asset from the project. Destructive: requires confirm=true.
 **Returns:** `AuthoringResult`
 **Notes:** Destructive — `confirm=true` required; supports `dry_run`. Not undoable via Unity's Undo.
 
-### `find_assets`
+### `asset find`
 Find assets by type and/or name and/or label, returning their path, GUID and type. At least one filter is required.
 
 | Parameter | Required | Default | Description |
@@ -92,7 +92,7 @@ Find assets by type and/or name and/or label, returning their path, GUID and typ
 **Returns:** `FindAssetsResult`
 **Notes:** At least one of `type`, `name`, or `label` is required.
 
-### `set_import_settings`
+### `asset set_import_settings`
 Set import settings on an asset's AssetImporter (e.g. a texture's isReadable) and re-import it.
 
 | Parameter | Required | Default | Description |
@@ -104,7 +104,7 @@ Set import settings on an asset's AssetImporter (e.g. a texture's isReadable) an
 **Returns:** `SetImportSettingsResult`
 **Notes:** Supports `dry_run`. Import settings live in the asset's .meta file and are not part of Unity's Undo system.
 
-### `get_import_settings`
+### `asset get_import_settings`
 Read an asset's import settings, structured by importer type (texture/model/audio), including the default-platform fields and (for textures/audio) one platform override block.
 
 | Parameter | Required | Default | Description |
@@ -114,7 +114,7 @@ Read an asset's import settings, structured by importer type (texture/model/audi
 
 **Returns:** `GetImportSettingsResult`
 
-### `create_folder`
+### `asset create_folder`
 Create a folder under the authoring root (creates intermediate folders).
 
 | Parameter | Required | Default | Description |
@@ -123,7 +123,7 @@ Create a folder under the authoring root (creates intermediate folders).
 
 **Returns:** `AuthoringResult`
 
-### `read_text_file`
+### `asset read_text`
 Read a UTF-8 text file under the authoring root and return its contents.
 
 | Parameter | Required | Default | Description |
@@ -134,7 +134,7 @@ Read a UTF-8 text file under the authoring root and return its contents.
 **Returns:** `ReadTextFileResult`
 **Notes:** `MainThreadRequired = true`.
 
-### `write_text_file`
+### `asset write_text`
 Write UTF-8 text to a file under the authoring root, then import it. Overwriting an existing file requires confirm=true.
 
 | Parameter | Required | Default | Description |

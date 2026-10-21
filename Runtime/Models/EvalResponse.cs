@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Newtonsoft.Json;
+using Unity.Pipeline.Commands;
 
 namespace Unity.Pipeline.Models
 {
@@ -35,7 +36,7 @@ namespace Unity.Pipeline.Models
             return new EvalResponse
             {
                 Success = true,
-                Command = "eval",
+                Command = CommandNames.ScriptEval,
                 Result = result,
                 Output = output,
                 ExecutionTimeMs = executionTimeMs,
@@ -57,7 +58,7 @@ namespace Unity.Pipeline.Models
             return new EvalResponse
             {
                 Success = false,
-                Command = "eval",
+                Command = CommandNames.ScriptEval,
                 Error = error,
                 ErrorDetails = errorDetails,
                 ExecutionTimeMs = executionTimeMs,
@@ -117,7 +118,7 @@ namespace Unity.Pipeline.Models
         public int? FileLine { get; set; }
 
         /// <summary>
-        /// Trimmed text of the compiled source line the diagnostic points at. For code reload that
+        /// Trimmed text of the compiled source line the diagnostic points at. For method reload that
         /// is the generated override source, which is what actually failed to compile.
         /// </summary>
         [JsonProperty("source", NullValueHandling = NullValueHandling.Ignore)]

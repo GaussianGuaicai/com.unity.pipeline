@@ -1,6 +1,6 @@
 using System.Runtime.CompilerServices;
 
-// The IlInterpreter VM is an implementation detail of eval/code reload, not a public scripting API:
+// The IlInterpreter VM is an implementation detail of eval/method reload, not a public scripting API:
 // only the Script* exceptions are public (user code catches them from eval/reload failures).
 // Everything else is internal, visible to the package
 // assemblies that drive the VM and to the Unity test assemblies. The standalone dotnet suites

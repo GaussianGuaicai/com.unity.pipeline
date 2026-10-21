@@ -13,15 +13,18 @@ using UnityEditor.Build.Reporting;
 namespace Unity.Pipeline.Editor.BuildProcessors
 {
     /// <summary>
-    /// Build processor for runtime Pipeline support. Three responsibilities:
+    /// Build processor for runtime Pipeline support. Four responsibilities:
     ///  - Validates the RuntimePipelineConfig settings (JSON-authored, read via
     ///    RuntimePipelineConfig.Load()) before allowing builds with runtime Pipeline enabled.
     ///  - Bakes the current settings into a transient RuntimePipelineConfig Resources asset so a
     ///    Player build can find them (the authored copy stays in ProjectSettings/, never here).
-    ///  - Bakes the project's code reload scope (Assets + loaded package locations) into a
+    ///  - Bakes the project's method reload scope (Assets + loaded package locations) into a
     ///    generated RuntimePipelineBuildInfo asset. A running Player cannot resolve the project
-    ///    layout, so the absolute roots it is allowed to code reload from must be captured at build
+    ///    layout, so the absolute roots it is allowed to method reload from must be captured at build
     ///    time.
+    ///  - Keeps an editor-only Run In Background override (CLI-1432) out of builds: puts the project's
+    ///    own value back before the build (OnPreprocessBuild) and re-applies the override afterwards
+    ///    (OnPostprocessBuild). See <see cref="RestoreRunInBackgroundForBuild"/>.
     ///  Both generated assets are purged at the very start of every build (before either is
     ///  possibly rewritten) and deleted again after a successful build, so machine-specific/
     ///  duplicated data never lingers in the project — including a stale, possibly-enabled asset
@@ -40,11 +43,6 @@ namespace Unity.Pipeline.Editor.BuildProcessors
         private const string ConfigAssetPath = "Assets/Settings/Pipeline/Resources/RuntimePipelineConfig.asset";
         private const string BuildInfoAssetPath = "Assets/Settings/Pipeline/Resources/RuntimePipelineBuildInfo.asset";
 
-        // Opt-in symbol that puts the Pipeline into a build that is not a Development Build. Kept in
-        // step with the defineConstraints on Unity.Pipeline / Unity.Pipeline.IlInterpreter and on the
-        // bundled DLLs under Runtime/Plugins/CodeAnalysis: if this file and those disagree, a player
-        // gets settings assets no code can read, or Pipeline code with no settings to start from.
-        private const string EnableSymbol = "ENABLE_RUNTIME_PIPELINE";
 
         /// <summary>Verify bundled DLL integrity and validate runtime pipeline configuration before a build.</summary>
 #if UNITY_6000_3_OR_NEWER
@@ -54,6 +52,28 @@ namespace Unity.Pipeline.Editor.BuildProcessors
         /// <param name="report">The build report.</param>
         public void OnPreprocessBuild(BuildReport report)
 #endif
+        {
+#if UNITY_6000_3_OR_NEWER
+            var report = ctx?.Report;
+#endif
+            // First, before any exit path below: the project's own Run In Background value must be
+            // back in place before Unity reads Player Settings for the build, whatever else happens.
+            RestoreRunInBackgroundForBuild();
+
+            var buildOptions = report?.summary.options;
+            var namedTarget = report == null
+                ? PipelineBuildSymbols.ActiveTarget()
+                : PipelineBuildSymbols.TargetFor(report.summary.platformGroup, report.summary.GetSubtarget<StandaloneBuildSubtarget>());
+
+            Preprocess(namedTarget, buildOptions);
+        }
+
+        /// <summary>
+        /// Purges the generated assets, then bakes them again when this build contains the Pipeline.
+        /// </summary>
+        /// <param name="namedTarget">The define list this build compiles against.</param>
+        /// <param name="buildOptions">The options this build runs with, null when they are unknown.</param>
+        internal void Preprocess(NamedBuildTarget namedTarget, BuildOptions? buildOptions)
         {
             // Purge any leftovers from a previous, interrupted build before anything else in this
             // method — every exit path below (no config, disabled, not a development build,
@@ -67,31 +87,21 @@ namespace Unity.Pipeline.Editor.BuildProcessors
             // Integrity gate: fail the build if a bundled Roslyn DLL was swapped or modified.
             VerifyBundledChecksums();
 
-            var config = RuntimePipelineConfig.Load();
-            if (config == null)
+            // A build that will not contain the Pipeline assemblies cannot read the generated
+            // Resources assets, so baking them would ship dead, machine-specific data.
+            if (!PipelineIsInBuild(namedTarget, buildOptions))
             {
-                Debug.LogWarning("Pipeline: No RuntimePipelineConfig asset found (Project Settings > Pipeline > Runtime). Pipeline will be disabled in Player builds.");
+                Debug.Log("Pipeline: this build does not include the Pipeline (Project Settings > " +
+                    "Pipeline > Runtime), so its assemblies and settings are excluded from it.");
                 return;
             }
 
+            // An absent settings file means nothing was customized, not that the Pipeline is off:
+            // whether it is in the build is decided by the scripting defines above.
+            var config = RuntimePipelineConfig.Load() ?? ScriptableObject.CreateInstance<RuntimePipelineConfig>();
+
             try
             {
-                if (!config.enableInBuilds)
-                {
-                    Debug.LogWarning("Pipeline: RuntimePipelineConfig found, but enableInBuilds = false. Pipeline will be disabled in Player builds.");
-                    return;
-                }
-
-                // A build that will not contain the Pipeline assemblies cannot read the generated
-                // Resources assets, so baking them would ship dead, machine-specific data.
-                if (!PipelineIsInBuild())
-                {
-                    Debug.Log("Pipeline: enableInBuilds is on, but this build is neither a Development " +
-                        $"Build nor defines {EnableSymbol}, so the Pipeline assemblies and settings are " +
-                        "excluded from it.");
-                    return;
-                }
-
                 var validationResult = config.Validate();
                 if (!validationResult.IsValid)
                 {
@@ -104,13 +114,13 @@ namespace Unity.Pipeline.Editor.BuildProcessors
                 }
 
                 // Push signing: ensure the project key exists and bake its public half into the
-                // build info, so the player rejects any code-reload push not signed by the matching
+                // build info, so the player rejects any method-reload push not signed by the matching
                 // private key. Log the fingerprint so a later key mismatch is diagnosable from the
                 // build log alone.
                 var privateKey = PushSigningKey.LoadOrCreate(PushSigningKey.DefaultDirectory, out var keyCreated);
-                var pushPublicKey = Unity.Pipeline.CodeReload.PushEnvelope.DerivePublicKey(privateKey);
+                var pushPublicKey = Unity.Pipeline.MethodReload.PushEnvelope.DerivePublicKey(privateKey);
                 Debug.Log($"Pipeline: push-signing key {(keyCreated ? "GENERATED" : "loaded")} " +
-                          $"(fingerprint {Unity.Pipeline.CodeReload.PushEnvelope.Fingerprint(pushPublicKey)}, " +
+                          $"(fingerprint {Unity.Pipeline.MethodReload.PushEnvelope.Fingerprint(pushPublicKey)}, " +
                           $"Library/Pipeline/{PushSigningKey.KeyFileName}). This build only accepts pushes signed with it.");
 
                 WriteConfigAsset(config);
@@ -125,16 +135,38 @@ namespace Unity.Pipeline.Editor.BuildProcessors
         }
 
         /// <summary>
-        /// Whether this build will contain the Pipeline runtime assemblies, i.e. whether it satisfies
-        /// their <c>UNITY_EDITOR || ENABLE_PROFILER || ENABLE_RUNTIME_PIPELINE</c> define
-        /// constraint. A scripted build (the <c>build</c> command, which calls BuildPlayer with
-        /// <see cref="BuildOptions.Development"/>) is a development build even when the Build
-        /// Settings toggle is off, so the command's active options count too.
+        /// Whether this build will contain the Pipeline runtime assemblies, mirroring the define
+        /// constraint they carry: a build that defines <c>UNITY_INCLUDE_INSTRUMENTATION</c> or
+        /// <c>ENABLE_PROFILER</c> needs <see cref="PipelineBuildSymbols.Development"/>, any other
+        /// build needs <see cref="PipelineBuildSymbols.Release"/>.
         /// </summary>
-        private static bool PipelineIsInBuild()
+        /// <param name="namedTarget">The define list this build compiles against.</param>
+        /// <param name="buildOptions">The options this build runs with, null when they are unknown.</param>
+        private static bool PipelineIsInBuild(NamedBuildTarget namedTarget, BuildOptions? buildOptions)
         {
-            var namedTarget = NamedBuildTarget.FromBuildTargetGroup(
-                BuildPipeline.GetBuildTargetGroup(EditorUserBuildSettings.activeBuildTarget));
+            var symbol = InstrumentedOrProfiledBuild(namedTarget, buildOptions)
+                ? PipelineBuildSymbols.Development
+                : PipelineBuildSymbols.Release;
+
+            return PipelineBuildSymbols.Contains(PlayerSettings.GetScriptingDefineSymbols(namedTarget), symbol);
+        }
+
+        /// <summary>
+        /// Whether <c>UNITY_INCLUDE_INSTRUMENTATION</c> or <c>ENABLE_PROFILER</c> will be defined
+        /// for this build, which is what the assemblies' define constraints pair each settings
+        /// toggle with. Both symbols cover the same managed-code variants from 6000.6; below that
+        /// only ENABLE_PROFILER exists, and it tracks the Development Build setting.
+        /// </summary>
+        /// <param name="namedTarget">The target this build is for.</param>
+        /// <param name="buildOptions">The options this build runs with, null when they are unknown.</param>
+        internal static bool InstrumentedOrProfiledBuild(NamedBuildTarget namedTarget, BuildOptions? buildOptions)
+        {
+#if !UNITY_7000_0_OR_NEWER // ENABLE_PROFILER is ONLY defined for Instrumented managed code variant in Unity 7+ and is no longer tied to development builds
+            // Authoritative: BuildPipeline.BuildPlayer makes a development player from this flag
+            // whoever set it, including a caller outside this package with the Build Settings
+            // toggle off.
+            if (buildOptions is { } options)
+                return (options & BuildOptions.Development) != 0 || InstrumentedVariant(namedTarget);
 
             if (EditorUserBuildSettings.development)
                 return true;
@@ -142,28 +174,105 @@ namespace Unity.Pipeline.Editor.BuildProcessors
             if (Commands.Build.BuildCommand.ActiveScriptedBuildOptions is { } scriptedOptions
                 && (scriptedOptions & BuildOptions.Development) != 0)
                 return true;
+#endif // UNITY_7000_0_OR_NEWER
 
+            return InstrumentedVariant(namedTarget);
+        }
+
+        /// <summary>
+        /// Whether the target's managed-code variant carries instrumentation, which defines the
+        /// same symbols a development build does regardless of the Development Build setting.
+        /// </summary>
+        /// <param name="namedTarget">The target this build is for.</param>
+        private static bool InstrumentedVariant(NamedBuildTarget namedTarget)
+        {
 #if UNITY_6000_6_OR_NEWER
-            // ENABLE_PROFILER is emitted for "buildingForEditor || developmentBuild ||
-            // buildingWithInstrumentation", and from 6000.6 that last term is the managed code
-            // variant -- set independently of the Development Build toggle above, and carrying
-            // instrumentation for Debug, Checked and Instrumented alike. It defaults to Release, so
-            // this only admits a project that opted into one of the other three.
-            if (PlayerSettings.GetManagedCodeVariant(namedTarget) <= ManagedCodeVariant.Instrumented)
-                return true;
+            // From 6000.6 the Debug, Checked and Instrumented variants each define both
+            // UNITY_INCLUDE_INSTRUMENTATION and ENABLE_PROFILER. Release defines neither, and is
+            // the default, so this only admits a project that opted into one of the other three.
+            return PlayerSettings.GetManagedCodeVariant(namedTarget) <= ManagedCodeVariant.Instrumented;
+#else
+            return false;
 #endif
-
-            var defines = PlayerSettings.GetScriptingDefineSymbols(namedTarget);
-            return defines != null && defines.Split(';').Any(d => d.Trim() == EnableSymbol);
         }
 
         public void OnPostprocessBuild(BuildReport report)
         {
+            ReapplyRunInBackgroundAfterBuild();
             DeleteGeneratedAssetsIfPresent();
         }
 
         /// <summary>
-        /// Absolute roots considered in-scope for runtime code reload: the project's Assets folder
+        /// Ensures a build is never polluted by an editor-only Run In Background override (CLI-1432).
+        ///
+        /// <see cref="EditorPipelineConfig"/> can record an active override on
+        /// <see cref="Application.runInBackground"/> (from <c>editor.playmode set_run_in_background</c>, or
+        /// from the "Ensure editor runs in background in PlayMode" setting while in Play mode). That
+        /// override exists purely to keep an unfocused Editor's player loop ticking; it must never
+        /// change what a Player build ships with, since Application.runInBackground in the Editor is
+        /// literally the project's own Player Settings value, baked into the build.
+        ///
+        /// Pre-build: if the record says the value is overridden, put the project's own recorded
+        /// value back before Unity reads Player Settings for the build, WITHOUT clearing the record,
+        /// so nothing here looks like the override ending, and remember that the build did it
+        /// (<see cref="PipelineServerStartup.RunInBackgroundRestoredForBuildKey"/>). If the live value is
+        /// already off, the user turned it off themselves while the override was active: the user wins
+        /// (their value becomes the project's, the override ends) and nothing is restored.
+        /// Post-build: <see cref="ReapplyRunInBackgroundAfterBuild"/> re-applies the override, if the
+        /// record still calls for it.
+        ///
+        /// Unity does not invoke <see cref="IPostprocessBuildWithReport.OnPostprocessBuild"/> for a
+        /// build that fails or is cancelled, so a build interrupted between these two steps would
+        /// otherwise leave the live value stuck at the project's own setting with the record still
+        /// saying "overridden". The session flag tells <see cref="PipelineServerStartup.ReconcileRunInBackground(bool)"/>
+        /// (which also runs on every Play mode entry and Editor/domain-reload load) that a false live value
+        /// is the build's doing rather than the user's, so it re-applies the override.
+        ///
+        /// Internal and side-effect-scoped so tests can call it directly, without a real
+        /// <see cref="BuildReport"/>.
+        /// </summary>
+        internal static void RestoreRunInBackgroundForBuild()
+        {
+            var cfg = EditorPipelineConfig.Load();
+            if (cfg == null)
+                return;
+
+            try
+            {
+                if (!cfg.RunInBackgroundOverridden)
+                    return;
+
+                if (!Application.runInBackground)
+                {
+                    // The override keeps the live value true, so false means the user changed it.
+                    PipelineServerStartup.AdoptUserRunInBackground(cfg);
+                    cfg.Save();
+                    return;
+                }
+
+                Application.runInBackground = cfg.RunInBackgroundOriginal;
+                SessionState.SetBool(PipelineServerStartup.RunInBackgroundRestoredForBuildKey, true);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(cfg);
+            }
+        }
+
+        /// <summary>
+        /// Re-apply the Run In Background override, if the record still calls for it, once the
+        /// build is done, then clear the restored-for-build session flag. Not in Play mode at this
+        /// point, since a build cannot run while playing. The reconcile runs BEFORE the flag is
+        /// cleared: it is the flag that tells it the false live value was the build's doing.
+        /// </summary>
+        internal static void ReapplyRunInBackgroundAfterBuild()
+        {
+            PipelineServerStartup.ReconcileRunInBackground(playing: false);
+            SessionState.SetBool(PipelineServerStartup.RunInBackgroundRestoredForBuildKey, false);
+        }
+
+        /// <summary>
+        /// Absolute roots considered in-scope for runtime method reload: the project's Assets folder
         /// plus the resolved location of every package loaded into the project (a local package may
         /// live anywhere on disk, not only under Packages).
         /// </summary>
@@ -192,9 +301,7 @@ namespace Unity.Pipeline.Editor.BuildProcessors
             // paths before any of this method's caller ran, so this path is guaranteed clear.
 
             var baked = ScriptableObject.CreateInstance<RuntimePipelineConfig>();
-            baked.enableInBuilds = sourceConfig.enableInBuilds;
             baked.port = sourceConfig.port;
-            baked.requestTimeoutMs = sourceConfig.requestTimeoutMs;
             baked.enableAuditLogging = sourceConfig.enableAuditLogging;
             baked.autoStart = sourceConfig.autoStart;
             baked.maxWorkItemsPerFrame = sourceConfig.maxWorkItemsPerFrame;

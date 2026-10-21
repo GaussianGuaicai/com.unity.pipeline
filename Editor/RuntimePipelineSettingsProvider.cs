@@ -82,7 +82,7 @@ namespace Unity.Pipeline.Editor
                         loadedWriteTimeUtc = RuntimePipelineConfig.GetSettingsFileWriteTimeUtc();
                     }
                 },
-                keywords = new HashSet<string>(new[] { "Pipeline", "Runtime", "Code Reload", "Server", "CLI" })
+                keywords = new HashSet<string>(new[] { "Pipeline", "Runtime", "Method Reload", "Server", "CLI" })
             };
         }
     }

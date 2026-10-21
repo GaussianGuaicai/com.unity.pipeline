@@ -30,7 +30,7 @@ namespace Unity.Pipeline.Editor.Commands.Batch
     /// <c>run_script</c> (code as files on disk), not here.</para>
     ///
     /// <para>Dispatch reuse: each sub-operation runs through
-    /// <see cref="Unity.Pipeline.BasePipelineServer.DispatchCommandOnMainThread"/>, the exact parameter
+    /// <see cref="CommandContext.DispatchOnMainThread"/>, the exact parameter
     /// extraction / required-validation / reflection-invoke path <c>/api/exec</c> uses, so every per-op
     /// result is shaped identically to running that command standalone.</para>
     ///
@@ -44,9 +44,9 @@ namespace Unity.Pipeline.Editor.Commands.Batch
     /// doc for the v1 caveat.</para>
     ///
     /// <para>Timing: the batch executes in a single main-thread turn (no frame-spanning), so the
-    /// Editor UI is frozen for its duration. <c>time_budget_ms</c> is the cooperative bound on that
-    /// freeze: the elapsed time is checked before each operation after the first, and when the budget
-    /// is exhausted the remaining ops are skipped and a transactional batch rolls back. Long batches
+    /// Editor UI is frozen for its duration. <c>timeout</c> is the cooperative bound on that
+    /// freeze: the elapsed time is checked before each operation after the first, and when the timeout
+    /// is about to run out the remaining ops are skipped and a transactional batch rolls back. Long batches
     /// should be submitted as detached jobs (<c>"job": true</c>) — cancellation is checked between
     /// ops, and per-op progress is reported via <see cref="Unity.Pipeline.CliProgress"/>.</para>
     /// </summary>
@@ -55,14 +55,10 @@ namespace Unity.Pipeline.Editor.Commands.Batch
 #endif
     static class BatchCommand
     {
+        const string Group = "job";
+
         /// <summary>Hard cap on operations per batch (payload bound).</summary>
         private const int MaxOperations = 200;
-
-        /// <summary>Default cooperative time budget for one batch execution (see <see cref="Batch"/>).</summary>
-        private const int DefaultTimeBudgetMs = 50_000;
-
-        /// <summary>Upper bound on <c>time_budget_ms</c> (1 hour).</summary>
-        private const int MaxTimeBudgetMs = 3_600_000;
 
         /// <summary>
         /// Per-op result size (serialized UTF-8 BYTES — what actually goes on the wire, not UTF-16
@@ -96,23 +92,24 @@ namespace Unity.Pipeline.Editor.Commands.Batch
         /// </summary>
         private static readonly HashSet<string> m_ExcludedCommands = new HashSet<string>(StringComparer.Ordinal)
         {
-            "build", "switch_build_target",
-            "editor_play", "editor_stop", "editor_pause",
-            "recompile", "eval", "eval_file", "run_script", "menu", "batch",
+            CommandNames.BuildRun, CommandNames.BuildTargetSwitch,
+            CommandNames.EditorPlaymodeStart, CommandNames.EditorPlaymodeStop, CommandNames.EditorPlaymodePause,
+            CommandNames.ScriptRecompile, CommandNames.ScriptEval, CommandNames.ScriptEvalFile, CommandNames.ScriptRun, CommandNames.EditorInvokeMenu, CommandNames.JobBatch,
             // A synchronous wait inside a batch cannot make progress: the batch holds the main
             // thread for its whole turn, so the editor state the condition watches cannot change —
             // the wait just burns its full timeout inside the batch. Use an async wait_for before
             // or after the batch instead. (wait_status/wait_cancel are quick reads and stay
             // batchable.)
-            "wait_for",
+            CommandNames.JobWait,
             // Requests a script reload by default (force_domain_reload), on the same grounds as
             // recompile: the domain reload tears down the batch mid-run. Listed explicitly because
             // it carries no Player-surface tag, so the runtime-tag guard does not cover it.
-            "cleanup_codereload"
+            CommandNames.ScriptMethodreloadCleanup,
+            // The Package Manager commands, excluded as a family: they escape the object-CRUD scope,
+            // and add/remove/resolve trigger a domain reload that tears the batch down mid-run.
+            CommandNames.PackageAdd, CommandNames.PackageList, CommandNames.PackageRemove,
+            CommandNames.PackageResolve, CommandNames.PackageSearch, CommandNames.PackageStatus
         };
-
-        /// <summary>Excluded command families matched by name prefix (e.g. all <c>package_*</c>).</summary>
-        private static readonly string[] m_ExcludedPrefixes = { "package_" };
 
         /// <summary>
         /// Commands that CLEAR the Editor Undo stack, destroying the batch's ability to revert any
@@ -122,11 +119,11 @@ namespace Unity.Pipeline.Editor.Commands.Batch
         /// <para>V1 CAVEAT: like <see cref="m_NonRevertibleCommands"/> below, this is a curated list —
         /// any new command that clears or truncates the Undo stack must be added here, or it will
         /// silently break the revert-integrity contract. The durable fix is command-site metadata
-        /// (<c>[CliCommand(Revertible = ...)]</c>).</para>
+        /// (<c>[CliGroupCommand(Revertible = ...)]</c>).</para>
         /// </summary>
         private static readonly HashSet<string> m_UndoStackWipingCommands = new HashSet<string>(StringComparer.Ordinal)
         {
-            "open_scene", "create_scene"
+            CommandNames.SceneOpen, CommandNames.SceneCreate
         };
 
         /// <summary>
@@ -139,71 +136,76 @@ namespace Unity.Pipeline.Editor.Commands.Batch
         ///
         /// <para>V1 CAVEAT: this is a curated list, assembled by auditing each command's
         /// implementation (AssetDatabase.SaveAssets / File writes / settings assets). The durable fix
-        /// is a <c>[CliCommand(Revertible = ...)]</c> metadata flag declared at the command site so
+        /// is a <c>[CliGroupCommand(Revertible = ...)]</c> metadata flag declared at the command site so
         /// new commands can't silently fall through; until then, new non-Undo-tracked commands must
         /// be added here.</para>
         /// </summary>
         private static readonly HashSet<string> m_NonRevertibleCommands = new HashSet<string>(StringComparer.Ordinal)
         {
             // Assets & files (AssetDatabase ops / direct file IO).
-            "create_asset", "import_asset", "move_asset", "copy_asset", "rename_asset", "delete_asset",
-            "create_folder", "set_import_settings", "write_text_file", "create_script",
+            CommandNames.AssetCreate, CommandNames.AssetImport, CommandNames.AssetMove, CommandNames.AssetCopy, CommandNames.AssetRename, CommandNames.AssetDelete,
+            CommandNames.AssetCreateFolder, CommandNames.AssetSetImportSettings, CommandNames.AssetWriteText, CommandNames.ScriptCreate,
             // Prefab ASSET writes (scene-side prefab ops — instantiate/unpack/revert overrides — are
             // Undo-tracked and stay batchable).
-            "create_prefab", "create_prefab_variant", "apply_prefab_overrides", "save_prefab_contents",
+            CommandNames.PrefabCreate, CommandNames.PrefabCreateVariant, CommandNames.PrefabApplyOverrides, CommandNames.PrefabSaveContents,
             // Scene persistence and Build Settings scene list.
-            "save_scene", "save_all", "add_scene_to_build", "remove_scene_from_build", "set_build_settings",
+            CommandNames.SceneSave, CommandNames.EditorSaveAll, CommandNames.SceneAddToBuild, CommandNames.SceneRemoveFromBuild, CommandNames.BuildSetSettings,
             // Project settings (their own descriptions say "Not undoable via Ctrl+Z").
-            "set_audio_settings", "set_graphics_settings", "set_input_settings", "set_lighting_settings",
-            "set_navmesh_settings", "set_physics_settings", "set_player_settings", "set_quality_settings",
-            "set_tags_layers", "set_time_settings", "set_authoring_root",
+            CommandNames.SettingsAudioSet, CommandNames.SettingsGraphicsSet, CommandNames.SettingsInputSet, CommandNames.LightingSetSettings,
+            CommandNames.NavmeshSetSettings, CommandNames.SettingsPhysicsSet, CommandNames.SettingsPlayerSet, CommandNames.SettingsQualitySet,
+            CommandNames.SettingsTagsLayersSet, CommandNames.SettingsTimeSet, CommandNames.AuthoringSetRoot,
+            // Writes the Run In Background Player Setting and the Pipeline settings file (CLI-1432).
+            CommandNames.EditorPlaymodeSetRunInBackground,
             // Animation / Animator / Timeline commands persist their asset with AssetDatabase.SaveAssets.
-            "create_animation_clip", "set_animation_curve", "remove_animation_curve",
-            "create_animator_controller", "add_animator_layer", "add_animator_parameter",
-            "add_animator_state", "add_animator_transition",
-            "create_timeline", "add_timeline_track", "add_timeline_clip",
+            CommandNames.AnimationClipCreate, CommandNames.AnimationClipSetCurve, CommandNames.AnimationClipRemoveCurve,
+            CommandNames.AnimationAnimatorCreateController, CommandNames.AnimationAnimatorAddLayer, CommandNames.AnimationAnimatorAddParameter,
+            CommandNames.AnimationAnimatorAddState, CommandNames.AnimationAnimatorAddTransition,
+            CommandNames.AnimationTimelineCreate, CommandNames.AnimationTimelineAddTrack, CommandNames.AnimationTimelineAddClip,
             // Persists the .mat asset with AssetDatabase.SaveAssetIfDirty (the in-memory change is
             // Undo-recorded, but the disk write is not reverted by Undo).
-            "set_material_properties",
+            CommandNames.MaterialSetProperties,
+            // Build Profile assets: create_build_profile writes through the AssetDatabase (and may change
+            // the active profile); edit_build_profile saves the asset like set_material_properties.
+            CommandNames.BuildCreateProfile, CommandNames.BuildSetProfile,
             // Baking writes/deletes baked data on disk (GI / NavMesh / occlusion).
-            "bake_lighting", "clear_baked_lighting",
-            "bake_navmesh", "bake_navmesh_surfaces", "clear_navmesh",
-            "bake_occlusion_culling", "clear_occlusion_culling"
+            CommandNames.LightingBake, CommandNames.LightingClearBake,
+            CommandNames.NavmeshBake, CommandNames.NavmeshBakeSurfaces, CommandNames.NavmeshClearBake,
+            CommandNames.OcclusionBake, CommandNames.OcclusionClearBake
         };
 
-        [CliCommand("batch",
+        [CliGroupCommand(Group,
             "Run multiple registered commands in one transactional request. Later ops can reference earlier " +
             "results with \"$<id-or-index>.<jsonPath>\" (e.g. \"$0.instanceId\"; \"$$\" escapes a literal '$'). " +
             "transactional=true (default) groups every op into one Undo step and reverts all applied ops if any " +
             "op fails; commands that mutate outside the Undo system (asset/file/settings writes) are rejected " +
             "unless transactional=false. on_error=abort|continue (continue forces transactional=false); dry_run " +
-            "validates without mutating; time_budget_ms (default 50000) bounds execution — when exceeded the " +
+            "validates without mutating; timeout (seconds, default 60) bounds execution — when it is about to run out the " +
             "remaining ops are skipped and a transactional batch rolls back (submit long batches with " +
-            "\"job\": true). Excludes build, switch_build_target, package_*, editor_play/stop/pause, recompile, " +
-            "eval, eval_file, run_script, menu, open_scene/create_scene, async commands (run_tests/list_tests), " +
-            "runtime-only commands, and nested batch.",
+            "\"job\": true). Excludes " + CommandNames.BuildRun + ", " + CommandNames.BuildTargetSwitch + ", the package commands, " +
+            CommandNames.EditorPlaymodeStart + "/stop/pause, " + CommandNames.ScriptRecompile + ", " +
+            CommandNames.ScriptEval + ", " + CommandNames.ScriptEvalFile + ", " + CommandNames.ScriptRun + ", " +
+            CommandNames.EditorInvokeMenu + ", " + CommandNames.SceneOpen + "/" + CommandNames.SceneCreate +
+            ", async commands (" + CommandNames.TestRun + "/" + CommandNames.TestList + "), " +
+            "runtime-only commands, and nested " + CommandNames.JobBatch + ".",
             MainThreadRequired = true,
             Tags = new[] { "batch" })]
         public static BatchResult Batch(
-            [CliArg("operations", "Ordered operations to run; each is { id?, command, params }. Max 200.", Required = true)] List<BatchOperationInput> operations = null,
+            [CliArg("operations", "Ordered operations to run; each is { id?, command, params }, with command written as \"<group> <name>\" (e.g. \"gameobject create\"). Max 200.", Required = true)] List<BatchOperationInput> operations = null,
             [CliArg("transactional", "Group all ops into one Undo step and revert every applied op if any op fails. Default true. Forced false when on_error=continue. Rejects commands whose mutations Undo cannot revert (asset/file/settings writes).")] bool transactional = true,
             [CliArg("on_error", "abort (default): stop at the first failing op. continue: run every op, collecting per-op errors (forces transactional=false).")] string onError = "abort",
             [CliArg("dry_run", "Validate command names, parameters, reference topology and excluded commands without mutating anything.")] bool dryRun = false,
             [CliArg("result_fields", "Optional per-op result projection: map of op id-or-index -> array of result field paths to keep (context economy).")] JObject resultFields = null,
-            [CliArg("time_budget_ms", "Cooperative time budget for the whole batch in milliseconds (default 50000, max 3600000). Checked before each op after the first; when exhausted the remaining ops are skipped and a transactional batch rolls back. Use \"job\": true for long batches.")] int timeBudgetMs = DefaultTimeBudgetMs)
+            [CliArg("timeout", "Timeout for the whole batch in seconds (default 60). Checked before each op after the first; when it is about to run out the remaining ops are skipped and a transactional batch rolls back. Use \"job\": true for long batches.")] double timeoutInSeconds = 60)
         {
             if (operations == null || operations.Count == 0)
-                throw new ArgumentException("batch 'operations' must contain at least one operation.");
+                throw new ArgumentException(CommandNames.JobBatch + " 'operations' must contain at least one operation.");
             if (operations.Count > MaxOperations)
                 throw new ArgumentException(
-                    $"batch supports at most {MaxOperations} operations, but {operations.Count} were provided.");
-            if (timeBudgetMs < 0 || timeBudgetMs > MaxTimeBudgetMs)
-                throw new ArgumentException(
-                    $"batch 'time_budget_ms' must be between 0 and {MaxTimeBudgetMs}, got {timeBudgetMs}.");
+                    $"{CommandNames.JobBatch} supports at most {MaxOperations} operations, but {operations.Count} were provided.");
 
             onError = string.IsNullOrWhiteSpace(onError) ? "abort" : onError.Trim().ToLowerInvariant();
             if (onError != "abort" && onError != "continue")
-                throw new ArgumentException($"batch 'on_error' must be 'abort' or 'continue', got '{onError}'.");
+                throw new ArgumentException($"{CommandNames.JobBatch} 'on_error' must be 'abort' or 'continue', got '{onError}'.");
 
             // "continue" collects per-op errors and applies the independent ops, so it cannot also
             // promise an all-or-nothing rollback — it forces transactional off (per the ticket).
@@ -214,7 +216,8 @@ namespace Unity.Pipeline.Editor.Commands.Batch
             if (dryRun)
                 return DryRun(operations, idToIndex, effectiveTransactional, onError);
 
-            return Execute(operations, idToIndex, effectiveTransactional, onError, resultFields, timeBudgetMs);
+            return Execute(operations, idToIndex, effectiveTransactional, onError, resultFields,
+                PipelineTimeout.FromSeconds(timeoutInSeconds));
         }
 
         /// <summary>
@@ -248,27 +251,25 @@ namespace Unity.Pipeline.Editor.Commands.Batch
         /// <summary>
         /// Execute the batch: run each op (resolving its references against earlier results) inside one
         /// Undo group, and on a transactional abort revert every applied op. Between ops, cooperative
-        /// cancellation and the time budget are checked, and per-op progress is reported.
+        /// cancellation and the timeout are checked, and per-op progress is reported.
         /// </summary>
         private static BatchResult Execute(List<BatchOperationInput> operations, Dictionary<string, int> idToIndex,
-            bool transactional, string onError, JObject resultFields, int timeBudgetMs)
+            bool transactional, string onError, JObject resultFields, TimeSpan timeout)
         {
-            var server = BasePipelineServer.CurrentServer;
-            if (server == null)
+            var context = CommandContext.Current;
+            if (context == null)
                 throw new InvalidOperationException(
-                    "batch must run inside a pipeline server request (no active server on this thread).");
+                    CommandNames.JobBatch + " must run inside a pipeline server request (no active server on this thread).");
 
             var result = new BatchResult { Transactional = transactional, OnError = onError };
-            // One name-indexed lookup per batch call instead of an O(commands) scan per op.
-            var commandsByName = BuildCommandIndex();
             var resultsByIndex = new JToken[operations.Count];
             var stoppedAt = -1;     // index of the op that failed under on_error=abort
-            var skippedFrom = -1;   // first op never attempted because of a batch-level abort (budget/cancel)
+            var skippedFrom = -1;   // first op never attempted because of a batch-level abort (timeout/cancel)
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
 
             var remainingResultBytes = MaxBatchResultBytes;
 
-            using (var undoScope = new AuthoringUndoScope("batch"))
+            using (var undoScope = new AuthoringUndoScope(CommandNames.JobBatch))
             {
                 var batchGroup = Undo.GetCurrentGroup();
                 result.UndoGroup = batchGroup;
@@ -286,40 +287,41 @@ namespace Unity.Pipeline.Editor.Commands.Batch
                         break;
                     }
 
-                    // Cooperative time budget: the batch holds the main thread for its whole duration,
+                    // Cooperative timeout: the batch holds the main thread for its whole duration,
                     // so this is the bound on how long the Editor stays frozen. Op 0 always gets to
-                    // run; every later op requires remaining budget.
-                    if (i > 0 && stopwatch.ElapsedMilliseconds >= timeBudgetMs)
+                    // run; every later op requires time left before the stop point.
+                    if (i > 0 && !PipelineTimeout.IsInfinite(timeout) && stopwatch.Elapsed >= PipelineTimeout.StopBefore(timeout))
                     {
-                        result.Error = $"batch time budget exceeded: {stopwatch.ElapsedMilliseconds}ms elapsed " +
-                            $"after {i} of {operations.Count} operations (time_budget_ms={timeBudgetMs}). " +
+                        result.Error = $"batch timeout about to run out: {stopwatch.ElapsedMilliseconds}ms elapsed " +
+                            $"after {i} of {operations.Count} operations ({PipelineTimeout.Describe(timeout)} timeout). " +
                             (transactional ? "Applied operations were reverted and remaining operations were skipped. "
                                            : "Remaining operations were skipped. ") +
-                            "For long batches submit the request with \"job\": true and a larger time_budget_ms.";
+                            "For long batches submit the request with \"job\": true or a larger --timeout.";
                         skippedFrom = i;
                         break;
                     }
 
                     var op = operations[i];
-                    CliProgress.Report("batch", $"op {i + 1}/{operations.Count}: {op.Command}",
+                    CliProgress.Report(CommandNames.JobBatch, $"op {i + 1}/{operations.Count}: {OperationLabel(op.Command)}",
                         i, operations.Count, i / (double)operations.Count);
 
-                    var opResult = new BatchOperationResult { Id = op.Id, Command = op.Command };
+                    var opResult = new BatchOperationResult { Id = op.Id, Command = OperationLabel(op.Command) };
                     result.Results.Add(opResult);
 
                     try
                     {
-                        var command = ResolveBatchable(op.Command, transactional, commandsByName);
-                        opResult.Revertible = !m_NonRevertibleCommands.Contains(op.Command);
+                        var command = ResolveBatchable(op.Command, transactional);
+                        opResult.Revertible = !m_NonRevertibleCommands.Contains(command.FullName);
                         var resolvedParams = BatchReferenceResolver.Resolve(
                             op.Params, i, operations, idToIndex, resultsByIndex, result.Results);
 
-                        // Dispatched WITHOUT re-checking the server's busy gate (GetBusyReason):
-                        // the batch itself was admitted through it in HandleExecRequest, the settle
+                        // Dispatched WITHOUT re-checking the executor's settle gate:
+                        // the batch itself was admitted through it when the executor took it, the settle
                         // gate is a one-way latch that never re-arms mid-session, and the batch
                         // holds the main thread for its entire turn — the Editor cannot transition
                         // into a busy state between two ops of the same batch.
-                        var raw = server.DispatchCommandOnMainThread(command, resolvedParams);
+                        var raw = context.DispatchOnMainThread(command, resolvedParams,
+                            PipelineTimeout.IsInfinite(timeout) ? timeout : timeout - stopwatch.Elapsed);
 
                         // Capture the result as a token for later references. A serialization failure
                         // here must NOT fail an op that already ran — leave the slot null (a later
@@ -367,7 +369,7 @@ namespace Unity.Pipeline.Editor.Commands.Batch
             }
 
             // Record the operations that were never attempted because the batch aborted (op failure
-            // under on_error=abort, cancellation, or an exhausted time budget), so the caller can see
+            // under on_error=abort, cancellation, or a timeout about to run out), so the caller can see
             // exactly where it stopped.
             var firstSkipped = skippedFrom >= 0 ? skippedFrom
                 : stoppedAt >= 0 ? stoppedAt + 1
@@ -377,7 +379,7 @@ namespace Unity.Pipeline.Editor.Commands.Batch
                 result.Results.Add(new BatchOperationResult
                 {
                     Id = operations[j].Id,
-                    Command = operations[j].Command,
+                    Command = OperationLabel(operations[j].Command),
                     Success = false,
                     Skipped = true
                 });
@@ -401,18 +403,16 @@ namespace Unity.Pipeline.Editor.Commands.Batch
                 Transactional = transactional,
                 OnError = onError
             };
-            var commandsByName = BuildCommandIndex();
-
             for (int i = 0; i < operations.Count; i++)
             {
                 var op = operations[i];
-                var opResult = new BatchOperationResult { Id = op.Id, Command = op.Command };
+                var opResult = new BatchOperationResult { Id = op.Id, Command = OperationLabel(op.Command) };
                 result.Results.Add(opResult);
 
                 try
                 {
-                    var command = ResolveBatchable(op.Command, transactional, commandsByName);
-                    opResult.Revertible = !m_NonRevertibleCommands.Contains(op.Command);
+                    var command = ResolveBatchable(op.Command, transactional);
+                    opResult.Revertible = !m_NonRevertibleCommands.Contains(command.FullName);
                     ValidateKnownParameters(command, op.Params);
                     ValidateRequiredParameters(command, op.Params);
                     BatchReferenceResolver.Validate(op.Params, i, operations, idToIndex);
@@ -430,50 +430,34 @@ namespace Unity.Pipeline.Editor.Commands.Batch
         }
 
         /// <summary>
-        /// Resolve a command name to its <see cref="CommandInfo"/>, rejecting non-batchable commands:
-        /// the excluded list (<c>not_batchable</c>), Undo-stack-wiping scene loads, runtime-only
-        /// commands, async (<c>Task</c>-returning) commands — which are completed by
-        /// <c>EditorApplication.update</c> callbacks that can never fire while the batch holds the
-        /// main thread, so awaiting them inline would freeze the Editor permanently — and, when
-        /// <paramref name="transactional"/>, commands whose mutations Undo cannot revert
-        /// (<c>not_batchable_transactional</c>). Unknown commands get an <c>unknown command</c> error.
-        /// Uses the registry directly (no server-side logging) so dry-run validation of an
-        /// intentionally bad name stays quiet.
+        /// Resolve an operation's <c>command</c> to its <see cref="CommandInfo"/> — written as
+        /// <c>group name</c> (<c>gameobject create</c>) or as a single token in its one-word
+        /// spelling — and reject non-batchable commands. Resolution comes FIRST and the policy checks
+        /// run on the resolved command's full name, so a command is refused however it was typed: the excluded list
+        /// (<c>not_batchable</c>), Undo-stack-wiping scene loads, runtime-only commands, async
+        /// (<c>Task</c>-returning) commands — which are completed by <c>EditorApplication.update</c>
+        /// callbacks that can never fire while the batch holds the main thread, so awaiting them
+        /// inline would freeze the Editor permanently — and, when <paramref name="transactional"/>,
+        /// commands whose mutations Undo cannot revert (<c>not_batchable_transactional</c>). An
+        /// unknown command gets an <c>unknown command</c> error, a group a "is a group" one. Errors
+        /// name the command in its <c>group name</c> form. Resolution is quiet (no server-side
+        /// logging) so dry-run validation of an intentionally bad name stays quiet.
         /// </summary>
-        /// <summary>
-        /// Name-indexed snapshot of the registered commands, built once per batch call (the registry
-        /// list itself is cached; this avoids an O(commands) scan per op). NOTE: this deliberately
-        /// does not reuse <c>BasePipelineServer.ResolveCommand</c> — that helper serves the exec
-        /// request path (logging, envelope error shape); unifying the two belongs to a follow-up so
-        /// the server's hot path is not reshaped from this command.
-        /// </summary>
-        private static Dictionary<string, CommandInfo> BuildCommandIndex()
+        private static CommandInfo ResolveBatchable(string typed, bool transactional)
         {
-            var byName = new Dictionary<string, CommandInfo>(StringComparer.Ordinal);
-            foreach (var c in CommandRegistry.DiscoverCommands())
-                if (!byName.ContainsKey(c.Name))
-                    byName.Add(c.Name, c);
-            return byName;
-        }
+            var command = ResolveOperationCommand(typed);
+            var name = command.FullName;
 
-        private static CommandInfo ResolveBatchable(string name, bool transactional, IReadOnlyDictionary<string, CommandInfo> byName)
-        {
-            if (string.IsNullOrWhiteSpace(name))
-                throw new ArgumentException("operation 'command' is required.");
-
-            if (IsExcluded(name))
+            if (IsExcluded(command.FullName))
                 throw new ArgumentException(
                     $"Command '{name}' is not batchable (not_batchable): commands that build, switch platform, " +
                     "manage packages, control play mode, recompile, evaluate code, execute Editor menu items " +
                     "(which can open modal dialogs and wedge an unattended batch), or nest a batch are excluded.");
 
-            if (m_UndoStackWipingCommands.Contains(name))
+            if (m_UndoStackWipingCommands.Contains(command.FullName))
                 throw new ArgumentException(
                     $"Command '{name}' is not batchable (not_batchable): it clears the Editor Undo stack, which " +
                     "would make every prior batch operation unrevertible. Call it standalone instead.");
-
-            if (!byName.TryGetValue(name, out var command))
-                throw new ArgumentException($"No command named '{name}' is available (unknown command).");
 
             if (command.HasTagInSubtree(CommandInfo.RuntimeTag))
                 throw new ArgumentException(
@@ -487,7 +471,7 @@ namespace Unity.Pipeline.Editor.Commands.Batch
                     "while the batch holds the main thread — the batch would deadlock the Editor. Call it " +
                     "standalone instead.");
 
-            if (transactional && m_NonRevertibleCommands.Contains(name))
+            if (transactional && m_NonRevertibleCommands.Contains(command.FullName))
                 throw new ArgumentException(
                     $"Command '{name}' is not batchable in a transactional batch (not_batchable_transactional): " +
                     "it mutates state outside the Editor Undo system (asset/file/settings writes), so a rollback " +
@@ -496,17 +480,69 @@ namespace Unity.Pipeline.Editor.Commands.Batch
             return command;
         }
 
-        private static bool IsExcluded(string name)
+        /// <summary>
+        /// Resolve the text of an operation's <c>command</c> the way a raw request names a command:
+        /// the first token a group makes the second a name in it, a group alone is refused, and
+        /// otherwise the single token is the one-word spelling of a full name. The core is the one
+        /// /api/exec uses (<see cref="BasePipelineServer.TryResolveRawCommand"/>), without its logging.
+        /// </summary>
+        private static CommandInfo ResolveOperationCommand(string typed)
         {
-            if (m_ExcludedCommands.Contains(name))
-                return true;
-            foreach (var prefix in m_ExcludedPrefixes)
+            if (string.IsNullOrWhiteSpace(typed))
+                throw new ArgumentException("operation 'command' is required.");
+
+            var tokens = typed.Split((char[])null, StringSplitOptions.RemoveEmptyEntries);
+            var resolution = BasePipelineServer.TryResolveRawCommand(tokens, CommandRegistry.Index);
+
+            if (resolution.Miss != null)
             {
-                if (name.StartsWith(prefix, StringComparison.Ordinal))
-                    return true;
+                var message = ObsoleteCommandNameMessage.ForMiss(resolution.Miss.TypedName, ObsoleteCommandNamesFile.Load())
+                    ?? resolution.Miss.Message;
+                // Keep the `unknown command` marker next to the name that missed.
+                var head = $"No command named '{resolution.Miss.TypedName}' is available";
+                throw new ArgumentException(message.StartsWith(head, StringComparison.Ordinal)
+                    ? head + " (unknown command)" + message.Substring(head.Length)
+                    : message + " (unknown command)");
             }
-            return false;
+
+            if (resolution.ListedGroup != null)
+                throw new ArgumentException(
+                    $"'{resolution.ListedGroup}' is a group, not a command. Name a command in it, as '{resolution.ListedGroup} <name>'.");
+
+            // An operation names the command only; its arguments go in 'params'.
+            if (resolution.ArgumentsStart != tokens.Length)
+                throw new ArgumentException(
+                    $"operation 'command' must name only the command, as '<group> <name>', but got '{string.Join(" ", tokens)}'. " +
+                    "Pass arguments in 'params'.");
+
+            return resolution.Command;
         }
+
+        /// <summary>
+        /// How an operation's command is shown in results and progress: its <c>group name</c> form
+        /// when it resolves, otherwise what was typed. Quiet for a name that does not resolve.
+        /// </summary>
+        private static string OperationLabel(string typed)
+        {
+            if (string.IsNullOrWhiteSpace(typed))
+                return typed;
+            try
+            {
+                var tokens = typed.Split((char[])null, StringSplitOptions.RemoveEmptyEntries);
+                var resolution = BasePipelineServer.TryResolveRawCommand(tokens, CommandRegistry.Index);
+                if (resolution.Command != null && resolution.ArgumentsStart == tokens.Length)
+                    return resolution.Command.FullName;
+                if (resolution.ListedGroup != null)
+                    return resolution.ListedGroup;
+            }
+            catch (Exception)
+            {
+                // A label must never fail an operation.
+            }
+            return typed.Trim();
+        }
+
+        private static bool IsExcluded(string fullName) => m_ExcludedCommands.Contains(fullName);
 
         /// <summary>Reject parameter keys that are not parameters of the command (dry-run check).</summary>
         private static void ValidateKnownParameters(CommandInfo command, JObject parameters)
@@ -518,7 +554,7 @@ namespace Unity.Pipeline.Editor.Commands.Batch
             {
                 if (!known.Contains(prop.Name))
                     throw new ArgumentException(
-                        $"Command '{command.Name}' has no parameter '{prop.Name}' (unknown parameter). " +
+                        $"Command '{command.FullName}' has no parameter '{prop.Name}' (unknown parameter). " +
                         $"Known parameters: [{string.Join(", ", known)}].");
             }
         }
@@ -536,7 +572,7 @@ namespace Unity.Pipeline.Editor.Commands.Batch
                 var token = parameters?[p.Name];
                 if (token == null || token.Type == JTokenType.Null)
                     throw new ArgumentException(
-                        $"Command '{command.Name}' is missing required parameter '{p.Name}'.");
+                        $"Command '{command.FullName}' is missing required parameter '{p.Name}'.");
             }
         }
 

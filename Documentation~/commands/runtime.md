@@ -2,7 +2,7 @@
 
 Commands served by the Player / dev-build server. Many require a Development build with the runtime Pipeline enabled — see [Runtime setup](../runtime-setup.md). Commands tagged `runtime` target a running Player: they are registered and listed everywhere, but they can only do something useful against a Player, and an Editor batch refuses them.
 
-### `runtime_status`
+### `runtime status`
 Get comprehensive runtime application status.
 
 No parameters.
@@ -10,7 +10,7 @@ No parameters.
 **Returns:** `RuntimeStatusResponse`
 **Notes:** `MainThreadRequired = true`, tagged `runtime`.
 
-### `quit`
+### `runtime quit`
 Gracefully quit the Unity application.
 
 | Parameter | Required | Default | Description |
@@ -20,7 +20,7 @@ Gracefully quit the Unity application.
 **Returns:** `string`
 **Notes:** `MainThreadRequired = true`, tagged `runtime`.
 
-### `set_target_framerate`
+### `runtime set_target_frame_rate`
 Set the target frame rate for the application.
 
 | Parameter | Required | Default | Description |
@@ -30,7 +30,7 @@ Set the target frame rate for the application.
 **Returns:** `string`
 **Notes:** `MainThreadRequired = true`, tagged `runtime`.
 
-### `set_timescale`
+### `runtime set_time_scale`
 Set the time scale for the application.
 
 | Parameter | Required | Default | Description |
@@ -40,7 +40,7 @@ Set the time scale for the application.
 **Returns:** `string`
 **Notes:** `MainThreadRequired = true`, tagged `runtime`.
 
-### `simulate_key`
+### `runtime simulate_key`
 Simulate a keyboard key event (Input System). Drives the running app.
 
 | Parameter | Required | Default | Description |
@@ -51,7 +51,7 @@ Simulate a keyboard key event (Input System). Drives the running app.
 **Returns:** `InputSimulationResponse`
 **Notes:** `MainThreadRequired = true`, tagged `runtime`. Requires the Input System package (`ENABLE_INPUT_SYSTEM`); reports unavailable otherwise.
 
-### `simulate_pointer`
+### `runtime simulate_pointer`
 Simulate a mouse/pointer event at screen coordinates (Input System).
 
 | Parameter | Required | Default | Description |
@@ -64,7 +64,7 @@ Simulate a mouse/pointer event at screen coordinates (Input System).
 **Returns:** `InputSimulationResponse`
 **Notes:** `MainThreadRequired = true`, tagged `runtime`. Requires the Input System package (`ENABLE_INPUT_SYSTEM`); reports unavailable otherwise.
 
-### `log`
+### `console write`
 Write a message to Unity console.
 
 | Parameter | Required | Default | Description |
@@ -75,7 +75,7 @@ Write a message to Unity console.
 **Returns:** `string`
 **Notes:** `MainThreadRequired = true`, tagged `runtime`.
 
-### `console`
+### `console get`
 Get captured Unity console output (Editor or Player; supports tail, level filtering, and follow via a cursor).
 
 | Parameter | Required | Default | Description |
@@ -105,7 +105,7 @@ Beyond the entries, the response carries:
 buffer does not hold. That is expected for output produced before the package was first imported;
 otherwise it is the signal that something was missed.
 
-### `console_status`
+### `console status`
 Console ground truth and buffer counters without pulling entries: compile-failure flag, Editor
 console counts, and the buffer's retained counts and cursor.
 
@@ -113,9 +113,9 @@ No parameters.
 
 **Returns:** `ConsoleLogResponse` with an empty `entries` array.
 **Notes:** `MainThreadRequired = false`. Cheap enough to poll in a loop while a compile runs; use
-`console` when you want the entries themselves.
+`console get` when you want the entries themselves.
 
-### `clear_console`
+### `console clear`
 Clear the captured log buffer and the Unity Editor console.
 
 No parameters.
@@ -124,29 +124,29 @@ No parameters.
 **Notes:** Available in both the Editor and player builds; in a player only the captured buffer is
 cleared, since there is no Editor console. Editor compile errors are logged as sticky entries, which
 Unity's own clear skips, so they remain in the Console window until the next compile completes.
-Clearing keeps the cursor, so a client following `console` sees `dropped=true` on its next poll
+Clearing keeps the cursor, so a client following `console get` sees `dropped=true` on its next poll
 rather than silently skipping the window that was cleared.
 
-### `eval`
+### `script eval`
 Evaluate C# code dynamically using Roslyn compiler.
 
 | Parameter | Required | Default | Description |
 |-----------|----------|---------|-------------|
 | `code` | yes | `–` | C# code to evaluate |
-| `timeout` | no | `5000` | Timeout in milliseconds |
+| `timeout` | no | `30` | Timeout in seconds |
 
 **Returns:** `EvalResponse`
 **Notes:** `MainThreadRequired = true`. Available on both editor and runtime.
 
-### `eval_file`
-Evaluate C# code read from a `.cs` file on disk. A convenience alternative to `eval` for code
+### `script eval_file`
+Evaluate C# code read from a `.cs` file on disk. A convenience alternative to `script eval` for code
 too long to pass inline — edit the file, then evaluate it. The resolved source is run through the
-same evaluation path as `eval`.
+same evaluation path as `script eval`.
 
 | Parameter | Required | Default | Description |
 |-----------|----------|---------|-------------|
 | `file` | yes | `–` | Path to a `.cs` file to evaluate |
-| `timeout` | no | `5000` | Timeout in milliseconds |
+| `timeout` | no | `30` | Timeout in seconds |
 
 The `file` is read on the Unity side (relative paths resolve against the Unity process working
 directory) and must end in `.cs`. A missing file, a non-`.cs` extension, or an empty file returns
@@ -156,58 +156,73 @@ a `Bad Request`.
 **Notes:** `MainThreadRequired = true`. Available on both editor and runtime.
 
 > For anything beyond an ad-hoc one-liner — bulk construction, builder scripts — prefer the
-> Editor-side [`run_script`](scripts.md#run_script) command, which compiles a versioned project
+> Editor-side [`script run`](scripts.md#script-run) command, which compiles a versioned project
 > `.cs` file in memory and runs a named entry point instead of carrying code through the protocol.
 
-### `reload_file`
-Compile and apply [CodeReload] edits from a source file.
+### `script.methodreload reload`
+Compile and apply [MethodReload] edits from a source file.
 
 | Parameter | Required | Default | Description |
 |-----------|----------|---------|-------------|
-| `filename` | yes | `–` | Source file containing [CodeReload] methods (e.g. Assets/Scripts/Player.cs) |
-| `timeout` | no | `30000` | Compilation timeout in milliseconds |
+| `filename` | yes | `–` | Source file containing [MethodReload] methods (e.g. Assets/Scripts/Player.cs) |
+| `timeout` | no | `60` | Compilation timeout in seconds |
 | `assemblyDir` | no | `–` | Directory to save compiled assemblies to disk (optional, default is in-memory only) |
 | `pdb` | no | `false` | Emit debug symbols (portable PDB) mapped to the original source so breakpoints bind in your editor. Compiles unoptimized. |
 
-**Returns:** `CodeReloadResponse`
-**Notes:** `MainThreadRequired = true`. See [Reloading code](../code-reload.md).
+**Returns:** `MethodReloadResponse`
+**Notes:** `MainThreadRequired = true`. See [Reloading code](../method-reload.md).
 
-### `reload_file_editor_interpreter`
-Compile [CodeReload] edits and run them through the IlInterpreter VM in this process instead of `Assembly.Load` (IL2CPP-safe; only a minimal host API + the target type are available).
-
-Same parameters as [`reload_file`](#reload_file).
-
-**Returns:** `CodeReloadResponse`
-**Notes:** `MainThreadRequired = true`. See [Reloading code](../code-reload.md).
-
-### `reload_file_player_interpreter`
-Compile a file's (or folder's) [CodeReload] methods in the Editor and push the IL to connected development players over PlayerConnection (IL2CPP-safe). Folders are walked recursively; files that do not mention `CodeReload` are skipped.
+### `script.methodreload reload_editor`
+Compile [MethodReload] edits and run them through the IlInterpreter VM in this process instead of `Assembly.Load` (IL2CPP-safe; only a minimal host API + the target type are available).
 
 | Parameter | Required | Default | Description |
 |-----------|----------|---------|-------------|
-| `filename` | yes | `–` | Source `.cs` file or a folder containing [CodeReload] methods (e.g. Assets/pong.cs or Assets/Scripts) |
+| `filename` | yes | `–` | Source file containing [MethodReload] methods (e.g. Assets/Scripts/Player.cs) |
+| `timeout` | no | `60` | Compilation timeout in seconds |
+| `assemblyDir` | no | `–` | Directory to also save the compiled IL to disk (optional, default is in-memory only) |
+| `pdb` | no | `false` | Emit a portable PDB mapped to the original source. Runtime errors already report source lines on this backend, so this only matters if you also want the .pdb on disk. |
+
+**Returns:** `MethodReloadResponse`
+**Notes:** `MainThreadRequired = true`. The public-members-only constraint of `script.methodreload reload` does not apply. See [Editor interpreter](../method-reload.md#editor-interpreter).
+
+### `script.methodreload reload_player`
+Compile a file's (or folder's) [MethodReload] methods in the Editor and push the IL to connected development players over PlayerConnection (IL2CPP-safe). Folders are walked recursively; files that do not mention `MethodReload` are skipped.
+
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `filename` | yes | `–` | Source `.cs` file or a folder containing [MethodReload] methods (e.g. Assets/pong.cs or Assets/Scripts) |
 | `player` | no | `-1` | Target connected player id; `-1` broadcasts to all connected players |
 
 **Returns:** `{ success, message, diagnostics }` for a file; `{ success, message, pushed, failed }` for a folder.
-**Notes:** `MainThreadRequired = true`. Served by the **Editor** server (it needs Roslyn and PlayerConnection), not the player; the player only needs the runtime Pipeline driver, not its HTTP server. See [Reloading code](../code-reload.md#reload_file_player_interpreter).
+**Notes:** `MainThreadRequired = true`. Served by the **Editor** server (it needs Roslyn and PlayerConnection), not the player; the player only needs the runtime Pipeline driver, not its HTTP server. See [Player interpreter](../method-reload.md#player-interpreter).
 
-### `codereload_status`
-Show current code reload registry status and statistics.
+### `script.methodreload status`
+Show current method reload registry status and statistics.
 
 No parameters.
 
-**Returns:** `CodeReloadResponse`
-**Notes:** `MainThreadRequired = true`, tagged `scripts/codereload`. Reachable on an Editor server too — it only reads registry statics.
+**Returns:** `MethodReloadResponse`
+**Notes:** `MainThreadRequired = true`, tagged `scripts/methodreload`. Reachable on an Editor server too — it only reads registry statics.
 
-### `cleanup_codereload`
-Remove old code reload DLL versions and clear registry.
+### `script.methodreload generate_link_xml`
+Generate the method-reload `link.xml` at `ProjectSettings/Packages/com.unity.pipeline/MethodReload.link.xml`. Development builds pass it to the linker while **Enable in Development & Profiled Builds** is on, so method reloaded onto an IL2CPP device can call any member of a type the game already uses. Same as **Generate link.xml** in Project Settings → Pipeline → Runtime → Method Reload.
+
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `delete` | no | `false` | Remove the generated file instead of (re)generating it. |
+
+**Returns:** `object` with `path`, a one-line `message`, and `stats` (types kept per source: referenced engine/package types, the game's own types, the interpreter's host surface, `[MethodReload]` targets; file size). With `delete=true`: `deleted` (whether a file existed) and `path`.
+**Notes:** `MainThreadRequired = true`. Reads the compiled player assemblies under `Library/ScriptAssemblies`, so run it after a successful compile. The file is a snapshot: run again after larger code changes. See [Method reload on IL2CPP devices and managed stripping](../runtime-setup.md#method-reload-on-il2cpp-devices-and-managed-stripping).
+
+### `script.methodreload cleanup`
+Remove old method reload DLL versions and clear registry.
 
 | Parameter | Required | Default | Description |
 |-----------|----------|---------|-------------|
 | `assemblyDir` | yes | `–` | Directory containing assemblies to cleanup |
 | `force_domain_reload` | no | `true` | Force Unity domain reload after cleanup |
 
-**Returns:** `CodeReloadResponse`
-**Notes:** `MainThreadRequired = true`, tagged `scripts/codereload`. Reachable on an Editor server too, but excluded from `batch`: it requests a domain reload, which would tear the batch down mid-run.
+**Returns:** `MethodReloadResponse`
+**Notes:** `MainThreadRequired = true`, tagged `scripts/methodreload`. Reachable on an Editor server too, but excluded from `job batch`: it requests a domain reload, which would tear the batch down mid-run.
 
 See [Creating commands](../creating-commands.md) and [Connectivity](../connectivity.md).

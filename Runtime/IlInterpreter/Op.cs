@@ -367,7 +367,7 @@ enum Op : uint
     // IL `endfinally` lowers to br_cont, which pops the next continuation and jumps to it —
     // chaining inner finally → outer finally → leave target. Exceptions thrown inside a try
     // still propagate without running the finally (the whole dispatch falls back to the
-    // original compiled body via CodeReloadRegistry.TryInvokeCodeReload).
+    // original compiled body via MethodReloadRegistry.TryInvokeMethodReload).
     push_cont,      // [op, target_ip]  — push an IR continuation address
     br_cont,        // [op]             — pop a continuation address and jump to it
 

@@ -33,6 +33,7 @@ namespace Unity.Pipeline.Editor.Commands.Baking
 #endif
     static class OcclusionBakeCommands
     {
+        const string Group = "occlusion";
         const string StatusFile = "Temp/pipeline_occlusion_bake_status.json";
 
         // Sentinel for "argument omitted" on the float bake parameters. float.NaN is not a
@@ -53,8 +54,8 @@ namespace Unity.Pipeline.Editor.Commands.Baking
 
         #region bake_occlusion_culling
 
-        [CliCommand("bake_occlusion_culling", "Trigger an async occlusion-culling bake of the open scene(s) via StaticOcclusionCulling.GenerateInBackground(). Returns immediately; poll occlusion_bake_status until completed.", Tags = new[] { "baking/occlusion" })]
-        public static object BakeOcclusionCulling(
+        [CliGroupCommand(Group, "Trigger an async occlusion-culling bake of the open scene(s) via StaticOcclusionCulling.GenerateInBackground(). Returns immediately; poll " + CommandNames.OcclusionBakeStatus + " until completed.", Tags = new[] { "baking/occlusion" })]
+        public static object Bake(
             [CliArg("smallest_occluder", "Smallest object that will occlude others (meters). Defaults to Unity's current value.")] float smallestOccluder = Unset,
             [CliArg("smallest_hole", "Smallest gap geometry can have that the view can see through (meters). Defaults to Unity's current value.")] float smallestHole = Unset,
             [CliArg("backface_threshold", "Backface threshold (1-100); lower trims more backfaces. Defaults to Unity's current value.")] float backfaceThreshold = Unset,
@@ -67,7 +68,7 @@ namespace Unity.Pipeline.Editor.Commands.Baking
             OnUpdate(); // reconcile any stale tracking flag first.
 
             if (StaticOcclusionCulling.isRunning)
-                return new { code = "bake_in_progress", message = "An occlusion bake is already running. Poll occlusion_bake_status." };
+                return new { code = "bake_in_progress", message = "An occlusion bake is already running. Poll " + CommandNames.OcclusionBakeStatus + "." };
 
             // Validate explicitly provided values before resolving. An omitted arg is the Unset
             // sentinel (float.MinValue); NaN is never <= Unset, so a NaN arg is treated as provided
@@ -119,14 +120,14 @@ namespace Unity.Pipeline.Editor.Commands.Baking
             return new { status = "baking", bakeId };
         }
 
-        [CliCommand("occlusion_bake_status", "Get the status of the last occlusion bake: idle | baking | completed.", MainThreadRequired = false, Tags = new[] { "baking/occlusion" })]
-        public static JToken OcclusionBakeStatus()
+        [CliGroupCommand(Group, "Get the status of the last occlusion bake: idle | baking | completed.", MainThreadRequired = false, Tags = new[] { "baking/occlusion" })]
+        public static JToken BakeStatus()
         {
             return StatusFileReader.ReadOrIdle(StatusFile);
         }
 
-        [CliCommand("cancel_occlusion_bake", "Cancel an in-progress occlusion bake (StaticOcclusionCulling.Cancel()).", Tags = new[] { "baking/occlusion" })]
-        public static object CancelOcclusionBake()
+        [CliGroupCommand(Group, "Cancel an in-progress occlusion bake (StaticOcclusionCulling.Cancel()).", Tags = new[] { "baking/occlusion" })]
+        public static object CancelBake()
         {
             var wasRunning = StaticOcclusionCulling.isRunning;
             if (wasRunning)
@@ -151,8 +152,8 @@ namespace Unity.Pipeline.Editor.Commands.Baking
             return new { cancelled = wasRunning };
         }
 
-        [CliCommand("clear_occlusion_culling", "Clear baked occlusion-culling data for the open scene(s). Destructive: requires confirm=true.", Tags = new[] { "baking/occlusion" })]
-        public static object ClearOcclusionCulling(
+        [CliGroupCommand(Group, "Clear baked occlusion-culling data for the open scene(s). Destructive: requires confirm=true.", Tags = new[] { "baking/occlusion" })]
+        public static object ClearBake(
             [CliArg("confirm", "Must be true to actually clear (destructive, not undoable via Unity's Undo).")] bool confirm = false,
             [CliArg("dry_run", "If true, report what would be cleared without clearing.")] bool dryRun = false)
         {

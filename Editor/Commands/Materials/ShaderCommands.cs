@@ -22,8 +22,10 @@ namespace Unity.Pipeline.Editor.Commands.Materials
     /// </summary>
     static class ShaderCommands
     {
-        [CliCommand("list_shaders",
-            "Discover available shaders so an agent can pick a valid name for set_material_properties / create_asset. Returns [{ name, assetPath|null, isBuiltin, isSupported }].",
+        const string Group = "material";
+
+        [CliGroupCommand(Group,
+            "Discover available shaders so an agent can pick a valid name for " + CommandNames.MaterialSetProperties + " / " + CommandNames.AssetCreate + ". Returns [{ name, assetPath|null, isBuiltin, isSupported }].",
             Tags = new[] { "materials/shaders" })]
         public static List<ShaderInfo> ListShaders(
             [CliArg("filter", "Case-insensitive substring matched against the shader name (e.g. \"URP\", \"Lit\").")] string filter = null,
@@ -96,7 +98,7 @@ namespace Unity.Pipeline.Editor.Commands.Materials
             return results;
         }
 
-        [CliCommand("get_shader_properties",
+        [CliGroupCommand(Group,
             "Introspect a shader's declared property list (name, description, type Color|Vector|Float|Range|TexEnv|Int, range, textureDimension, flags). Provide 'shader' (by name) OR 'material' (read the shader off that material).",
             Tags = new[] { "materials/shaders" })]
         public static ShaderPropertiesResult GetShaderProperties(
@@ -110,7 +112,7 @@ namespace Unity.Pipeline.Editor.Commands.Materials
                 resolved = Shader.Find(shader);
                 if (resolved == null)
                     throw new ShaderNotFoundException(
-                        $"Shader '{shader}' not found. Shader.Find only resolves shaders that are compiled/included in the build (or referenced by a material/scene). Use list_shaders to discover valid names.");
+                        $"Shader '{shader}' not found. Shader.Find only resolves shaders that are compiled/included in the build (or referenced by a material/scene). Use {CommandNames.MaterialListShaders} to discover valid names.");
             }
             else if (material != null && !material.IsEmpty)
             {

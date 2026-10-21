@@ -4,7 +4,6 @@ using Unity.Pipeline.Models;
 using Unity.Pipeline.Commands;
 using Unity.Pipeline.Telemetry;
 using Unity.Pipeline.Threading;
-using UnityEditor.MPE;
 #if UNITY_6000_5_OR_NEWER
 using Unity.Scripting.LifecycleManagement;
 #endif
@@ -44,16 +43,23 @@ namespace Unity.Pipeline.Editor
             Compilation.RoslynCompilationService.SnapshotProjectDefines();
 
             // Don't start server in AssetImportWorker processes
-            if (!IsMainProcess())
+            if (!EditorProcessInfo.IsMainProcess())
                 return;
             // Setup command discovery using TypeCache for fast Editor performance
             CommandRegistry.SetDiscovery(new TypeCacheCommandDiscovery());
 
-            // Clean up any stale instance descriptor files from previous sessions
-            CleanupStaleDescriptors();
-
             // Tell a project still carrying the pre-AUTHAPI-66 settings asset, once, that it is inert.
             EditorPipelineLegacyAssetNotice.WarnOncePerSession();
+
+            // Reconcile Application.runInBackground against the recorded override state (CLI-1432).
+            // Must not depend on the server being started below (AutoStart can be false) — both the
+            // command override and the Play-mode setting apply regardless of whether the server is
+            // running. isPlayingOrWillChangePlaymode (not isPlaying) treats "on our way into Play
+            // mode" as playing too, so a domain reload mid-entry doesn't see playing=false and
+            // wrongly restore; on an ordinary fresh Editor load it is false, so this call doubles as
+            // crash recovery — an Editor that died mid-Play with the override recorded restores the
+            // project's own value here instead of leaving it stuck on.
+            ReconcileRunInBackground(EditorApplication.isPlayingOrWillChangePlaymode);
 
             var cfg = EditorPipelineConfig.Load();
             bool autoStart;
@@ -125,24 +131,6 @@ namespace Unity.Pipeline.Editor
         [MenuItem("Window/Pipeline/Stop Server", true)]
         private static bool MenuStopServerValidate() => m_Server != null && m_Server.IsRunning;
 
-        internal static bool IsMainProcess()
-        {
-            // Check command line arguments for asset import worker indicators
-            var args = System.Environment.GetCommandLineArgs();
-            for (int i = 0; i < args.Length; i++)
-            {
-                if (args[i] == "-readonly" || args[i] == "--virtual-project-clone")
-                    return true;
-            }
-
-            if (AssetDatabase.IsAssetImportWorkerProcess())
-                return false;
-
-            if (ProcessService.level != ProcessLevel.Main)
-                return false;
-
-            return true;
-        }
 
         /// <summary>
         /// Apply the local eval-usage telemetry config (AUTHAPI-29). Local-only, no transmission;
@@ -266,39 +254,18 @@ namespace Unity.Pipeline.Editor
         }
 
         /// <summary>
-        /// Clean up stale instance descriptor files from previous Editor sessions.
-        /// </summary>
-        private static void CleanupStaleDescriptors()
-        {
-            var projectPath = System.IO.Path.GetDirectoryName(Application.dataPath);
-
-            // Try to read existing descriptor
-            var existing = InstanceDescriptor.ReadFromProjectRoot(projectPath);
-            if (existing != null)
-            {
-                // Check if process is still running
-                try
-                {
-                    var process = System.Diagnostics.Process.GetProcessById(existing.Pid);
-                    if (process.HasExited)
-                    {
-                        // Process is dead, remove stale file
-                        InstanceDescriptor.RemoveFromProjectRoot(projectPath);
-                    }
-                }
-                catch
-                {
-                    // Process doesn't exist or access denied, remove stale file
-                    InstanceDescriptor.RemoveFromProjectRoot(projectPath);
-                }
-            }
-        }
-
-        /// <summary>
         /// Handle play mode state changes.
         /// </summary>
         private static void OnPlayModeStateChanged(PlayModeStateChange state)
         {
+            // Apply/restore Application.runInBackground for the recorded override state (CLI-1432):
+            // ExitingEditMode fires when entering Play mode (before any domain reload that causes);
+            // EnteredEditMode fires when a Play session ends.
+            if (state == PlayModeStateChange.ExitingEditMode)
+                ReconcileRunInBackground(playing: true);
+            else if (state == PlayModeStateChange.EnteredEditMode)
+                ReconcileRunInBackground(playing: false);
+
             // Server continues running through play mode changes
             // Status endpoint will reflect current play mode via EditorApplication.isPlaying
 
@@ -321,6 +288,143 @@ namespace Unity.Pipeline.Editor
                 CommandRegistry.PlayModeSessionStarted();
             else if (state == PlayModeStateChange.EnteredEditMode)
                 CommandRegistry.PlayModeSessionEnded();
+        }
+
+        /// <summary>SessionState flag: a build put the project's Run In Background value back and has
+        /// not yet re-applied the override (see <see cref="BuildProcessors.PipelineRuntimeBuildProcessor"/>).</summary>
+        internal const string RunInBackgroundRestoredForBuildKey = "Unity.Pipeline.RunInBackground.RestoredForBuild";
+
+        /// <summary>
+        /// Reconciles <see cref="Application.runInBackground"/> against the recorded override state
+        /// (CLI-1432): a standing override from <c>editor.playmode set_run_in_background</c> (persists across
+        /// Editor restarts until reverted), OR the "Ensure editor runs in background in PlayMode"
+        /// project setting (<see cref="EditorPipelineConfig.RunInBackgroundInPlayMode"/>), which only
+        /// applies while <paramref name="playing"/> is true.
+        ///
+        /// Loads its own <see cref="EditorPipelineConfig"/> instance (or a default one when no
+        /// settings file exists yet), reconciles it, and saves ONLY when the override record itself
+        /// changed — so calling this on every domain reload and Play mode transition never authors a
+        /// settings file out of nothing.
+        ///
+        /// Call sites: <see cref="OnPlayModeStateChanged"/> (Play session start/end), the static
+        /// constructor (also crash recovery — an Editor that died mid-Play with the override recorded
+        /// restores the project's own value on the next load instead of leaving it stuck on), and
+        /// <see cref="BuildProcessors.PipelineRuntimeBuildProcessor"/> (re-applying the override once
+        /// a build finishes). The settings page and <c>editor.playmode set_run_in_background</c> call the
+        /// <see cref="ReconcileRunInBackground(EditorPipelineConfig, bool, out string)"/> overload
+        /// instead, against their own already-loaded config instance.
+        /// </summary>
+        internal static void ReconcileRunInBackground(bool playing)
+        {
+            var cfg = EditorPipelineConfig.Load() ?? ScriptableObject.CreateInstance<EditorPipelineConfig>();
+            try
+            {
+                if (ReconcileRunInBackground(cfg, playing, out _))
+                    cfg.Save();
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(cfg);
+            }
+        }
+
+        /// <summary>
+        /// Same reconciliation as <see cref="ReconcileRunInBackground(bool)"/>, applied in place to
+        /// an already-loaded <paramref name="cfg"/> instance rather than one this method loads and
+        /// owns. Used by the settings page (which must keep reconciling against its OWN cached
+        /// instance, never a second independently-loaded one, to avoid racing its own
+        /// out-of-band-write detection) and by <c>editor.playmode set_run_in_background</c> (which has its own
+        /// record field to persist regardless of whether the override state itself changed, so it
+        /// saves unconditionally rather than relying on this method's return value).
+        ///
+        /// Mutates <paramref name="cfg"/> and <see cref="Application.runInBackground"/> in memory
+        /// only — never writes to disk; the caller owns persistence.
+        /// </summary>
+        /// <returns>
+        /// Whether the override record (<see cref="EditorPipelineConfig.RunInBackgroundOverridden"/> /
+        /// <see cref="EditorPipelineConfig.RunInBackgroundOriginal"/>) changed, i.e. whether the
+        /// caller has something worth saving.
+        /// </returns>
+        internal static bool ReconcileRunInBackground(EditorPipelineConfig cfg, bool playing, out string status)
+        {
+            // While our override is active the live value is always true, so a live false is a change
+            // made underneath us. Two causes: a build put the project's value back and never got its
+            // post-process (failed/cancelled build; the session flag says so), or the user turned it
+            // off themselves, in which case the user wins and nothing is re-applied in this pass.
+            // The flag is SessionState, so it dies with the Editor: after a restart a leftover false
+            // is indistinguishable from the user's choice and is treated as theirs.
+            bool restoredForBuild = SessionState.GetBool(RunInBackgroundRestoredForBuildKey, false);
+            if (restoredForBuild)
+                SessionState.SetBool(RunInBackgroundRestoredForBuildKey, false);
+
+            if (cfg.RunInBackgroundOverridden && !Application.runInBackground)
+            {
+                if (!restoredForBuild)
+                {
+                    AdoptUserRunInBackground(cfg);
+                    status = "Run In Background is off: it was turned off while the override was active, " +
+                        "so that value wins and the override has ended. Run editor.playmode set_run_in_background " +
+                        "again to override it.";
+                    return true;
+                }
+
+                // The build's doing, not the user's: re-apply, then reconcile as usual.
+                Application.runInBackground = true;
+            }
+
+            bool desired = cfg.RunInBackgroundCommandOverride || (cfg.RunInBackgroundInPlayMode && playing);
+            bool changed = false;
+
+            if (desired && !cfg.RunInBackgroundOverridden)
+            {
+                cfg.SetRunInBackgroundOverrideRecord(overridden: true, original: Application.runInBackground);
+                Application.runInBackground = true;
+                changed = true;
+            }
+            else if (!desired && cfg.RunInBackgroundOverridden)
+            {
+                Application.runInBackground = cfg.RunInBackgroundOriginal;
+                cfg.SetRunInBackgroundOverrideRecord(overridden: false, original: cfg.RunInBackgroundOriginal);
+                changed = true;
+            }
+
+            status = DescribeRunInBackground(cfg, playing);
+            return changed;
+        }
+
+        /// <summary>
+        /// The user changed Run In Background themselves while the override was active (the live
+        /// value is false, which the override never leaves it at): their value becomes the new
+        /// original, and both the override and the command override end. Mutates <paramref name="cfg"/>
+        /// only; the caller saves.
+        /// </summary>
+        internal static void AdoptUserRunInBackground(EditorPipelineConfig cfg)
+        {
+            cfg.SetRunInBackgroundOverrideRecord(overridden: false, original: Application.runInBackground);
+            cfg.SetRunInBackgroundCommandOverride(false);
+        }
+
+        /// <summary>
+        /// Human-readable summary of the current Run In Background state, for
+        /// <c>editor.playmode set_run_in_background</c>'s result string.
+        /// </summary>
+        private static string DescribeRunInBackground(EditorPipelineConfig cfg, bool playing)
+        {
+            string state = Application.runInBackground ? "on" : "off";
+
+            if (!cfg.RunInBackgroundOverridden)
+                return $"Run In Background is {state} (the project's own value; nothing is overriding it)";
+
+            string original = cfg.RunInBackgroundOriginal ? "on" : "off";
+            if (!cfg.RunInBackgroundCommandOverride && cfg.RunInBackgroundInPlayMode && playing)
+            {
+                return $"Run In Background is {state} (overriding the project's value, {original} — " +
+                    "the \"Ensure editor runs in background in PlayMode\" setting is still forcing it " +
+                    "while in Play mode; builds use the project's value)";
+            }
+
+            return $"Run In Background is {state} (overriding the project's value, {original}; " +
+                "builds use the project's value)";
         }
 
         /// <summary>

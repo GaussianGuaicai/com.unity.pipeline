@@ -14,18 +14,29 @@ namespace Unity.Pipeline.Editor.Commands
     /// </summary>
     static class EditorStatusCommand
     {
-        [CliCommand("editor_status", "Get detailed Unity Editor status and state information", Tags = new[] { "editor" })]
-        public static StatusResponse GetEditorStatus()
+        const string Group = "editor";
+
+        [CliGroupCommand(Group, "Get detailed Unity Editor status and state information", Tags = new[] { "editor" })]
+        public static StatusResponse Status()
         {
+            // On the main thread here, so take a fresh sample rather than one up to an update old.
+            EditorPipelineServer.SamplePlayerLoop();
+            var playerLoop = EditorPipelineServer.ReadPlayerLoop();
+
             return new StatusResponse
             {
                 Status = GetOverallStatus(),
                 Compiling = EditorApplication.isCompiling,
                 DomainReloadInProgress = EditorApplication.isUpdating,
                 PlayMode = GetPlayModeStatus(),
+                FrameCount = playerLoop.Playing ? playerLoop.FrameCount : (int?)null,
+                PlayerLoopTicking = playerLoop.Playing ? playerLoop.Ticking : (bool?)null,
+                RunInBackground = Application.runInBackground,
                 LastHeartbeat = DateTime.UtcNow,
                 ProjectPath = Path.GetDirectoryName(Application.dataPath),
-                UnityVersion = Application.unityVersion
+                UnityVersion = Application.unityVersion,
+                Role = MppmInstanceInfo.Role,
+                InstanceName = MppmInstanceInfo.InstanceName
             };
         }
 
