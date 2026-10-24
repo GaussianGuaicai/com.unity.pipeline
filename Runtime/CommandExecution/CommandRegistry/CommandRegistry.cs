@@ -543,8 +543,9 @@ namespace Unity.Pipeline.Commands
         /// <summary>
         /// The group and name <paramref name="method"/> declares, or why it cannot be registered.
         /// <c>[CliGroupCommand]</c> names the group and derives the name from the method unless it
-        /// sets one; <c>[CliCommand]</c> names both, its group being <see cref="CommandInfo.GlobalGroup"/>
-        /// when it names only the command. A method carries one of the two.
+        /// sets one; <c>[CliCommand]</c> names both, or with only a description takes the group from
+        /// the declaring type's namespace and class, lowercased, and derives the name from the method.
+        /// A method carries one of the two.
         /// </summary>
         /// <returns>The error, or null when the declaration can be registered.</returns>
         internal static string ReadDeclaration(MethodInfo method, CliGroupCommandAttribute grouped, CliCommandAttribute cliCommand,
@@ -563,8 +564,8 @@ namespace Unity.Pipeline.Commands
                 return FormatError(group, name);
             }
 
-            group = cliCommand.Group;
-            name = cliCommand.Name;
+            group = cliCommand.Group ?? method.DeclaringType.FullName.Replace('+', '.').ToLowerInvariant();
+            name = cliCommand.Name ?? DeriveName(method.Name);
             var error = FormatError(group, name);
             return error == null ? null
                 : $"{error} To place the command in a group, declare it with [CliCommand(group, name, description)].";

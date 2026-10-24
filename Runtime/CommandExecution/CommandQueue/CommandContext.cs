@@ -1,6 +1,9 @@
 using System;
 using Newtonsoft.Json.Linq;
 using Unity.Pipeline.Threading;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Commands
 {
@@ -16,6 +19,9 @@ namespace Unity.Pipeline.Commands
     /// synchronous call frame. A command that awaits and resumes on another thread before reading
     /// it would not see it (no command does today).
     /// </remarks>
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
     sealed class CommandContext
     {
         [ThreadStatic] static CommandContext s_Current;

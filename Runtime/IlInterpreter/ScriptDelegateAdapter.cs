@@ -1,6 +1,9 @@
 #nullable enable
 using System;
 using System.Reflection;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace IlInterpreter.Interpreter
 {
@@ -48,6 +51,9 @@ namespace IlInterpreter.Interpreter
     /// Lifetime: valid until the interpreter is re-<c>Load</c>ed or disposed — the same contract
     /// as every other object that crosses the boundary.
     /// </summary>
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
     internal sealed class ScriptDelegateAdapter
     {
         readonly ScriptInterpreter _owner;

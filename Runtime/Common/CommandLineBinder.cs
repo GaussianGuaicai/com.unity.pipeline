@@ -3,6 +3,9 @@ using System.Collections.Generic;
 using System.Globalization;
 using Newtonsoft.Json.Linq;
 using Unity.Pipeline.Commands;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline
 {
@@ -29,6 +32,9 @@ namespace Unity.Pipeline
     /// <c>--</c> ends flag parsing. No short flags, no <c>-abc</c> bundling, no <c>--no-x</c>,
     /// no repeated-flag-becomes-array.
     /// </summary>
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
     internal static class CommandLineBinder
     {
         private static readonly CommandParameterInfo[] k_NoParameters = new CommandParameterInfo[0];

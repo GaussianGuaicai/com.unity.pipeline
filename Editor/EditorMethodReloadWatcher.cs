@@ -7,6 +7,9 @@ using Unity.Pipeline.Editor.Commands;
 using Unity.Pipeline.MethodReload;
 using UnityEditor;
 using UnityEngine;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Editor
 {
@@ -31,6 +34,9 @@ namespace Unity.Pipeline.Editor
     /// drives Start/Stop.
     /// </summary>
     [InitializeOnLoad]
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
     static class EditorMethodReloadWatcher
     {
         private const double DebounceSeconds = 0.3;

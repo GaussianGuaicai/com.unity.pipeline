@@ -11,6 +11,9 @@ using Unity.Pipeline.Models;
 using UnityEditor;
 using UnityEngine;
 using Object = UnityEngine.Object;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Editor.Commands.Animation
 {
@@ -31,6 +34,9 @@ namespace Unity.Pipeline.Editor.Commands.Animation
     /// Out of scope (v1): markers, signal emitters/receivers, custom playable tracks, and track bindings
     /// to scene objects.
     /// </summary>
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
     static class TimelineCommands
     {
         const string Group = "animation.timeline";

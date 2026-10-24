@@ -4,6 +4,9 @@ using Unity.Pipeline.Console;
 using Unity.Pipeline.Models;
 using UnityEditor;
 using UnityEngine;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Editor.Console
 {
@@ -28,6 +31,9 @@ namespace Unity.Pipeline.Editor.Console
     /// case this targets. The event is subscribed only to shorten the wait when a window is open.
     /// </summary>
     [InitializeOnLoad]
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
     static class EditorConsoleGroundTruth
     {
         const string SeededKey = "pipeline.console.seeded";
@@ -49,10 +55,8 @@ namespace Unity.Pipeline.Editor.Console
             EditorApplication.update -= Sample;
             EditorApplication.update += Sample;
 
-#if UNITY_6000_0_OR_NEWER
             ConsoleWindowUtility.consoleLogsChanged -= OnConsoleLogsChanged;
             ConsoleWindowUtility.consoleLogsChanged += OnConsoleLogsChanged;
-#endif
 
             AssemblyReloadEvents.afterAssemblyReload -= OnAfterAssemblyReload;
             AssemblyReloadEvents.afterAssemblyReload += OnAfterAssemblyReload;
@@ -69,12 +73,7 @@ namespace Unity.Pipeline.Editor.Console
             if (!s_Seeded)
                 TrySeed();
 
-#if UNITY_6000_0_OR_NEWER
             ConsoleWindowUtility.GetConsoleLogCounts(out var errors, out var warnings, out var logs);
-#else
-            if (!EditorConsoleEntries.TryGetCounts(out var errors, out var warnings, out var logs))
-                return;
-#endif
             var total = errors + warnings + logs;
             var seq = ConsoleLogCapture.Buffer.LastSeq;
 

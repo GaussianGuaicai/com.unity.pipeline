@@ -6,6 +6,9 @@ using System.Reflection;
 using System.Runtime.ExceptionServices;
 using Unity.Pipeline.Commands;
 using UnityEditor;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Editor.Commands.Build
 {
@@ -31,6 +34,9 @@ namespace Unity.Pipeline.Editor.Commands.Build
     /// cleanup on domain reload degrades to a re-resolve instead of permanently emptying the shim.
     /// </para>
     /// </summary>
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
     internal static class BuildProfilePlatforms
     {
         const BindingFlags AnyStatic = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static;

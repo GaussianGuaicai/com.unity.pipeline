@@ -232,6 +232,9 @@ namespace Unity.Pipeline.Editor.Commands.Build
     /// so this assembly compiles and runs on older editors without the type. Used by
     /// <c>list_build_profiles</c> and by <c>build</c>'s optional <c>profileName</c> activation.
     /// </summary>
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
     internal static class BuildProfiles
     {
         const string TypeName = "UnityEditor.Build.Profile.BuildProfile, UnityEditor.CoreModule";

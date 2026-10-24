@@ -9,6 +9,9 @@ using UnityEditor;
 using UnityEditor.Networking.PlayerConnection;
 using UnityEngine;
 using UnityEngine.Networking.PlayerConnection;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Editor.Commands
 {
@@ -26,6 +29,9 @@ namespace Unity.Pipeline.Editor.Commands
     /// or attach via the Profiler/Console) with the runtime Pipeline enabled. The player's
     /// ack is asynchronous and logged to the editor console.
     /// </summary>
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
     static class PushReloadCommand
     {
         const string Group = "script.methodreload";

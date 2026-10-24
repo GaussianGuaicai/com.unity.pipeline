@@ -3,6 +3,9 @@ using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Commands
 {
@@ -25,6 +28,9 @@ namespace Unity.Pipeline.Commands
     /// Thread-safe. Each field is set before <see cref="State"/> moves past it, so a reader that
     /// reads State first sees the rest consistent with it.
     /// </remarks>
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
     sealed class CommandExecution
     {
         readonly CliProgressState m_Progress;

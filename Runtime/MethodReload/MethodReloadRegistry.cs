@@ -6,6 +6,9 @@ using System.Reflection;
 using System.Runtime.ExceptionServices;
 using Unity.Pipeline.Threading;
 using UnityEngine;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.MethodReload
 {
@@ -15,12 +18,14 @@ namespace Unity.Pipeline.MethodReload
     /// Thread-safe for runtime method reload operations.
     /// </summary>
     /// <remarks>
-    /// Deliberately NOT [NoAutoStaticsCleanup]: these statics describe the code loaded in the
-    /// current Play session, and discovery re-registers on every Play Mode entry, so opting out
-    /// would carry a previous session's targets and overrides into the next one. Let
-    /// AutoStaticsCleanup reset them instead — in step with RuntimePipelineDriver's "already
-    /// scanned" latch, which must clear whenever these do.
+    /// Nothing resets these statics on Play Mode entry; only a domain reload clears them. With
+    /// domain reload disabled, a previous Play session's targets and overrides carry into the
+    /// next one, as does RuntimePipelineDriver's "already scanned" latch, which must clear
+    /// whenever these do.
     /// </remarks>
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
     public static class MethodReloadRegistry
     {
         /// <summary>

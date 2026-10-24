@@ -63,9 +63,22 @@ namespace Unity.Pipeline.Editor.BuildProcessors
             var buildOptions = report?.summary.options;
             var namedTarget = report == null
                 ? PipelineBuildSymbols.ActiveTarget()
-                : PipelineBuildSymbols.TargetFor(report.summary.platformGroup, report.summary.GetSubtarget<StandaloneBuildSubtarget>());
+                : TargetFor(report.summary);
 
             Preprocess(namedTarget, buildOptions);
+        }
+
+        /// <summary>
+        /// The define list the build described by <paramref name="summary"/> compiles against. Only a
+        /// Standalone build has a subtarget; reading it for any other platform throws.
+        /// </summary>
+        /// <param name="summary">The build's summary.</param>
+        internal static NamedBuildTarget TargetFor(BuildSummary summary)
+        {
+            var subtarget = summary.platformGroup == BuildTargetGroup.Standalone
+                ? summary.GetSubtarget<StandaloneBuildSubtarget>()
+                : StandaloneBuildSubtarget.Player;
+            return PipelineBuildSymbols.TargetFor(summary.platformGroup, subtarget);
         }
 
         /// <summary>

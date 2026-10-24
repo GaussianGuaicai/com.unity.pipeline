@@ -12,6 +12,9 @@ using UnityPipeline.Microsoft.CodeAnalysis.CSharp;
 using UnityPipeline.Microsoft.CodeAnalysis.CSharp.Syntax;
 using UnityPipeline.Microsoft.CodeAnalysis.Text;
 using Unity.Pipeline.Compilation;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.MethodReload
 {
@@ -33,6 +36,9 @@ namespace Unity.Pipeline.MethodReload
     /// baseline captured, classification returns null and reloads behave as before. The store is
     /// static, so the editor persists/restores it across domain reloads itself.
     /// </summary>
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
     static class MethodReloadBaseline
     {
         private sealed class Entry

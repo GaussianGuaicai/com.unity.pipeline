@@ -3,6 +3,9 @@ using System.Collections.Generic;
 using Unity.Pipeline.Commands;
 using Unity.Pipeline.Threading;
 using UnityEditor;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Editor
 {
@@ -11,6 +14,9 @@ namespace Unity.Pipeline.Editor
     /// dialog blocks the main thread or while the Editor settles after startup, and reports each
     /// command that ran to analytics once it ends.
     /// </summary>
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
     class EditorCommandExecutor : DefaultCommandExecutor
     {
         readonly DialogStateTracker m_Dialogs;

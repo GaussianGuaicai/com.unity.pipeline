@@ -6,6 +6,9 @@ using Unity.Pipeline.Compilation;
 // (Runtime/Plugins/CodeAnalysis); the interpreter reads pushed IL with the same reader.
 using UnityPipeline.System.Reflection.Metadata;
 using UnityPipeline.System.Reflection.PortableExecutable;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Editor.BuildProcessors
 {
@@ -17,6 +20,9 @@ namespace Unity.Pipeline.Editor.BuildProcessors
     /// attributes; generic instantiations point back at the open definition). Consumed by
     /// <see cref="MethodReloadLinkXml"/>.
     /// </summary>
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
     static class PlayerAssemblyMetadataWalk
     {
         public sealed class Scan

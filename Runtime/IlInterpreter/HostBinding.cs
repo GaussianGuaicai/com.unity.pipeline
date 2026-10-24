@@ -9,6 +9,9 @@ using System.Text;
 // The package bundles System.Runtime.CompilerServices.Unsafe renamed with a "UnityPipeline." prefix (Runtime/Plugins/CodeAnalysis);
 // the dotnet test projects reference the same DLLs (IlInterpreter/BundledRoslyn.props).
 using Unsafe = UnityPipeline.System.Runtime.CompilerServices.Unsafe;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace IlInterpreter.Interpreter
 {
@@ -44,6 +47,9 @@ internal delegate void RefRecvAct3F<TRecv>(ref TRecv self, float a, float b, flo
 
 // Holds all registered host method, constructor, and field delegates.
 // Use the fluent Allow*() API to register; acts as both binding and builder.
+#if UNITY_6000_5_OR_NEWER
+[NoAutoStaticsCleanup]
+#endif
 internal sealed unsafe class HostBinding
 {
     // Diagnostic warning sink. IlInterpreter has no UnityEngine dependency (these sources also compile in
@@ -3230,6 +3236,9 @@ internal sealed unsafe class HostBinding
     }
 }
 
+#if UNITY_6000_5_OR_NEWER
+[NoAutoStaticsCleanup]
+#endif
 sealed class EntryReferenceComparer : IEqualityComparer<HostBinding.Entry>
 {
     public static readonly EntryReferenceComparer Instance = new();
