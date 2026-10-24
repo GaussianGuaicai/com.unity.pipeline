@@ -1,4 +1,7 @@
 using System;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.MethodReload
 {
@@ -9,6 +12,9 @@ namespace Unity.Pipeline.MethodReload
     /// in RuntimePipelineDriver (main thread). Timestamps use <see cref="Environment.TickCount"/>
     /// because Unity's Time API is main-thread-only and reporters run off it.
     /// </summary>
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
     static class MethodReloadActivity
     {
         public enum Phase

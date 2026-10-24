@@ -3,6 +3,9 @@ using System.Collections.Generic;
 using System.Linq;
 using Newtonsoft.Json;
 using Unity.Pipeline.Commands;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Telemetry
 {
@@ -119,6 +122,9 @@ namespace Unity.Pipeline.Telemetry
     /// mapped-but-absent command surfaces as a concrete gap ("build <c>refresh_assets</c>"). Kept
     /// deliberately small and extensible — this is a hint layer, not an exhaustive registry.
     /// </summary>
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
     static class EvalCoverageMap
     {
         public static readonly IReadOnlyDictionary<string, string> Default = new Dictionary<string, string>

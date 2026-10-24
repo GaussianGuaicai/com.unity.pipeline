@@ -4,6 +4,9 @@ using System.IO;
 using System.Threading;
 using Newtonsoft.Json;
 using UnityEngine;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 #if UNITY_EDITOR
 using System.Threading.Tasks;
@@ -86,6 +89,9 @@ namespace Unity.Pipeline.Telemetry
     /// rotation rather than reset per session; <see cref="ReadRecords"/> merges the rotated ".old"
     /// file back in, bounding readable history to roughly 2× <see cref="MaxFileBytes"/>.
     /// </summary>
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
     static class EvalUsageTelemetry
     {
         /// <summary>

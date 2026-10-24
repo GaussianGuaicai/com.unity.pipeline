@@ -10,10 +10,16 @@ using UnityPipeline.System.Reflection.Metadata;
 using UnityPipeline.System.Reflection.Metadata.Ecma335;
 using UnityPipeline.System.Reflection.PortableExecutable;
 using System.Runtime.CompilerServices;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace IlInterpreter.Interpreter
 {
 
+#if UNITY_6000_5_OR_NEWER
+[NoAutoStaticsCleanup]
+#endif
 sealed partial class ScriptInterpreter : IDisposable
 {
     public const int DefaultStepLimit = 1_000_000;
@@ -3181,6 +3187,9 @@ sealed partial class ScriptInterpreter : IDisposable
         // Environment kill switches for the optimizer, read once per Load (LowerAll refreshes
         // them) rather than once per method. Not `static readonly`: the fuzz self-diff and
         // LoweringConfigSelfDiffTests flip them between Loads in one process.
+#if UNITY_6000_5_OR_NEWER
+        [NoAutoStaticsCleanup]
+#endif
         static class Knobs
         {
             public static bool NoOpt;

@@ -2,6 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Reflection;
 using UnityEngine;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Editor.Console
 {
@@ -17,6 +20,9 @@ namespace Unity.Pipeline.Editor.Console
     /// Reflection rather than a direct reference, because LogEntries is internal. Any failure
     /// disables this permanently for the session and callers report the console as unseeded.
     /// </summary>
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
     static class EditorConsoleEntries
     {
         // ConsoleMode bits from Unity's native EditorMonoConsole (mirrored by the internal
@@ -33,7 +39,6 @@ namespace Unity.Pipeline.Editor.Console
 
         static readonly MethodInfo k_StartGettingEntries;
         static readonly MethodInfo k_EndGettingEntries;
-        static readonly MethodInfo k_GetCountsByType;
         static readonly MethodInfo k_GetEntryInternal;
         static readonly MethodInfo k_GetFilteringText;
         static readonly MethodInfo k_SetFilteringText;
@@ -68,7 +73,6 @@ namespace Unity.Pipeline.Editor.Console
 
             k_StartGettingEntries = logEntries.GetMethod("StartGettingEntries", statics);
             k_EndGettingEntries = logEntries.GetMethod("EndGettingEntries", statics);
-            k_GetCountsByType = logEntries.GetMethod("GetCountsByType", statics);
             k_GetEntryInternal = logEntries.GetMethod("GetEntryInternal", statics);
             k_GetFilteringText = logEntries.GetMethod("GetFilteringText", statics);
             k_SetFilteringText = logEntries.GetMethod("SetFilteringText", statics);
@@ -179,27 +183,6 @@ namespace Unity.Pipeline.Editor.Console
                     TryRestore(k_SetFilteringText, filter);
                 if (flagsMutated)
                     TryRestore(k_SetConsoleFlags, flags);
-            }
-        }
-
-        internal static bool TryGetCounts(out int errors, out int warnings, out int logs)
-        {
-            errors = warnings = logs = 0;
-            if (k_GetCountsByType == null)
-                return false;
-
-            try
-            {
-                var counts = new object[] { 0, 0, 0 };
-                k_GetCountsByType.Invoke(null, counts);
-                errors = (int)counts[0];
-                warnings = (int)counts[1];
-                logs = (int)counts[2];
-                return true;
-            }
-            catch
-            {
-                return false;
             }
         }
 

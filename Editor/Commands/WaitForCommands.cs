@@ -7,6 +7,9 @@ using Unity.Pipeline;
 using Unity.Pipeline.Commands;
 using Unity.Pipeline.Editor.Commands.Capture;
 using Unity.Pipeline.Models;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Editor.Commands
 {
@@ -26,6 +29,9 @@ namespace Unity.Pipeline.Editor.Commands
     /// <c>async=true</c> for anything else to get a <c>wait_id</c> back immediately and poll
     /// <c>wait_status</c> / cancel with <c>wait_cancel</c> while other commands keep executing.
     /// </summary>
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
     static class WaitForCommands
     {
         const string Group = "job";

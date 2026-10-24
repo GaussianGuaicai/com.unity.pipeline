@@ -18,6 +18,12 @@ namespace Unity.Pipeline.Editor
     {
         static EditorDialogStateMirror()
         {
+            Subscribe();
+        }
+
+        /// <summary>Subscribes to <see cref="EditorDialogEvents"/>, replacing any earlier subscription.</summary>
+        internal static void Subscribe()
+        {
             EditorDialogEvents.dialogWillShow -= OnDialogWillShow;
             EditorDialogEvents.dialogWillShow += OnDialogWillShow;
             EditorDialogEvents.dialogDismissed -= OnDialogDismissed;

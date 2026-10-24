@@ -59,7 +59,18 @@ public static string Bake() { ... }
 unity command lighting bake
 ```
 
-`[CliCommand(name, description)]`, with only a name, is obsolete. It registers the command in the `global` group, and the command runs by its name alone or as `global <name>`:
+`[CliCommand(name, description)]` takes the group and name as one dotted name: the text before the last `.` is the group, the rest is the name.
+
+```csharp
+[CliCommand("animation.skeleton.set_bone", "Set a bone")]
+public static string SetBone() { ... }
+```
+
+```bash
+unity command animation.skeleton set_bone
+```
+
+Without a `.`, the command is in the `global` group and runs by its name alone or as `global <name>`:
 
 ```csharp
 [CliCommand("bake_lighting", "Bake every lightmap")]
@@ -70,7 +81,24 @@ public static string Bake() { ... }
 unity command bake_lighting        # or: unity command global bake_lighting
 ```
 
-A command name cannot contain a `.`, and a method cannot carry both `[CliCommand]` and `[CliGroupCommand]`.
+`[CliCommand(description)]` infers both: the group is the declaring type's namespace and class, lowercased, and the name is derived from the method (see [Groups and names](#groups-and-names)). A nested class is joined to its outer class with a `.`.
+
+```csharp
+namespace My.Tools
+{
+    static class Lighting
+    {
+        [CliCommand("Bake every lightmap")]
+        public static string Bake() { ... }
+    }
+}
+```
+
+```bash
+unity command my.tools.lighting bake
+```
+
+A method cannot carry both `[CliCommand]` and `[CliGroupCommand]`.
 
 ### Groups and names
 

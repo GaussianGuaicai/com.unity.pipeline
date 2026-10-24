@@ -4,6 +4,18 @@ All notable changes to this package will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1-exp.1] - 2026-10-22
+
+### Changed
+
+- `[CliCommand(name, description)]` reads a dotted name as group and name (`"animation.skeleton.set_bone"`), and is no longer obsolete.
+- `[CliCommand(description)]` infers the group from the declaring type's namespace and class, and the name from the method.
+
+### Fixed
+
+- UAL0010/UAL0013 AutoStaticsCleanup analyzer warnings when opening a project with Unity 7.0.
+- Building for Android, iOS or any other non-Standalone platform no longer throws `ArgumentException: Subtarget property is not available for the platform` in the Pipeline's pre-build step, which skipped baking the runtime settings into the build.
+
 ## [0.9.0-exp.1] - 2026-09-22
 
 ### Added

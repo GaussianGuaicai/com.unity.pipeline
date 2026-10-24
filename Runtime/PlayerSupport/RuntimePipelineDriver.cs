@@ -7,6 +7,9 @@ using Unity.Pipeline.Commands;
 using Unity.Pipeline.MethodReload;
 using Unity.Pipeline.Runtime.Telemetry;
 using UnityEngine;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 #if (UNITY_EDITOR || ENABLE_PROFILER || ENABLE_RUNTIME_PIPELINE)
 using UnityEngine.Networking.PlayerConnection;
 #endif
@@ -22,6 +25,9 @@ namespace Unity.Pipeline
     /// </summary>
     [AddComponentMenu("")]
     [DisallowMultipleComponent]
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
     public class RuntimePipelineDriver : MonoBehaviour
     {
         // Not yet exposed via RuntimePipelineConfig/the runtime settings page — always on. Wire up
@@ -140,10 +146,10 @@ namespace Unity.Pipeline
         // from the reload path, which compiles on a background thread — and the registry's
         // per-id method lists are not themselves thread-safe to append to.
         //
-        // The latch is a plain static, so AutoStaticsCleanup clears it on Play Mode entry in step
-        // with the registry it describes (see MethodReloadRegistry's remarks) — a latch that outlived
-        // the registry would claim targets are registered after they had been wiped. The lock
-        // object only has to exist; it carries no state across sessions.
+        // Like the registry it describes, the latch is cleared only by a domain reload, never on
+        // Play Mode entry (see MethodReloadRegistry's remarks) — a latch that outlived the registry
+        // would claim targets are registered after they had been wiped. The lock object only has
+        // to exist; it carries no state across sessions.
         private static readonly object s_DiscoveryLock = new object();
         private static bool s_Discovered;
 

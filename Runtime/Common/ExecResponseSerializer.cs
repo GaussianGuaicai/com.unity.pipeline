@@ -5,6 +5,9 @@ using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Newtonsoft.Json.Serialization;
 using Unity.Pipeline.Models;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline
 {
@@ -46,6 +49,9 @@ namespace Unity.Pipeline
     /// hooks on the models: serializing these types anywhere else (other endpoints, logs, tests) is
     /// unaffected, and Serialize never mutates the response object.
     /// </summary>
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
     internal static class ExecResponseSerializer
     {
         /// <summary>

@@ -16,6 +16,9 @@ using UnityPipeline.Microsoft.CodeAnalysis.Text;
 #endif
 using Unity.Pipeline.Models;
 using UnityEngine;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Compilation
 {
@@ -24,6 +27,9 @@ namespace Unity.Pipeline.Compilation
     /// Eliminates code duplication by providing common compilation infrastructure.
     /// Compile on the main thread; CompileAsync is the off-thread entry point (see Compile).
     /// </summary>
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
     static class RoslynCompilationService
     {
 #if UNITY_EDITOR || (UNITY_STANDALONE && DEBUG)

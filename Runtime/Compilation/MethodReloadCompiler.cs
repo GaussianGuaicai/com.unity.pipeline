@@ -8,6 +8,9 @@ using Unity.Pipeline.MethodReload;
 using Unity.Pipeline.Models;
 using Unity.Pipeline.Threading;
 using UnityEngine;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Compilation
 {
@@ -15,6 +18,9 @@ namespace Unity.Pipeline.Compilation
     /// Compiles transformed method reload source using the shared RoslynCompilationService.
     /// Creates versioned DLLs and manages method reload assembly lifecycle.
     /// </summary>
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
     static class MethodReloadCompiler
     {
         /// <summary>

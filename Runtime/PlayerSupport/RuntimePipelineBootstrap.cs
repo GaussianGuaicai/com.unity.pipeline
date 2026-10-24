@@ -1,6 +1,9 @@
 using System.Collections.Generic;
 using Unity.Pipeline.Config;
 using UnityEngine;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline
 {
@@ -11,6 +14,9 @@ namespace Unity.Pipeline
     /// RuntimePipelineBuildInfo from Resources; does nothing if no config exists or the config
     /// has the server disabled.
     /// </summary>
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
     public static class RuntimePipelineBootstrap
     {
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]

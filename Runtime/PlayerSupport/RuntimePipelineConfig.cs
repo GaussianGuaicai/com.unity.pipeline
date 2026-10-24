@@ -3,6 +3,9 @@ using System;
 using System.IO;
 #endif
 using UnityEngine;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Config
 {
@@ -14,6 +17,9 @@ namespace Unity.Pipeline.Config
     /// settings into a transient Resources asset (deleted again after the build) so the Player
     /// can find them via Resources.Load.
     /// </summary>
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
     public class RuntimePipelineConfig : ScriptableObject
     {
         /// <summary>Listen port. 0 auto-assigns from 7900-7999.</summary>

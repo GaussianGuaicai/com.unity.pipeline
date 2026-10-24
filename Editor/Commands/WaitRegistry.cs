@@ -6,6 +6,9 @@ using Unity.Pipeline;
 using Unity.Pipeline.Commands;
 using UnityEditor;
 using UnityEngine;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Editor.Commands
 {
@@ -403,6 +406,9 @@ namespace Unity.Pipeline.Editor.Commands
     /// In-memory: a domain reload discards pending waits the same way it discards every other
     /// static — a poller then gets a clear "not found / does not survive domain reloads" result.
     /// </summary>
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
     internal static class WaitRegistry
     {
         /// <summary>Maximum simultaneously-active (non-terminal) waits; a further submission is rejected.</summary>

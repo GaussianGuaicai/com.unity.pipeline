@@ -4,6 +4,9 @@ using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 // Use the Unsafe bundled with the package (renamed with a "UnityPipeline." prefix), not the BCL or editor copy.
 using Unsafe = UnityPipeline.System.Runtime.CompilerServices.Unsafe;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 #if !NET5_0_OR_GREATER
 // SkipLocalsInit polyfill for the Unity (Mono/netstandard) build — the compiler keys on the
@@ -38,6 +41,9 @@ sealed partial class ScriptInterpreter
     // call — a major chunk of Mono's 5x call overhead vs CoreCLR. Every local and stackalloc
     // slot below is definitely-assigned before use, so dropping .locals init is safe.
     [System.Runtime.CompilerServices.SkipLocalsInit]
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
     sealed unsafe class Vm : IDisposable
     {
         internal const int NumSlots = 256 * 1024; // Value slots (4 bytes each); also the lowering frame cap

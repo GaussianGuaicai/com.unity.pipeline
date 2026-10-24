@@ -5,6 +5,9 @@ using UnityEditor;
 using UnityEditor.Networking.PlayerConnection;
 using UnityEngine;
 using UnityEngine.Networking.PlayerConnection;
+#if UNITY_6000_5_OR_NEWER
+using Unity.Scripting.LifecycleManagement;
+#endif
 
 namespace Unity.Pipeline.Editor
 {
@@ -25,6 +28,9 @@ namespace Unity.Pipeline.Editor
     /// having to report where the count stands.
     /// </summary>
     [InitializeOnLoad]
+#if UNITY_6000_5_OR_NEWER
+    [NoAutoStaticsCleanup]
+#endif
     internal static class PushSigner
     {
         private sealed class Session
